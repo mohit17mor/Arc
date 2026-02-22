@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arc-agent"
+version = "0.1.0"
+description = "Micro-agents you can teach, share, and compose"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+dependencies = [
+    "pydantic>=2.0",
+    "tomli>=2.0;python_version<'3.11'",
+    "aiofiles>=23.0",
+    "httpx>=0.25",
+    "aiosqlite>=0.19",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "typer>=0.9",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.30"]
+openai = ["openai>=1.0"]
+all = ["arc-agent[anthropic,openai]"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+arc = "arc.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["arc"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
