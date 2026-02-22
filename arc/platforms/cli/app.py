@@ -1,5 +1,8 @@
 """
-CLI Platform — interactive terminal chat with rich feedback.
+CLI Platform — interactive terminal chat.
+
+Simplified approach: print status as it happens, no fancy animations.
+More reliable across different terminals.
 """
 
 from __future__ import annotations
@@ -7,11 +10,8 @@ from __future__ import annotations
 import asyncio
 from typing import AsyncIterator, Callable
 
-from rich.console import Console, Group
-from rich.live import Live
-from rich.markdown import Markdown
+from rich.console import Console
 from rich.panel import Panel
-from rich.spinner import Spinner
 from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -27,7 +27,6 @@ class CLIPlatform(Platform):
 
     Features:
     - Streaming responses
-    - Thinking spinner
     - Tool call display
     - Command history
     - Special commands (/help, /cost, /clear, /exit)
@@ -45,9 +44,9 @@ class CLIPlatform(Platform):
         self._running = False
         self._cost_tracker: dict = {}
         
-        # For displaying tool calls
-        self._current_status: str = ""
-        self._tool_calls: list[dict] = []
+        # Track what's been printed so we don't duplicate
+        self._printed_thinking = False
+        self._tool_call_count = 0
 
         # Command history
         history_path = Path.home() / ".arc" / "history"
@@ -63,33 +62,54 @@ class CLIPlatform(Platform):
         self._cost_tracker = tracker
 
     def on_event(self, event: Event) -> None:
-        """Handle events from the agent for display."""
+        """Handle events from the agent for display — print immediately."""
         if event.type == EventType.AGENT_THINKING:
             iteration = event.data.get("iteration", 1)
-            if iteration == 1:
-                self._current_status = "thinking"
-            else:
-                self._current_status = "analyzing"
+            if iteration == 1 and not self._printed_thinking:
+                self._console.print("[dim]Thinking...[/dim]")
+                self._printed_thinking = True
+            elif iteration > 1:
+                self._console.print("[dim]Analyzing...[/dim]")
                 
         elif event.type == EventType.SKILL_TOOL_CALL:
             tool_name = event.data.get("tool", "unknown")
             arguments = event.data.get("arguments", {})
-            self._tool_calls.append({
-                "name": tool_name,
-                "arguments": arguments,
-                "status": "running",
-            })
+            
+            # Format arguments
+            args_parts = []
+            for k, v in list(arguments.items())[:2]:
+                if isinstance(v, str):
+                    v_short = v[:25] + "..." if len(v) > 25 else v
+                    args_parts.append(f'{k}="{v_short}"')
+                else:
+                    args_parts.append(f"{k}={v}")
+            args_str = ", ".join(args_parts)
+            
+            self._console.print(f"[yellow]⟳[/yellow] [bold]{tool_name}[/bold]({args_str})")
+            self._tool_call_count += 1
             
         elif event.type == EventType.SKILL_TOOL_RESULT:
-            if self._tool_calls:
-                success = event.data.get("success", False)
-                self._tool_calls[-1]["status"] = "success" if success else "error"
-                self._tool_calls[-1]["preview"] = event.data.get("output_preview", "")
+            success = event.data.get("success", False)
+            preview = event.data.get("output_preview", "")
+            
+            if success:
+                icon = "[green]✓[/green]"
+            else:
+                icon = "[red]✗[/red]"
+            
+            if preview:
+                # Show first line of preview, cleaned up
+                preview_line = preview.replace("\n", " ").strip()[:60]
+                if len(preview) > 60:
+                    preview_line += "..."
+                self._console.print(f"  {icon} [dim]{preview_line}[/dim]")
+            else:
+                self._console.print(f"  {icon} [dim]Done[/dim]")
 
-    def _reset_status(self) -> None:
-        """Reset status for new message."""
-        self._current_status = ""
-        self._tool_calls = []
+    def _reset_state(self) -> None:
+        """Reset state for new message."""
+        self._printed_thinking = False
+        self._tool_call_count = 0
 
     async def run(self, handler: MessageHandler) -> None:
         """Run the interactive CLI loop."""
@@ -201,117 +221,32 @@ class CLIPlatform(Platform):
     ) -> None:
         """Process a user message and stream the response."""
         self._console.print()
-        self._reset_status()
+        self._reset_state()
 
+        response_started = False
         response_text = ""
-        first_chunk = True
-        spinner_shown = False
 
         try:
-            # Show thinking spinner initially
-            with Live(
-                self._build_status_display(thinking=True),
-                console=self._console,
-                refresh_per_second=10,
-                transient=True,
-            ) as live:
-                spinner_shown = True
+            async for chunk in handler(user_input):
+                # First text chunk — print agent name header
+                if chunk.strip() and not response_started:
+                    response_started = True
+                    self._console.print()  # Blank line after tool calls
+                    self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
                 
-                async for chunk in handler(user_input):
-                    # First chunk of actual response - stop spinner
-                    if first_chunk and chunk.strip():
-                        first_chunk = False
-                        # Update display one final time with all tool calls
-                        live.update(self._build_status_display(thinking=False))
-                        
+                if response_started:
+                    # Print chunk immediately (streaming)
+                    self._console.print(chunk, end="", highlight=False)
                     response_text += chunk
 
-                    # Update live display with current status
-                    if self._current_status or self._tool_calls:
-                        live.update(self._build_status_display(
-                            thinking=True,
-                            partial_response=response_text if not first_chunk else ""
-                        ))
-
-            # Print final response with agent name
-            if response_text.strip():
-                self._print_response(response_text)
+            # Ensure newline at end
+            if response_started:
+                self._console.print()
+            elif self._tool_call_count > 0:
+                # Tools were called but no text response
+                self._console.print()
+                self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
+                self._console.print("[dim]Done.[/dim]")
 
         except Exception as e:
             self._console.print(f"\n[red]Error: {e}[/red]")
-
-    def _build_status_display(
-        self,
-        thinking: bool = False,
-        partial_response: str = "",
-    ) -> Group:
-        """Build the status display with spinner and tool calls."""
-        elements = []
-
-        # Thinking spinner
-        if thinking and not partial_response:
-            status_text = {
-                "thinking": "Thinking",
-                "analyzing": "Analyzing results",
-                "": "Thinking",
-            }.get(self._current_status, "Thinking")
-            
-            spinner = Spinner("dots", text=f"[cyan]{status_text}...[/cyan]")
-            elements.append(spinner)
-
-        # Tool calls
-        for tool in self._tool_calls:
-            tool_display = self._format_tool_call(tool)
-            elements.append(tool_display)
-
-        if not elements:
-            # Default spinner if nothing else
-            elements.append(Spinner("dots", text="[cyan]Thinking...[/cyan]"))
-
-        return Group(*elements)
-
-    def _format_tool_call(self, tool: dict) -> Text:
-        """Format a tool call for display."""
-        name = tool["name"]
-        args = tool["arguments"]
-        status = tool["status"]
-
-        # Status icon
-        if status == "running":
-            icon = "🔧"
-            color = "yellow"
-        elif status == "success":
-            icon = "✓"
-            color = "green"
-        else:
-            icon = "✗"
-            color = "red"
-
-        # Format arguments (simplified)
-        args_str = ", ".join(
-            f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
-            for k, v in list(args.items())[:3]  # Show max 3 args
-        )
-        if len(args) > 3:
-            args_str += ", ..."
-
-        text = Text()
-        text.append(f"\n{icon} ", style=color)
-        text.append(f"{name}", style=f"bold {color}")
-        text.append(f"({args_str})", style="dim")
-        
-        # Add preview for completed tools
-        if status == "success" and tool.get("preview"):
-            preview = tool["preview"][:100]
-            if len(tool.get("preview", "")) > 100:
-                preview += "..."
-            text.append(f"\n   └─ ", style="dim")
-            text.append(preview, style="dim italic")
-
-        return text
-
-    def _print_response(self, response: str) -> None:
-        """Print the final response with formatting."""
-        self._console.print()
-        self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
-        self._console.print(response.strip())

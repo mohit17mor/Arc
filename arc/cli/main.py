@@ -9,9 +9,11 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import logging
 import typer
 from rich.console import Console
 from pathlib import Path
+from rich.panel import Panel
 
 app = typer.Typer(
     name="arc",
@@ -62,12 +64,13 @@ def init(
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override model"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
 ) -> None:
     """Start an interactive chat session."""
-    asyncio.run(_run_chat(model))
+    asyncio.run(_run_chat(model, verbose))
 
 
-async def _run_chat(model_override: str | None) -> None:
+async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     """Run the chat session."""
     import platform as plat
     
@@ -83,9 +86,19 @@ async def _run_chat(model_override: str | None) -> None:
     from arc.identity.soul import SoulManager
     from arc.platforms.cli.app import CLIPlatform
     from arc.middleware.cost import CostTracker
+    from arc.middleware.logging import setup_logging, EventLogger
 
     config_path = get_config_path()
     identity_path = get_identity_path()
+
+    # Setup logging
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    setup_logging(
+        log_dir=get_arc_home() / "logs",
+        console_level=log_level,
+    )
+    logger = logging.getLogger("arc")
+    logger.info("Starting Arc chat session")
 
     # Check if configured
     if not config_path.exists():
@@ -97,17 +110,24 @@ async def _run_chat(model_override: str | None) -> None:
 
     # Load config
     config = ArcConfig.load()
+    logger.debug(f"Config loaded: model={config.llm.default_model}")
 
     # Override model if specified
     if model_override:
         config.llm.default_model = model_override
+        logger.info(f"Model overridden to: {model_override}")
 
     # Load identity
     soul = SoulManager(identity_path)
     identity = soul.load()
+    logger.debug(f"Identity loaded: agent={identity['agent_name']}")
 
     # Create kernel
     kernel = Kernel(config=config)
+
+    # Setup logging middleware
+    event_logger = EventLogger(log_dir=get_arc_home() / "logs")
+    kernel.use(event_logger.middleware)
 
     # Setup cost tracking
     cost_tracker = CostTracker()
@@ -118,11 +138,13 @@ async def _run_chat(model_override: str | None) -> None:
         base_url=config.llm.base_url,
         model=config.llm.default_model,
     )
+    logger.info(f"LLM: {config.llm.default_model} at {config.llm.base_url}")
 
     # Setup skills
     skill_manager = SkillManager(kernel)
     await skill_manager.register(FilesystemSkill())
     await skill_manager.register(TerminalSkill())
+    logger.debug(f"Skills registered: {skill_manager.skill_names}")
 
     # Setup security
     security = SecurityEngine(config.security, kernel)
@@ -169,18 +191,24 @@ async def _run_chat(model_override: str | None) -> None:
     async def handle_message(user_input: str):
         # Update cost tracker reference before each message
         cli.set_cost_tracker(cost_tracker.summary())
+        logger.info(f"User input: {user_input[:100]}...")
 
         async for chunk in agent.run(user_input):
             yield chunk
         
         # Update cost tracker after message completes
         cli.set_cost_tracker(cost_tracker.summary())
+        logger.info(f"Response complete. Tokens: {cost_tracker.total_tokens}")
 
     # Run
     try:
         await kernel.start()
         await cli.run(handle_message)
+    except Exception as e:
+        logger.exception(f"Error in chat session: {e}")
+        raise
     finally:
+        logger.info("Shutting down")
         await skill_manager.shutdown_all()
         await kernel.stop()
         await llm.close()
@@ -191,6 +219,71 @@ def version() -> None:
     """Show Arc version."""
     from arc import __version__
     console.print(f"Arc v{__version__}")
+
+
+@app.command()
+def logs(
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+    events: bool = typer.Option(False, "--events", "-e", help="Show events log instead"),
+) -> None:
+    """Show recent logs."""
+    from datetime import datetime
+    
+    log_dir = get_arc_home() / "logs"
+    
+    if not log_dir.exists():
+        console.print("[dim]No logs found.[/dim]")
+        raise typer.Exit(0)
+    
+    # Find today's log file
+    date_str = datetime.now().strftime('%Y%m%d')
+    
+    if events:
+        log_file = log_dir / f"events_{date_str}.jsonl"
+    else:
+        log_file = log_dir / f"arc_{date_str}.log"
+    
+    if not log_file.exists():
+        console.print(f"[dim]No log file for today: {log_file}[/dim]")
+        raise typer.Exit(0)
+    
+    # Read and display last N lines
+    with open(log_file, "r", encoding="utf-8") as f:
+        all_lines = f.readlines()
+        
+    for line in all_lines[-lines:]:
+        console.print(line.rstrip())
+
+
+@app.command()
+def config() -> None:
+    """Show current configuration."""
+    config_path = get_config_path()
+    identity_path = get_identity_path()
+    
+    console.print(Panel("[bold]Arc Configuration[/bold]", border_style="cyan"))
+    console.print()
+    
+    # Show config file location and content
+    console.print(f"[bold]Config file:[/bold] {config_path}")
+    if config_path.exists():
+        console.print(Panel(config_path.read_text(), title="config.toml", border_style="dim"))
+    else:
+        console.print("[dim]Not found. Run 'arc init'[/dim]")
+    
+    console.print()
+    
+    # Show identity file location
+    console.print(f"[bold]Identity file:[/bold] {identity_path}")
+    if identity_path.exists():
+        content = identity_path.read_text()
+        # Show just first part
+        preview = "\n".join(content.split("\n")[:20])
+        if len(content.split("\n")) > 20:
+            preview += "\n..."
+        console.print(Panel(preview, title="identity.md", border_style="dim"))
+    else:
+        console.print("[dim]Not found. Run 'arc init'[/dim]")
 
 
 if __name__ == "__main__":
