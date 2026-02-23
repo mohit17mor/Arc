@@ -179,6 +179,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         user_name=identity["user_name"],
     )
 
+    cli.set_approval_flow(agent.security.approval_flow)
+
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
         cli.on_event(event)
@@ -186,6 +188,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     kernel.on(EventType.AGENT_THINKING, forward_to_cli)
     kernel.on(EventType.SKILL_TOOL_CALL, forward_to_cli)
     kernel.on(EventType.SKILL_TOOL_RESULT, forward_to_cli)
+    kernel.on(EventType.SECURITY_APPROVAL, forward_to_cli)
 
     # Message handler
     async def handle_message(user_input: str):
