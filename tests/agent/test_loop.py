@@ -110,17 +110,24 @@ async def test_multiple_tool_calls(agent, mock_llm):
 
 @pytest.mark.asyncio
 async def test_max_iterations(agent, mock_llm):
-    """Agent stops at max iterations."""
-    # Always return tool calls, never complete
-    for _ in range(10):
+    """Agent exhausts iterations and then synthesises an answer from gathered context."""
+    # Fill all 5 iterations with tool calls so the loop never naturally completes.
+    for _ in range(5):
         mock_llm.set_tool_call("greet", {"name": "Test"})
+
+    # The 6th LLM call is the synthesis call (no tools available).
+    # Queue a plain text response so the agent can render a real answer.
+    mock_llm.set_response("Based on what I gathered, here is my best answer.")
 
     chunks = []
     async for chunk in agent.run("Keep greeting forever"):
         chunks.append(chunk)
 
     response = "".join(chunks)
-    assert "Max iterations" in response
+    # The synthesis response should appear in the output.
+    assert "best answer" in response
+    # The agent must have reached COMPLETE state (not errored).
+    assert agent.state.status.value == "complete"
 
 
 @pytest.mark.asyncio

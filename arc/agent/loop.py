@@ -194,10 +194,13 @@ class AgentLoop:
                 
                 # 5. OBSERVE — loop continues with tool results in context
             
-            # Max iterations reached
-            yield "\n[Max iterations reached]"
+            # Max iterations reached — synthesise with everything gathered so far
+            # rather than silently dropping the context.
+            yield "\n\n"
+            async for chunk in self._synthesise_on_limit():
+                yield chunk
+
             self._state.status = AgentStatus.COMPLETE
-            
             await self._emit(
                 EventType.AGENT_COMPLETE,
                 {"iterations": self._iteration, "reason": "max_iterations"},
@@ -208,6 +211,33 @@ class AgentLoop:
             await self._emit(EventType.AGENT_ERROR, {"error": str(e)})
             raise
     
+    async def _synthesise_on_limit(self) -> AsyncIterator[str]:
+        """
+        Called when max_iterations is exhausted.
+
+        Injects a final user nudge and calls the LLM **without tools** so it
+        is forced to produce a text answer from whatever context is already in
+        memory — tool results, page content, search snippets, etc.
+        """
+        context = await self._composer.compose(
+            session=self._memory,
+            recent_window=self._config.recent_window,
+        )
+        # Append a nudge as a user turn so the model sees it as a new instruction.
+        nudge = Message.user(
+            "You have used the maximum number of tool calls. "
+            "Do NOT call any more tools. "
+            "Based solely on the information you have gathered in this conversation, "
+            "provide your best complete answer to the original question right now."
+        )
+        async for chunk in self._llm.generate(
+            messages=context.messages + [nudge],
+            tools=None,   # no tools — forces a text completion
+            temperature=self._config.temperature,
+        ):
+            if chunk.text:
+                yield chunk.text
+
     async def _execute_tool_with_approval(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call with security checks and approval flow."""
         

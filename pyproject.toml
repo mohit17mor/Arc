@@ -15,6 +15,7 @@ dependencies = [
     "tomli>=2.0;python_version<'3.11'",
     "aiofiles>=23.0",
     "httpx>=0.25",
+    "ddgs>=9.0",
     "aiosqlite>=0.19",
     "rich>=13.0",
     "prompt-toolkit>=3.0",
@@ -25,7 +26,8 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.30"]
 openai = ["openai>=1.0"]
-all = ["arc-agent[anthropic,openai]"]
+browsing = ["playwright>=1.40"]  # only needed for future CDP tier (forms, JS pages)
+all = ["arc-agent[anthropic,openai,browsing]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

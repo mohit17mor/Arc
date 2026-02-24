@@ -81,6 +81,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.skills.manager import SkillManager
     from arc.skills.builtin.filesystem import FilesystemSkill
     from arc.skills.builtin.terminal import TerminalSkill
+    from arc.skills.builtin.browsing import BrowsingSkill
     from arc.security.engine import SecurityEngine
     from arc.agent.loop import AgentLoop, AgentConfig
     from arc.identity.soul import SoulManager
@@ -144,6 +145,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     skill_manager = SkillManager(kernel)
     await skill_manager.register(FilesystemSkill())
     await skill_manager.register(TerminalSkill())
+    await skill_manager.register(BrowsingSkill())
     logger.debug(f"Skills registered: {skill_manager.skill_names}")
 
     # Setup security
@@ -157,7 +159,18 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         f"- Shell: {'PowerShell' if plat.system() == 'Windows' else 'Bash'}\n"
     )
 
-    system_prompt = identity["system_prompt"] + env_info
+    research_strategy = (
+        "\n\nWeb Research Strategy:\n"
+        "- For any question that needs web data: run ONE web_search, "
+        "then read at most 2-3 of the most relevant URLs with web_read, "
+        "then synthesize everything and give your answer. Stop there.\n"
+        "- Do NOT loop: search → read → search → read. One search is almost always enough.\n"
+        "- For live data (prices, rates, weather): prefer http_get against a known API URL "
+        "instead of going through a search + read cycle.\n"
+        "- Once you have enough information to answer, stop calling tools and respond."
+    )
+
+    system_prompt = identity["system_prompt"] + env_info + research_strategy
 
     # Create agent
     agent = AgentLoop(
