@@ -51,6 +51,7 @@ class CLIPlatform(Platform):
         # Security approval handling
         self._approval_flow: Any = None  # Set via set_approval_flow()
         self._pending_approval: asyncio.Event = asyncio.Event()
+        self._skill_manager: Any = None  # Set via set_skill_manager()
         
         # Track state for display
         self._printed_thinking = False
@@ -73,6 +74,10 @@ class CLIPlatform(Platform):
     def set_approval_flow(self, flow: Any) -> None:
         """Set reference to approval flow for security prompts."""
         self._approval_flow = flow
+
+    def set_skill_manager(self, skill_manager: Any) -> None:
+        """Set reference to skill manager for /skills command."""
+        self._skill_manager = skill_manager
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -268,11 +273,12 @@ class CLIPlatform(Platform):
             self._console.print(
                 Panel(
                     "[bold]Commands[/bold]\n\n"
-                    "  [cyan]/help[/cyan]    — Show this help\n"
-                    "  [cyan]/cost[/cyan]    — Show token usage and cost\n"
-                    "  [cyan]/perms[/cyan]   — Show remembered permissions\n"
-                    "  [cyan]/clear[/cyan]   — Clear conversation history\n"
-                    "  [cyan]/exit[/cyan]    — Exit the chat",
+                    "  [cyan]/help[/cyan]     \u2014 Show this help\n"
+                    "  [cyan]/skills[/cyan]   \u2014 List available skills and tools\n"
+                    "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
+                    "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
+                    "  [cyan]/clear[/cyan]    \u2014 Clear conversation history\n"
+                    "  [cyan]/exit[/cyan]     \u2014 Exit the chat",
                     border_style="blue",
                 )
             )
@@ -294,6 +300,30 @@ class CLIPlatform(Platform):
             else:
                 self._console.print("[dim]Cost tracking not available[/dim]")
         
+        elif cmd in ("/skills", "/skill"):
+            if not self._skill_manager:
+                self._console.print("[dim]No skill manager available[/dim]")
+            else:
+                lines: list[str] = ["[bold]Available Skills[/bold]\n"]
+                for skill_name in sorted(self._skill_manager.skill_names):
+                    skill = self._skill_manager.get_skill(skill_name)
+                    if skill is None:
+                        continue
+                    manifest = skill.manifest()
+                    lines.append(f"  [bold cyan]{manifest.name}[/bold cyan] v{manifest.version}")
+                    lines.append(f"  [dim]{manifest.description}[/dim]")
+                    for tool_spec in manifest.tools:
+                        lines.append(f"    [yellow]⟳[/yellow] [bold]{tool_spec.name}[/bold]")
+                        # Wrap description at ~60 chars for readability
+                        desc = tool_spec.description.split(". ")[0]  # first sentence only
+                        if len(desc) > 70:
+                            desc = desc[:67] + "..."
+                        lines.append(f"      [dim]{desc}[/dim]")
+                    lines.append("")
+                self._console.print(
+                    Panel("\n".join(lines).rstrip(), border_style="blue")
+                )
+
         elif cmd == "/perms":
             self._console.print("[dim]Permission memory: use /clear to reset[/dim]")
         

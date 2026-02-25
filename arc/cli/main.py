@@ -79,9 +79,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.core.events import Event, EventType
     from arc.llm.ollama import OllamaProvider
     from arc.skills.manager import SkillManager
-    from arc.skills.builtin.filesystem import FilesystemSkill
-    from arc.skills.builtin.terminal import TerminalSkill
-    from arc.skills.builtin.browsing import BrowsingSkill
+    from arc.skills.loader import discover_skills, discover_soft_skills
     from arc.security.engine import SecurityEngine
     from arc.agent.loop import AgentLoop, AgentConfig
     from arc.identity.soul import SoulManager
@@ -141,11 +139,10 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     )
     logger.info(f"LLM: {config.llm.default_model} at {config.llm.base_url}")
 
-    # Setup skills
+    # Setup skills — auto-discovered from builtins + ~/.arc/skills/*.py
     skill_manager = SkillManager(kernel)
-    await skill_manager.register(FilesystemSkill())
-    await skill_manager.register(TerminalSkill())
-    await skill_manager.register(BrowsingSkill())
+    for skill in discover_skills():
+        await skill_manager.register(skill)
     logger.debug(f"Skills registered: {skill_manager.skill_names}")
 
     # Setup security
@@ -170,7 +167,10 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         "- Once you have enough information to answer, stop calling tools and respond."
     )
 
-    system_prompt = identity["system_prompt"] + env_info + research_strategy
+    # Soft skills — content of ~/.arc/skills/*.md injected as extra instructions
+    soft_skill_text = discover_soft_skills()
+
+    system_prompt = identity["system_prompt"] + env_info + research_strategy + soft_skill_text
 
     # Create agent
     agent = AgentLoop(
@@ -193,6 +193,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     )
 
     cli.set_approval_flow(agent.security.approval_flow)
+    cli.set_skill_manager(skill_manager)
 
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
