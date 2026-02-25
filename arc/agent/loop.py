@@ -11,9 +11,13 @@ This is where the magic happens. The agent:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from arc.memory.manager import MemoryManager
 
 from arc.core.events import Event, EventType
 from arc.core.kernel import Kernel
@@ -75,12 +79,14 @@ class AgentLoop:
         security: SecurityEngine,
         system_prompt: str,
         config: AgentConfig | None = None,
+        memory_manager: MemoryManager | None = None,
     ) -> None:
         self._kernel = kernel
         self._llm = llm
         self._skills = skill_manager
         self._security = security
         self._config = config or AgentConfig()
+        self._memory_manager = memory_manager
         
         # Memory
         self._memory = SessionMemory()
@@ -124,6 +130,8 @@ class AgentLoop:
                 context = await self._composer.compose(
                     session=self._memory,
                     recent_window=self._config.recent_window,
+                    query=user_input,
+                    memory_manager=self._memory_manager,
                 )
                 
                 # 2. THINK — call LLM
@@ -172,7 +180,10 @@ class AgentLoop:
                 if stop_reason == StopReason.COMPLETE or not collected_tool_calls:
                     self._memory.add_assistant_message(collected_text)
                     self._state.status = AgentStatus.COMPLETE
-                    
+
+                    # Fire-and-forget background memory tasks
+                    self._fire_memory_tasks(user_input, collected_text)
+
                     await self._emit(
                         EventType.AGENT_COMPLETE,
                         {"iterations": self._iteration},
@@ -197,8 +208,13 @@ class AgentLoop:
             # Max iterations reached — synthesise with everything gathered so far
             # rather than silently dropping the context.
             yield "\n\n"
+            synthesis_text = ""
             async for chunk in self._synthesise_on_limit():
+                synthesis_text += chunk
                 yield chunk
+
+            # Store synthesis turn in memory (background)
+            self._fire_memory_tasks(user_input, synthesis_text)
 
             self._state.status = AgentStatus.COMPLETE
             await self._emit(
@@ -211,6 +227,27 @@ class AgentLoop:
             await self._emit(EventType.AGENT_ERROR, {"error": str(e)})
             raise
     
+    def _fire_memory_tasks(self, user_input: str, assistant_text: str) -> None:
+        """Schedule background memory storage tasks (fire-and-forget)."""
+        if self._memory_manager is None:
+            return
+        session_id = id(self._memory)  # stable ID within this session
+        asyncio.create_task(
+            self._memory_manager.store_turn(
+                user_content=user_input,
+                assistant_content=assistant_text,
+                session_id=str(session_id),
+            )
+        )
+        if self._memory_manager.should_distill:
+            recent = self._memory.get_messages()[-self._config.recent_window :]
+            asyncio.create_task(
+                self._memory_manager.distill_to_core(
+                    messages=recent,
+                    llm=self._llm,
+                )
+            )
+
     async def _synthesise_on_limit(self) -> AsyncIterator[str]:
         """
         Called when max_iterations is exhausted.

@@ -21,6 +21,8 @@ dependencies = [
     "prompt-toolkit>=3.0",
     "typer>=0.9",
     "numpy>=1.24",
+    "fastembed>=0.7.0",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]

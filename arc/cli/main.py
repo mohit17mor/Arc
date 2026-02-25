@@ -86,6 +86,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.platforms.cli.app import CLIPlatform
     from arc.middleware.cost import CostTracker
     from arc.middleware.logging import setup_logging, EventLogger
+    from arc.memory.manager import MemoryManager
 
     config_path = get_config_path()
     identity_path = get_identity_path()
@@ -172,6 +173,16 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
 
     system_prompt = identity["system_prompt"] + env_info + research_strategy + soft_skill_text
 
+    # Setup long-term memory
+    mem_db_path = get_arc_home() / "memory" / "memory.db"
+    memory_manager = MemoryManager(db_path=str(mem_db_path))
+    try:
+        await memory_manager.initialize()
+        logger.info("Long-term memory initialized")
+    except Exception as e:
+        logger.warning(f"Long-term memory init failed (running without it): {e}")
+        memory_manager = None  # type: ignore[assignment]
+
     # Create agent
     agent = AgentLoop(
         kernel=kernel,
@@ -183,6 +194,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
             max_iterations=config.agent.max_iterations,
             temperature=config.agent.temperature,
         ),
+        memory_manager=memory_manager,
     )
 
     # Create CLI platform
@@ -194,6 +206,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
 
     cli.set_approval_flow(agent.security.approval_flow)
     cli.set_skill_manager(skill_manager)
+    if memory_manager is not None:
+        cli.set_memory_manager(memory_manager)
 
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
@@ -229,6 +243,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         await skill_manager.shutdown_all()
         await kernel.stop()
         await llm.close()
+        if memory_manager is not None:
+            await memory_manager.close()
 
 
 @app.command()

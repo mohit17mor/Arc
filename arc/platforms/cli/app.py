@@ -52,6 +52,7 @@ class CLIPlatform(Platform):
         self._approval_flow: Any = None  # Set via set_approval_flow()
         self._pending_approval: asyncio.Event = asyncio.Event()
         self._skill_manager: Any = None  # Set via set_skill_manager()
+        self._memory_manager: Any = None  # Set via set_memory_manager()
         
         # Track state for display
         self._printed_thinking = False
@@ -78,6 +79,10 @@ class CLIPlatform(Platform):
     def set_skill_manager(self, skill_manager: Any) -> None:
         """Set reference to skill manager for /skills command."""
         self._skill_manager = skill_manager
+
+    def set_memory_manager(self, memory_manager: Any) -> None:
+        """Set reference to memory manager for /memory command."""
+        self._memory_manager = memory_manager
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -275,6 +280,9 @@ class CLIPlatform(Platform):
                     "[bold]Commands[/bold]\n\n"
                     "  [cyan]/help[/cyan]     \u2014 Show this help\n"
                     "  [cyan]/skills[/cyan]   \u2014 List available skills and tools\n"
+                    "  [cyan]/memory[/cyan]   \u2014 Show long-term memory (core facts)\n"
+                    "  [cyan]/memory episodic[/cyan] \u2014 Show recent episodic memories\n"
+                    "  [cyan]/memory forget <id>[/cyan] \u2014 Delete a core memory by id\n"
                     "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
                     "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
                     "  [cyan]/clear[/cyan]    \u2014 Clear conversation history\n"
@@ -329,12 +337,73 @@ class CLIPlatform(Platform):
         
         elif cmd == "/clear":
             self._console.print("[dim]Conversation cleared[/dim]")
+
+        elif cmd.startswith("/memory"):
+            await self._handle_memory_command(command.strip())
         
         else:
             self._console.print(f"[dim]Unknown command: {command}[/dim]")
         
         return True
     
+    async def _handle_memory_command(self, command: str) -> None:
+        """Handle /memory subcommands."""
+        mm = self._memory_manager
+        if mm is None:
+            self._console.print("[dim]Long-term memory is not available[/dim]")
+            return
+
+        parts = command.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if sub == "episodic":
+            try:
+                items = await mm.list_episodic(limit=10)
+                if not items:
+                    self._console.print("[dim]No episodic memories yet[/dim]")
+                    return
+                lines = ["[bold]Recent Episodic Memories[/bold]\n"]
+                for item in items:
+                    import datetime
+                    ts = datetime.datetime.fromtimestamp(item.created_at).strftime("%Y-%m-%d %H:%M")
+                    content = item.content[:120]
+                    lines.append(
+                        f"  [dim]id={item.id}  importance={item.importance:.2f}  {ts}[/dim]\n"
+                        f"  {content}\n"
+                    )
+                self._console.print(Panel("\n".join(lines).rstrip(), border_style="magenta"))
+            except Exception as e:
+                self._console.print(f"[red]Memory error: {e}[/red]")
+
+        elif sub == "forget":
+            if len(parts) < 3:
+                self._console.print("[dim]Usage: /memory forget <id>[/dim]")
+                return
+            fact_id = parts[2].strip()
+            try:
+                await mm.delete_core(fact_id)
+                self._console.print(f"[green]✓[/green] Deleted core memory: [bold]{fact_id}[/bold]")
+            except Exception as e:
+                self._console.print(f"[red]Memory error: {e}[/red]")
+
+        else:
+            # Default: show core facts
+            try:
+                core_facts = await mm.get_all_core()
+                if not core_facts:
+                    self._console.print("[dim]No core memories yet[/dim]")
+                    return
+                lines = ["[bold]Core Memories[/bold]\n"]
+                for fact in core_facts:
+                    conf = getattr(fact, "confidence", 1.0)
+                    lines.append(
+                        f"  [cyan]{fact.id}[/cyan] [dim](conf={conf:.2f})[/dim]\n"
+                        f"  {fact.content}\n"
+                    )
+                self._console.print(Panel("\n".join(lines).rstrip(), border_style="magenta"))
+            except Exception as e:
+                self._console.print(f"[red]Memory error: {e}[/red]")
+
     async def _process_message(
         self,
         user_input: str,
