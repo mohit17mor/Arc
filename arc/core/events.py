@@ -68,6 +68,12 @@ class EventType:
     USER_APPROVAL = "user:approval"
     USER_CORRECTION = "user:correction"
 
+    # Multi-agent coordination
+    AGENT_SPAWNED = "agent:spawned"           # new worker/expert created
+    AGENT_TERMINATED = "agent:terminated"     # worker/expert finished or cancelled
+    AGENT_TASK_COMPLETE = "agent:task_complete"  # worker finished, result ready
+    AGENT_ESCALATION = "agent:escalation"     # worker/expert needs user input via main
+
     # Wildcard
     ALL = "*"
 

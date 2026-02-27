@@ -54,6 +54,7 @@ class CLIPlatform(Platform):
         self._memory_manager: Any = None  # Set via set_memory_manager()
         self._scheduler_store: Any = None  # Set via set_scheduler_store()
         self._pending_queue: asyncio.Queue | None = None  # Set via set_pending_queue()
+        self._escalation_bus: Any = None  # Set via set_escalation_bus()
         self._turn_in_progress: bool = False  # True while agent is generating
 
         # Track state for display
@@ -77,6 +78,10 @@ class CLIPlatform(Platform):
     def set_approval_flow(self, flow: Any) -> None:
         """Set reference to approval flow for security prompts."""
         self._approval_flow = flow
+
+    def set_escalation_bus(self, bus: Any) -> None:
+        """Set reference to EscalationBus for worker/expert questions."""
+        self._escalation_bus = bus
 
     def set_skill_manager(self, skill_manager: Any) -> None:
         """Set reference to skill manager for /skills command."""
@@ -117,7 +122,7 @@ class CLIPlatform(Platform):
                 else:
                     args_parts.append(f"{k}={v}")
             args_str = ", ".join(args_parts)
-            
+
             self._console.print(f"[yellow]⟳[/yellow] [bold]{tool_name}[/bold]({args_str})")
             self._tool_call_count += 1
         
@@ -138,6 +143,20 @@ class CLIPlatform(Platform):
         elif event.type == EventType.SECURITY_APPROVAL:
             # Handle approval request asynchronously
             asyncio.create_task(self._handle_approval_request(event))
+
+        elif event.type == EventType.AGENT_ESCALATION:
+            # A worker/expert needs user input — handle asynchronously
+            asyncio.create_task(self._handle_escalation(event))
+
+        elif event.type == EventType.AGENT_SPAWNED:
+            task_name = event.data.get("task_name", event.data.get("task_id", "worker"))
+            self._console.print(f"[dim]⟳ Worker '[bold]{task_name}[/bold]' started[/dim]")
+
+        elif event.type == EventType.AGENT_TASK_COMPLETE:
+            task_name = event.data.get("task_name", event.data.get("task_id", "worker"))
+            success = event.data.get("success", True)
+            icon = "[green]✓[/green]" if success else "[red]✗[/red]"
+            self._console.print(f"{icon} [dim]Worker '[bold]{task_name}[/bold]' done[/dim]")
     
     async def _handle_approval_request(self, event: Event) -> None:
         """Show approval prompt and resolve the request."""
@@ -210,7 +229,41 @@ class CLIPlatform(Platform):
         # Resolve the approval request
         if self._approval_flow:
             self._approval_flow.resolve_approval(request_id, decision)
-    
+
+    async def _handle_escalation(self, event: Event) -> None:
+        """
+        Show a worker/expert's question to the user and return their answer.
+
+        The background agent is blocked waiting on an asyncio.Future until
+        resolve_escalation() is called here.
+        """
+        escalation_id = event.data.get("escalation_id", "")
+        from_agent = event.data.get("from_agent", "unknown")
+        question = event.data.get("question", "")
+
+        self._console.print()
+        self._console.print(
+            Panel(
+                f"[bold cyan]❓ Agent '{from_agent}' needs your input[/bold cyan]\n\n"
+                f"{question}",
+                border_style="cyan",
+                title="Agent Question",
+            )
+        )
+        self._console.print("[dim]Type your answer and press Enter:[/dim] ", end="")
+
+        try:
+            loop = asyncio.get_event_loop()
+            answer = await loop.run_in_executor(None, input)
+            answer = answer.strip() or "(no answer)"
+        except (KeyboardInterrupt, EOFError):
+            answer = "(interrupted)"
+
+        self._console.print()
+
+        if self._escalation_bus:
+            self._escalation_bus.resolve_escalation(escalation_id, answer)
+
     def _reset_state(self) -> None:
         """Reset display state for new message."""
         self._printed_thinking = False
@@ -258,14 +311,15 @@ class CLIPlatform(Platform):
         parts.append(f"\n---\nUser message: {user_input}")
         return "\n".join(parts)
     
-    async def _watcher_loop(self) -> None:
+    async def _watcher_loop(self, handler: MessageHandler) -> None:
         """
-        Background task: deliver queued job results immediately when the
-        user is idle (no turn in progress).  If a turn IS in progress,
-        leave items in the queue so _inject_pending_results picks them up
-        and the main agent can weave them into its reply.
+        Background task: when a worker/scheduled-job result arrives and the
+        main agent is idle, route the result THROUGH the main agent so it
+        can present the findings naturally — not as a raw notification panel.
+
+        If a turn is in progress the result stays in the queue and is injected
+        at the start of that turn via _inject_pending_results.
         """
-        import datetime
         from arc.notifications.base import Notification
 
         while self._running:
@@ -277,31 +331,33 @@ class CLIPlatform(Platform):
             ):
                 continue
 
-            # Drain and display while still idle
+            # Process each pending result through the main agent while idle.
             while not self._pending_queue.empty() and not self._turn_in_progress:
                 try:
                     notif: Notification = self._pending_queue.get_nowait()
                 except Exception:
                     break
-                ts = datetime.datetime.fromtimestamp(notif.fired_at).strftime("%H:%M")
-                self._console.print()
-                self._console.print(
-                    Panel(
-                        f"[bold cyan]⏰ {notif.job_name}[/bold cyan]  "
-                        f"[dim]{ts}[/dim]\n\n"
-                        f"{notif.content}",
-                        border_style="cyan",
-                        subtitle="[dim]background task[/dim]",
-                    )
+
+                # Build a synthetic stimulus — the main agent reads this and
+                # replies to the user naturally, no raw panel needed.
+                injected = (
+                    f"[SYSTEM: Background worker '{notif.job_name}' has just completed. "
+                    f"Present the result below to the user clearly and concisely. "
+                    f"Do not mention this system note.]"
+                    f"\n\n{notif.content}"
                 )
-                self._console.print()
+                self._turn_in_progress = True
+                try:
+                    await self._process_message(injected, handler)
+                finally:
+                    self._turn_in_progress = False
 
     async def run(self, handler: MessageHandler) -> None:
         """Run the interactive CLI loop."""
         self._running = True
 
         # Start the idle-notification watcher
-        watcher_task = asyncio.create_task(self._watcher_loop(), name="notification-watcher")
+        watcher_task = asyncio.create_task(self._watcher_loop(handler), name="notification-watcher")
 
         # Welcome message
         self._console.print()

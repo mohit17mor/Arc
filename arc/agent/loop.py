@@ -85,6 +85,7 @@ class AgentLoop:
         system_prompt: str,
         config: AgentConfig | None = None,
         memory_manager: MemoryManager | None = None,
+        agent_id: str = "main",
     ) -> None:
         self._kernel = kernel
         self._llm = llm
@@ -92,6 +93,7 @@ class AgentLoop:
         self._security = security
         self._config = config or AgentConfig()
         self._memory_manager = memory_manager
+        self._agent_id = agent_id
         
         # Memory
         self._memory = SessionMemory()
@@ -342,8 +344,8 @@ class AgentLoop:
         return result
     
     async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
-        """Emit an event."""
-        event = Event(type=event_type, source="agent", data=data)
+        """Emit an event tagged with this agent's id."""
+        event = Event(type=event_type, source=self._agent_id, data=data)
         await self._kernel.emit(event)
     
     @property

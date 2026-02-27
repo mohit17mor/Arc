@@ -94,6 +94,10 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.scheduler.store import SchedulerStore
     from arc.scheduler.engine import SchedulerEngine
     from arc.skills.builtin.scheduler import SchedulerSkill
+    from arc.skills.builtin.worker import WorkerSkill
+    from arc.agent.registry import AgentRegistry
+    from arc.core.escalation import EscalationBus
+    from arc.agent.worker_log import WorkerActivityLog
 
     config_path = get_config_path()
     identity_path = get_identity_path()
@@ -248,7 +252,12 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         user_name=identity["user_name"],
     )
 
+    # Multi-agent infrastructure
+    agent_registry = AgentRegistry()
+    escalation_bus = EscalationBus(kernel)
+
     cli.set_approval_flow(agent.security.approval_flow)
+    cli.set_escalation_bus(escalation_bus)
     cli.set_skill_manager(skill_manager)
     if memory_manager is not None:
         cli.set_memory_manager(memory_manager)
@@ -268,6 +277,10 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     notification_router.register(cli_channel)
     notification_router.register(FileChannel(get_arc_home() / "notifications.log"))
 
+    # Always wire the pending queue — workers AND scheduler both deliver here.
+    # Must happen before scheduler setup so the reference is consistent.
+    cli.set_pending_queue(pending_queue)
+
     # Setup scheduler engine
     scheduler_engine: SchedulerEngine | None = None
     if config.scheduler.enabled:
@@ -278,16 +291,58 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
             router=notification_router,
         )
         cli.set_scheduler_store(sched_store)
-        cli.set_pending_queue(pending_queue)
+
+    # Inject WorkerSkill dependencies — must happen after notification_router is built
+    worker_skill = skill_manager.get_skill("worker")
+    if worker_skill and isinstance(worker_skill, WorkerSkill):
+        worker_skill.set_dependencies(
+            llm=llm,
+            skill_manager=skill_manager,
+            escalation_bus=escalation_bus,
+            notification_router=notification_router,
+            agent_registry=agent_registry,
+        )
+        logger.info("WorkerSkill dependencies injected")
+
+    # Worker activity logger — writes to ~/.arc/worker_activity.log
+    # Subscribe BEFORE forward_to_cli so worker events are logged even though
+    # they are filtered out from the main chat window.
+    worker_log = WorkerActivityLog(get_arc_home() / "worker_activity.log")
+    worker_log.open()
+
+    # Worker-internal event types that must NOT bleed into the main chat.
+    # Workers tag every event with source="worker:<name>" (set in AgentLoop).
+    # We only let the coordination events (spawned / complete / escalation) through.
+    _WORKER_INTERNAL: frozenset[str] = frozenset({
+        EventType.AGENT_THINKING,
+        EventType.SKILL_TOOL_CALL,
+        EventType.SKILL_TOOL_RESULT,
+        EventType.LLM_REQUEST,
+        EventType.LLM_CHUNK,
+        EventType.LLM_RESPONSE,
+    })
 
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
+        if event.source.startswith("worker:") and event.type in _WORKER_INTERNAL:
+            return  # suppress — worker internals never reach the main chat window
         cli.on_event(event)
 
     kernel.on(EventType.AGENT_THINKING, forward_to_cli)
     kernel.on(EventType.SKILL_TOOL_CALL, forward_to_cli)
     kernel.on(EventType.SKILL_TOOL_RESULT, forward_to_cli)
     kernel.on(EventType.SECURITY_APPROVAL, forward_to_cli)
+    kernel.on(EventType.AGENT_ESCALATION, forward_to_cli)
+    kernel.on(EventType.AGENT_SPAWNED, forward_to_cli)
+    kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_cli)
+
+    # Worker activity log — captures everything workers do silently
+    kernel.on(EventType.AGENT_SPAWNED,      worker_log.handle)
+    kernel.on(EventType.AGENT_THINKING,     worker_log.handle)
+    kernel.on(EventType.SKILL_TOOL_CALL,    worker_log.handle)
+    kernel.on(EventType.SKILL_TOOL_RESULT,  worker_log.handle)
+    kernel.on(EventType.AGENT_TASK_COMPLETE, worker_log.handle)
+    kernel.on(EventType.AGENT_ERROR,        worker_log.handle)
 
     # Message handler
     async def handle_message(user_input: str):
@@ -315,6 +370,9 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     finally:
         logger.info("Shutting down")
         cli_channel.set_active(False)
+        worker_log.close()
+        # Cancel all background agents before anything else closes
+        await agent_registry.shutdown_all()
         if scheduler_engine:
             await scheduler_engine.stop()
         if config.scheduler.enabled:
@@ -324,6 +382,108 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         await llm.close()
         if memory_manager is not None:
             await memory_manager.close()
+
+
+@app.command()
+def workers(
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep watching for new activity"),
+    lines: int = typer.Option(40, "--lines", "-n", help="Number of recent lines to show"),
+) -> None:
+    """Watch background worker activity in real time.
+
+    Run this in a second terminal alongside 'arc chat' to see what
+    workers are doing without cluttering the main chat window.
+
+        arc workers          # show last 40 lines then exit
+        arc workers --follow # live-tail, updates as workers run
+    """
+    import time as _time
+    from rich.live import Live
+    from rich.text import Text
+    from rich.panel import Panel
+
+    log_path = get_arc_home() / "worker_activity.log"
+    if not log_path.exists():
+        console.print(
+            "[dim]No worker activity log yet.  "
+            "Start a chat session and delegate a task first.[/dim]"
+        )
+        raise typer.Exit(0)
+
+    def _colourise(line: str) -> Text:
+        """Apply Rich colours to a log line."""
+        t = Text()
+        # separator lines
+        if line.startswith("\u2500") or line.startswith(" ") and "\u2014" in line:
+            t.append(line, style="dim")
+            return t
+        parts = line.split(" | ", 3)
+        if len(parts) < 3:
+            t.append(line, style="dim")
+            return t
+        ts, worker, event = parts[0], parts[1], parts[2]
+        detail = parts[3].rstrip() if len(parts) == 4 else ""
+        event = event.strip()
+        t.append(ts, style="dim")
+        t.append(" | ", style="dim")
+        t.append(f"{worker}", style="cyan")
+        t.append(" | ", style="dim")
+        if "SPAWNED" in event:
+            t.append(f"{event:<10}", style="bold green")
+        elif "COMPLETE" in event:
+            t.append(f"{event:<10}", style="bold green" if "\u2713" in detail else "bold red")
+        elif "TOOL CALL" in event:
+            t.append(f"{event:<10}", style="yellow")
+        elif "TOOL DONE" in event:
+            icon_style = "green" if detail.startswith("\u2713") else "red"
+            t.append(f"{event:<10}", style=icon_style)
+        elif "ERROR" in event:
+            t.append(f"{event:<10}", style="bold red")
+        elif "THINKING" in event:
+            t.append(f"{event:<10}", style="dim")
+        else:
+            t.append(f"{event:<10}", style="dim")
+        if detail:
+            t.append(" | ", style="dim")
+            t.append(detail, style="dim" if "THINKING" in event else "")
+        return t
+
+    def _read_tail(n: int) -> list[str]:
+        try:
+            all_lines = log_path.read_text(encoding="utf-8").splitlines()
+            return all_lines[-n:]
+        except Exception:
+            return []
+
+    def _build_panel(tail_lines: list[str]) -> Panel:
+        text = Text()
+        for i, line in enumerate(tail_lines):
+            if i:
+                text.append("\n")
+            text.append_text(_colourise(line))
+        return Panel(
+            text,
+            title="[bold cyan]Worker Activity[/bold cyan]",
+            subtitle="[dim]arc workers --follow  to live-tail[/dim]" if not follow else "[dim]Ctrl-C to exit[/dim]",
+            border_style="cyan",
+        )
+
+    if not follow:
+        console.print(_build_panel(_read_tail(lines)))
+        raise typer.Exit(0)
+
+    # --follow: live-tail with Rich Live, refresh every second
+    last_size = 0
+    try:
+        with Live(_build_panel(_read_tail(lines)), console=console, refresh_per_second=2) as live:
+            while True:
+                current_size = log_path.stat().st_size
+                if current_size != last_size:
+                    last_size = current_size
+                    live.update(_build_panel(_read_tail(lines)))
+                _time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
 
 
 @app.command()
