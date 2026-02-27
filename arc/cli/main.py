@@ -87,6 +87,13 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.middleware.cost import CostTracker
     from arc.middleware.logging import setup_logging, EventLogger
     from arc.memory.manager import MemoryManager
+    from arc.notifications.router import NotificationRouter
+    from arc.notifications.channels.cli import CLIChannel
+    from arc.notifications.channels.file import FileChannel
+    from arc.notifications.channels.telegram import TelegramChannel
+    from arc.scheduler.store import SchedulerStore
+    from arc.scheduler.engine import SchedulerEngine
+    from arc.skills.builtin.scheduler import SchedulerSkill
 
     config_path = get_config_path()
     identity_path = get_identity_path()
@@ -146,6 +153,15 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         await skill_manager.register(skill)
     logger.debug(f"Skills registered: {skill_manager.skill_names}")
 
+    # Inject scheduler store into SchedulerSkill (discovered automatically)
+    sched_store = SchedulerStore(db_path=Path(config.scheduler.db_path).expanduser())
+    if config.scheduler.enabled:
+        await sched_store.initialize()
+        sched_skill = skill_manager.get_skill("scheduler")
+        if sched_skill and isinstance(sched_skill, SchedulerSkill):
+            sched_skill.set_store(sched_store)
+        logger.info("Scheduler store initialised")
+
     # Setup security
     security = SecurityEngine(config.security, kernel)
 
@@ -197,6 +213,34 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         memory_manager=memory_manager,
     )
 
+    # Sub-agent factory for the scheduler.
+    # Each scheduled job gets an independent AgentLoop (clean session,
+    # no shared conversation history) but shares the same Kernel, LLM,
+    # SkillManager and SecurityEngine — so all registered tools are
+    # available to the job.  This is the extension point for multi-agent:
+    # different job types can use different factory functions.
+    sub_agent_system_prompt = (
+        "You are a proactive background assistant completing a scheduled task. "
+        "Use tools as needed to fulfil the task fully and accurately. "
+        "Return a concise, well-structured answer — do not ask follow-up questions."
+        + env_info
+    )
+
+    def make_sub_agent() -> AgentLoop:
+        return AgentLoop(
+            kernel=kernel,
+            llm=llm,
+            skill_manager=skill_manager,
+            security=SecurityEngine.make_permissive(kernel),
+            system_prompt=sub_agent_system_prompt,
+            config=AgentConfig(
+                max_iterations=config.agent.max_iterations,
+                temperature=0.5,
+                excluded_skills=frozenset({"scheduler"}),
+            ),
+            memory_manager=None,  # sub-agents have no long-term memory
+        )
+
     # Create CLI platform
     cli = CLIPlatform(
         console=console,
@@ -208,6 +252,33 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     cli.set_skill_manager(skill_manager)
     if memory_manager is not None:
         cli.set_memory_manager(memory_manager)
+
+    # Queue that bridges scheduler → CLI injection (no interleaving).
+    # CLIChannel puts completed job results here; CLIPlatform drains it
+    # before each user turn so the main agent sees them as context.
+    from arc.notifications.base import Notification as _Notification
+    pending_queue: asyncio.Queue[_Notification] = asyncio.Queue()
+
+    # Setup notification router
+    cli_channel = CLIChannel(pending_queue)
+    notification_router = NotificationRouter()
+    if config.telegram.configured:
+        notification_router.register(TelegramChannel(config.telegram.token, config.telegram.chat_id))
+        logger.info("Telegram notification channel registered")
+    notification_router.register(cli_channel)
+    notification_router.register(FileChannel(get_arc_home() / "notifications.log"))
+
+    # Setup scheduler engine
+    scheduler_engine: SchedulerEngine | None = None
+    if config.scheduler.enabled:
+        scheduler_engine = SchedulerEngine(
+            store=sched_store,
+            llm=llm,
+            agent_factory=make_sub_agent,
+            router=notification_router,
+        )
+        cli.set_scheduler_store(sched_store)
+        cli.set_pending_queue(pending_queue)
 
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
@@ -234,12 +305,20 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     # Run
     try:
         await kernel.start()
+        if scheduler_engine:
+            await scheduler_engine.start()
+        cli_channel.set_active(True)
         await cli.run(handle_message)
     except Exception as e:
         logger.exception(f"Error in chat session: {e}")
         raise
     finally:
         logger.info("Shutting down")
+        cli_channel.set_active(False)
+        if scheduler_engine:
+            await scheduler_engine.stop()
+        if config.scheduler.enabled:
+            await sched_store.close()
         await skill_manager.shutdown_all()
         await kernel.stop()
         await llm.close()

@@ -15,7 +15,6 @@ from typing import AsyncIterator, Callable, Any
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from pathlib import Path
@@ -53,7 +52,10 @@ class CLIPlatform(Platform):
         self._pending_approval: asyncio.Event = asyncio.Event()
         self._skill_manager: Any = None  # Set via set_skill_manager()
         self._memory_manager: Any = None  # Set via set_memory_manager()
-        
+        self._scheduler_store: Any = None  # Set via set_scheduler_store()
+        self._pending_queue: asyncio.Queue | None = None  # Set via set_pending_queue()
+        self._turn_in_progress: bool = False  # True while agent is generating
+
         # Track state for display
         self._printed_thinking = False
         self._tool_call_count = 0
@@ -83,6 +85,14 @@ class CLIPlatform(Platform):
     def set_memory_manager(self, memory_manager: Any) -> None:
         """Set reference to memory manager for /memory command."""
         self._memory_manager = memory_manager
+
+    def set_scheduler_store(self, scheduler_store: Any) -> None:
+        """Set reference to scheduler store for /jobs command."""
+        self._scheduler_store = scheduler_store
+
+    def set_pending_queue(self, queue: asyncio.Queue) -> None:
+        """Set the queue that receives completed background-job results."""
+        self._pending_queue = queue
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -164,17 +174,18 @@ class CLIPlatform(Platform):
             )
         )
         
-        # Get user response
+        # Get user response.
+        # NOTE: We use plain input() in a thread executor rather than
+        # Rich's Prompt.ask() because on Windows, Rich tries to create
+        # its own console reader which deadlocks against prompt_toolkit's
+        # terminal ownership.
+        self._console.print("[bold]Allow? ([green]y[/green]=once  [green]a[/green]=always  [red]n[/red]=deny  [red]d[/red]=deny always)[/bold] ", end="")
         try:
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: Prompt.ask(
-                    "[bold]Allow?[/bold]",
-                    choices=["y", "a", "n", "d"],
-                    default="n",
-                ),
-            )
+            raw = await loop.run_in_executor(None, input)
+            response = raw.strip().lower() or "n"
+            if response not in ("y", "a", "n", "d"):
+                response = "n"
         except (KeyboardInterrupt, EOFError):
             response = "n"
         
@@ -204,11 +215,94 @@ class CLIPlatform(Platform):
         """Reset display state for new message."""
         self._printed_thinking = False
         self._tool_call_count = 0
+
+    def _inject_pending_results(self, user_input: str) -> str:
+        """
+        Drain the pending-job queue and, if any results are waiting,
+        prepend them to the user's message so the main agent sees them
+        as context and can weave them into its response naturally.
+
+        A brief terminal notice is shown so the user knows something
+        is being injected before they see the agent's reply.
+        """
+        if self._pending_queue is None or self._pending_queue.empty():
+            return user_input
+
+        from arc.notifications.base import Notification
+        results: list[Notification] = []
+        while not self._pending_queue.empty():
+            try:
+                results.append(self._pending_queue.get_nowait())
+            except Exception:
+                break
+
+        if not results:
+            return user_input
+
+        self._console.print(
+            f"[dim]⏰ {len(results)} background task(s) completed — "
+            f"injecting into context...[/dim]"
+        )
+
+        parts = [
+            "The following background task(s) completed since your last message. "
+            "Briefly mention the key findings before responding to the user.\n"
+        ]
+        for r in results:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(r.fired_at).strftime("%H:%M")
+            parts.append(
+                f"[Background task: \"{r.job_name}\" completed at {ts}]\n"
+                f"{r.content}\n"
+            )
+        parts.append(f"\n---\nUser message: {user_input}")
+        return "\n".join(parts)
     
+    async def _watcher_loop(self) -> None:
+        """
+        Background task: deliver queued job results immediately when the
+        user is idle (no turn in progress).  If a turn IS in progress,
+        leave items in the queue so _inject_pending_results picks them up
+        and the main agent can weave them into its reply.
+        """
+        import datetime
+        from arc.notifications.base import Notification
+
+        while self._running:
+            await asyncio.sleep(1.0)
+            if (
+                self._turn_in_progress
+                or self._pending_queue is None
+                or self._pending_queue.empty()
+            ):
+                continue
+
+            # Drain and display while still idle
+            while not self._pending_queue.empty() and not self._turn_in_progress:
+                try:
+                    notif: Notification = self._pending_queue.get_nowait()
+                except Exception:
+                    break
+                ts = datetime.datetime.fromtimestamp(notif.fired_at).strftime("%H:%M")
+                self._console.print()
+                self._console.print(
+                    Panel(
+                        f"[bold cyan]⏰ {notif.job_name}[/bold cyan]  "
+                        f"[dim]{ts}[/dim]\n\n"
+                        f"{notif.content}",
+                        border_style="cyan",
+                        subtitle="[dim]background task[/dim]",
+                    )
+                )
+                self._console.print()
+
     async def run(self, handler: MessageHandler) -> None:
         """Run the interactive CLI loop."""
         self._running = True
-        
+
+        # Start the idle-notification watcher
+        watcher_task = asyncio.create_task(self._watcher_loop(), name="notification-watcher")
+
         # Welcome message
         self._console.print()
         self._console.print(
@@ -221,34 +315,49 @@ class CLIPlatform(Platform):
         )
         self._console.print()
         
-        while self._running:
+        try:
+            while self._running:
+                try:
+                    # Skip input if waiting for approval
+                    if self._waiting_for_approval:
+                        await asyncio.sleep(0.1)
+                        continue
+                    
+                    # Get user input
+                    user_input = await self._get_input()
+                    
+                    if user_input is None:
+                        continue
+                    
+                    # Handle special commands
+                    if user_input.startswith("/"):
+                        should_continue = await self._handle_command(user_input)
+                        if not should_continue:
+                            break
+                        continue
+
+                    # Inject anything that arrived while this turn was starting
+                    # (watcher pauses during a turn; this catches the race window)
+                    user_input = self._inject_pending_results(user_input)
+
+                    # Process with agent — hold watcher off during generation
+                    self._turn_in_progress = True
+                    try:
+                        await self._process_message(user_input, handler)
+                    finally:
+                        self._turn_in_progress = False
+                
+                except KeyboardInterrupt:
+                    self._console.print("\n[dim]Use /exit to quit[/dim]")
+                except EOFError:
+                    break
+        finally:
+            watcher_task.cancel()
             try:
-                # Skip input if waiting for approval
-                if self._waiting_for_approval:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Get user input
-                user_input = await self._get_input()
-                
-                if user_input is None:
-                    continue
-                
-                # Handle special commands
-                if user_input.startswith("/"):
-                    should_continue = await self._handle_command(user_input)
-                    if not should_continue:
-                        break
-                    continue
-                
-                # Process with agent
-                await self._process_message(user_input, handler)
-            
-            except KeyboardInterrupt:
-                self._console.print("\n[dim]Use /exit to quit[/dim]")
-            except EOFError:
-                break
-        
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
+
         self._console.print("\n[dim]Goodbye![/dim]")
     
     async def stop(self) -> None:
@@ -283,6 +392,8 @@ class CLIPlatform(Platform):
                     "  [cyan]/memory[/cyan]   \u2014 Show long-term memory (core facts)\n"
                     "  [cyan]/memory episodic[/cyan] \u2014 Show recent episodic memories\n"
                     "  [cyan]/memory forget <id>[/cyan] \u2014 Delete a core memory by id\n"
+                    "  [cyan]/jobs[/cyan]     \u2014 List scheduled jobs\n"
+                    "  [cyan]/jobs cancel <name>[/cyan] \u2014 Cancel a scheduled job\n"
                     "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
                     "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
                     "  [cyan]/clear[/cyan]    \u2014 Clear conversation history\n"
@@ -340,12 +451,72 @@ class CLIPlatform(Platform):
 
         elif cmd.startswith("/memory"):
             await self._handle_memory_command(command.strip())
-        
+
+        elif cmd.startswith("/jobs"):
+            await self._handle_jobs_command(command.strip())
+
         else:
             self._console.print(f"[dim]Unknown command: {command}[/dim]")
         
         return True
     
+    async def _handle_jobs_command(self, command: str) -> None:
+        """Handle /jobs subcommands."""
+        store = self._scheduler_store
+        if store is None:
+            self._console.print("[dim]Scheduler is not available[/dim]")
+            return
+
+        parts = command.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if sub == "cancel":
+            if len(parts) < 3:
+                self._console.print("[dim]Usage: /jobs cancel <name_or_id>[/dim]")
+                return
+            name_or_id = parts[2].strip()
+            try:
+                job = await store.get_by_name(name_or_id)
+                if job is None:
+                    all_jobs = await store.get_all()
+                    job = next((j for j in all_jobs if j.id == name_or_id), None)
+                if job is None:
+                    self._console.print(f"[dim]No job found: {name_or_id}[/dim]")
+                    return
+                await store.delete(job.id)
+                self._console.print(f"[green]✓[/green] Cancelled job: [bold]{job.name}[/bold]")
+            except Exception as e:
+                self._console.print(f"[red]Scheduler error: {e}[/red]")
+
+        else:
+            # Default: list all jobs
+            try:
+                import datetime
+                from arc.scheduler.triggers import make_trigger
+                jobs = await store.get_all()
+                if not jobs:
+                    self._console.print("[dim]No scheduled jobs[/dim]")
+                    return
+                lines = ["[bold]Scheduled Jobs[/bold]\n"]
+                for job in jobs:
+                    status_colour = "green" if job.active else "dim"
+                    status = "active" if job.active else "inactive"
+                    trigger = make_trigger(job.trigger)
+                    next_dt = (
+                        datetime.datetime.fromtimestamp(job.next_run).strftime("%Y-%m-%d %H:%M")
+                        if job.next_run > 0 else "—"
+                    )
+                    lines.append(
+                        f"  [bold cyan]{job.name}[/bold cyan] "
+                        f"[{status_colour}]({status})[/{status_colour}] "
+                        f"[dim]id={job.id}[/dim]\n"
+                        f"  trigger: {trigger.description}   next: {next_dt}\n"
+                        f"  [dim]{job.prompt[:80]}{'...' if len(job.prompt) > 80 else ''}[/dim]"
+                    )
+                self._console.print(Panel("\n\n".join(lines).rstrip(), border_style="cyan"))
+            except Exception as e:
+                self._console.print(f"[red]Scheduler error: {e}[/red]")
+
     async def _handle_memory_command(self, command: str) -> None:
         """Handle /memory subcommands."""
         mm = self._memory_manager

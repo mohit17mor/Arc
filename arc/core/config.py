@@ -100,6 +100,25 @@ class IdentityConfig(BaseModel):
     agent_name: str = "Arc"
 
 
+class TelegramConfig(BaseModel):
+    """Telegram bot notification configuration."""
+
+    token: str = ""
+    chat_id: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.token and self.chat_id)
+
+
+class SchedulerConfig(BaseModel):
+    """Scheduler configuration."""
+
+    enabled: bool = True
+    db_path: str = "~/.arc/scheduler.db"
+    poll_interval: int = 30  # seconds
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Main Config
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,6 +134,8 @@ class ArcConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     shell: ShellConfig = Field(default_factory=ShellConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @staticmethod
     def load(

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
@@ -45,6 +45,11 @@ class AgentConfig:
     max_iterations: int = 25
     temperature: float = 0.7
     recent_window: int = 20
+    excluded_skills: frozenset[str] = field(default_factory=frozenset)
+    """Skill names whose tools are hidden from the LLM for this agent instance.
+    Useful for sub-agents that should not be able to schedule jobs, manage
+    memory, or perform other meta-level operations.
+    """
 
 
 class AgentLoop:
@@ -137,8 +142,13 @@ class AgentLoop:
                 # 2. THINK — call LLM
                 self._state.status = AgentStatus.THINKING
                 
-                # Get available tools
-                tool_specs = self._skills.get_all_tool_specs()
+                # Get available tools, excluding any skills blocked for this agent
+                excluded = self._config.excluded_skills
+                all_specs = self._skills.get_all_tool_specs()
+                tool_specs = [
+                    ts for ts in all_specs
+                    if self._skills.get_tool_skill(ts.name) not in excluded
+                ] if excluded else all_specs
                 
                 collected_text = ""
                 collected_tool_calls: list[ToolCall] = []

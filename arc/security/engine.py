@@ -44,6 +44,24 @@ class SecurityEngine:
         self._approval_flow = ApprovalFlow(kernel)
         # Remember user decisions: (tool_name, capability_str) → decision
         self._remembered: dict[tuple[str, str], str] = {}
+
+    @classmethod
+    def make_permissive(cls, kernel: Any) -> "SecurityEngine":
+        """
+        Return a SecurityEngine that auto-approves every capability.
+
+        Use this for background sub-agents (scheduler jobs, etc.) that run
+        without a user present.  Sharing the main SecurityEngine with those
+        agents causes a stdin deadlock — the approval flow tries to read from
+        the terminal while the CLI is already blocking on user input.
+        """
+        all_caps = [c.value for c in Capability]
+        permissive_config = SecurityConfig(
+            auto_allow=all_caps,
+            always_ask=[],
+            never_allow=[],
+        )
+        return cls(permissive_config, kernel)
     
     @property
     def approval_flow(self) -> ApprovalFlow:

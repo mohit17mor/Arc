@@ -77,9 +77,9 @@ class ToolCall:
 class ToolResult:
     """Result from executing a tool."""
 
-    tool_call_id: str
     success: bool
     output: str
+    tool_call_id: str = ""  # injected by AgentLoop after skill returns
     error: str | None = None
     artifacts: list[str] = field(default_factory=list)
     duration_ms: int = 0
