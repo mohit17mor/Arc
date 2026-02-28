@@ -55,14 +55,21 @@ class SchedulerSkill(Skill):
                     name="schedule_job",
                     description=(
                         "Create a scheduled job. Arc will run the prompt automatically "
-                        "and notify the user with the result. "
+                        "and notify the user with the result.\n"
+                        "IMPORTANT: If the user says 'once', 'one time', 'just this once', "
+                        "or specifies a single future moment — always use trigger_type='oneshot' "
+                        "with fire_after_seconds (seconds from now, e.g. 3600 = 1 hour). "
+                        "Only use 'cron' or 'interval' when the user explicitly wants a "
+                        "recurring job.\n"
+                        "Use trigger_type='oneshot' with fire_after_seconds for a single "
+                        "future alert (e.g. fire_after_seconds=3600 for 'in 1 hour', "
+                        "fire_after_seconds=86400 for 'tomorrow'). "
                         "Use trigger_type='cron' with a cron_expression for recurring schedules "
                         "(e.g. '0 9 * * 1-5' = weekdays at 9am). "
                         "Use trigger_type='interval' with interval_seconds for a repeat interval. "
-                        "Use trigger_type='oneshot' with fire_at (unix timestamp) for a single future alert. "
-                        "Set use_tools=true only when the task genuinely needs live data or file access "
-                        "(e.g. fetching news, reading a file). Leave false for reminders, tips, or "
-                        "anything the LLM can answer from its own knowledge."
+                        "Set use_tools=true only when the task genuinely needs live data or file "
+                        "access (e.g. fetching news, reading a file). Leave false for reminders, "
+                        "tips, or anything the LLM can answer from its own knowledge."
                     ),
                     parameters={
                         "type": "object",
@@ -77,8 +84,20 @@ class SchedulerSkill(Skill):
                             },
                             "trigger_type": {
                                 "type": "string",
-                                "enum": ["cron", "interval", "oneshot"],
-                                "description": "Type of trigger",
+                                "enum": ["oneshot", "cron", "interval"],
+                                "description": "Type of trigger — prefer 'oneshot' for any one-time event",
+                            },
+                            "fire_after_seconds": {
+                                "type": "integer",
+                                "description": (
+                                    "Seconds from NOW to fire once (for trigger_type='oneshot'). "
+                                    "Preferred over fire_at. Examples: 3600=1 hour, 7200=2 hours, "
+                                    "86400=24 hours/tomorrow, 300=5 minutes."
+                                ),
+                            },
+                            "fire_at": {
+                                "type": "integer",
+                                "description": "Unix timestamp to fire once (alternative to fire_after_seconds, for trigger_type='oneshot')",
                             },
                             "cron_expression": {
                                 "type": "string",
@@ -87,10 +106,6 @@ class SchedulerSkill(Skill):
                             "interval_seconds": {
                                 "type": "integer",
                                 "description": "Seconds between runs (required for trigger_type='interval')",
-                            },
-                            "fire_at": {
-                                "type": "integer",
-                                "description": "Unix timestamp to fire once (required for trigger_type='oneshot')",
                             },
                             "use_tools": {
                                 "type": "boolean",
@@ -147,10 +162,15 @@ class SchedulerSkill(Skill):
         cron_expression: str = "",
         interval_seconds: int = 0,
         fire_at: int = 0,
+        fire_after_seconds: int = 0,
         use_tools: bool = False,
     ) -> ToolResult:
         if not self._store:
             return ToolResult(success=False, output="", error="Scheduler not initialised")
+
+        # fire_after_seconds is a convenience alias for oneshot: now + N seconds
+        if trigger_type == "oneshot" and fire_after_seconds > 0 and fire_at <= 0:
+            fire_at = int(time.time()) + fire_after_seconds
 
         # Build trigger dict
         if trigger_type == "cron":

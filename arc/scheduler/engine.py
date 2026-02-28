@@ -32,6 +32,8 @@ from arc.notifications.router import NotificationRouter
 if TYPE_CHECKING:
     from arc.agent.loop import AgentLoop
     from arc.llm.base import LLMProvider
+    from arc.core.kernel import Kernel
+    from arc.agent.registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +60,17 @@ class SchedulerEngine:
         self,
         store: SchedulerStore,
         llm: "LLMProvider",
-        agent_factory: "Callable[[], AgentLoop]",
+        agent_factory: "Callable[[str], AgentLoop]",
         router: NotificationRouter,
+        kernel: "Kernel | None" = None,
+        agent_registry: "AgentRegistry | None" = None,
     ) -> None:
         self._store = store
         self._llm = llm
         self._agent_factory = agent_factory
         self._router = router
+        self._kernel = kernel
+        self._agent_registry = agent_registry
         self._task: asyncio.Task | None = None
         self._running = False
         self._in_flight: set[str] = set()  # job IDs currently executing
@@ -106,30 +112,73 @@ class SchedulerEngine:
                 logger.debug(f"Job {job.name!r} still executing, skipping tick")
                 continue
             self._in_flight.add(job.id)
-            asyncio.create_task(self._fire_job(job))
+            task = asyncio.create_task(self._fire_job(job))
+            # Register ALL jobs so list_workers and arc workers --follow can see them
+            if self._agent_registry is not None:
+                self._agent_registry.register_worker(f"scheduler:{job.name}", task)
 
     async def _fire_job(self, job: Job) -> None:
         """
         Execute a job in the appropriate mode:
           - use_tools=False: plain LLM call, no tools (safe default)
-          - use_tools=True:  full sub-agent with tool access
+          - use_tools=True:  full sub-agent on a VirtualPlatform
+            (same execution path as WorkerSkill so behaviour is identical)
         """
         logger.info(f"Firing scheduled job: {job.name!r} (id={job.id}, use_tools={job.use_tools})")
         now = int(time.time())
+        # Use a distinct source per job so the worker log shows the job name
+        source = f"scheduler:{job.name}"
+        error: str | None = None
         try:
+            if self._kernel:
+                from arc.core.events import Event, EventType
+                await self._kernel.emit(Event(
+                    type=EventType.AGENT_SPAWNED,
+                    source=source,
+                    data={"task_id": job.id, "task_name": job.name, "use_tools": job.use_tools},
+                ))
             if job.use_tools:
-                agent = self._agent_factory()
-                content_parts: list[str] = []
-                async for chunk in agent.run(job.prompt):
-                    content_parts.append(chunk)
-                content = "".join(content_parts).strip()
+                from arc.agent.runner import run_agent_on_virtual_platform
+                from arc.core.events import Event, EventType
+                agent = self._agent_factory(source)  # agent_id = "scheduler:<job.name>"
+                content, error = await run_agent_on_virtual_platform(
+                    agent=agent,
+                    prompt=job.prompt,
+                    name=source,
+                    timeout_seconds=300.0,  # 5 min — enough for web search + reads
+                )
+                if error:
+                    logger.warning(f"Job {job.name!r} failed: {error}")
+                    content = f"(job failed: {error})"
             else:
                 content = await self._run_prompt(job.prompt)
         except Exception as e:
-            logger.warning(f"Job {job.name!r} failed: {e}")
+            logger.warning(f"Job {job.name!r} unexpected error: {e}")
             content = f"(job failed: {e})"
-        finally:
-            self._in_flight.discard(job.id)
+            error = str(e)
+
+        # Emit completion event
+        if self._kernel:
+            from arc.core.events import Event, EventType
+            await self._kernel.emit(Event(
+                type=EventType.AGENT_TASK_COMPLETE,
+                source=source,
+                data={"task_id": job.id, "task_name": job.name, "success": error is None},
+            ))
+
+        # Update store BEFORE releasing _in_flight guard — prevents the scheduler
+        # from picking up the job again in the tick window between discard and update.
+        trigger = make_trigger(job.trigger)
+        next_run = trigger.next_fire_time(last_run=now, now=now)
+        if next_run == 0:
+            await self._store.delete(job.id)
+            logger.debug(f"Oneshot job {job.name!r} deleted after firing")
+        else:
+            await self._store.update_after_run(job.id, next_run=next_run, last_run=now)
+            logger.debug(f"Job {job.name!r} next_run set to {next_run}")
+
+        # Release guard only after store is updated
+        self._in_flight.discard(job.id)
 
         notification = Notification(
             job_id=job.id,
@@ -138,11 +187,6 @@ class SchedulerEngine:
             fired_at=now,
         )
         await self._router.route(notification)
-
-        trigger = make_trigger(job.trigger)
-        next_run = trigger.next_fire_time(last_run=now, now=now)
-        await self._store.update_after_run(job.id, next_run=next_run, last_run=now)
-        logger.debug(f"Job {job.name!r} next_run set to {next_run}")
 
     async def _run_prompt(self, prompt: str) -> str:
         """

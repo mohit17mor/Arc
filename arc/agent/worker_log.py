@@ -39,8 +39,20 @@ def _truncate(s: str, n: int) -> str:
 
 
 def _worker_label(source: str) -> str:
-    """'worker:research_ai_news' → 'research_ai_n'  (fits _W_WORKER)"""
-    label = source[7:] if source.startswith("worker:") else source
+    """
+    Convert an event source to a short display label (fits _W_WORKER chars).
+    'worker:research_ai_news'   → 'research_ai_n'
+    'scheduler:morning_news'    → 'morning_news '
+    'scheduler'                 → '[scheduler]  '
+    """
+    if source.startswith("worker:"):
+        label = source[7:]  # strip "worker:" prefix
+    elif source.startswith("scheduler:"):
+        label = source[10:]  # strip "scheduler:" prefix — shows the job name
+    elif source == "scheduler":
+        label = "[scheduler]"
+    else:
+        label = source
     return label[:_W_WORKER].ljust(_W_WORKER)
 
 
@@ -48,7 +60,8 @@ class WorkerActivityLog:
     """
     Receives kernel events and appends formatted lines to a log file.
 
-    Only processes events whose ``source`` starts with ``"worker:"``.
+    Processes events from any non-main source: workers (source='worker:*')
+    and scheduler sub-agents (source='scheduler').
     """
 
     def __init__(self, log_path: Path) -> None:
@@ -78,9 +91,9 @@ class WorkerActivityLog:
     # ------------------------------------------------------------------ #
 
     async def handle(self, event: Event) -> None:
-        """Async event handler — write a formatted line for every worker event."""
-        if not event.source.startswith("worker:"):
-            return
+        """Async event handler — write a formatted line for every sub-agent event."""
+        if event.source == "main":
+            return  # never log the main agent's internal events
         if self._file is None:
             return
 

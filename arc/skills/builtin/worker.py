@@ -118,10 +118,13 @@ class WorkerSkill(Skill):
                         "Spawn a background worker for a focused sub-task. "
                         "Returns IMMEDIATELY — you do NOT wait for the result. "
                         "The worker runs in the background and its result will be "
-                        "delivered as a notification when ready. "
-                        "You MUST tell the user you have delegated and what you delegated "
-                        "(e.g. 'I've started a background worker to fetch today's AI news. "
-                        "I'll share the results as soon as it's done.'). "
+                        "delivered as a notification when ready — you do NOT need to "
+                        "check or poll for it. "
+                        "AFTER calling this tool: respond to the user in plain text "
+                        "confirming what you delegated, then STOP — do NOT call any "
+                        "more tools (especially not list_workers). "
+                        "Example reply: 'I've started a background worker to fetch "
+                        "today's AI news. I'll share the results as soon as it's done.' "
                         "Use this for tasks that need live data or take a long time: "
                         "web research, file analysis, multi-step data gathering."
                     ),
@@ -178,9 +181,11 @@ class WorkerSkill(Skill):
                 ToolSpec(
                     name="list_workers",
                     description=(
-                        "List all background workers you have spawned that are "
-                        "still running. Returns their task IDs so you can report "
-                        "status to the user."
+                        "List all background workers that are still running. "
+                        "Only call this when the user EXPLICITLY asks 'what workers "
+                        "are running?' or 'what's in progress?'. "
+                        "Do NOT call this after delegate_task — results arrive "
+                        "automatically as notifications, no polling needed."
                     ),
                     parameters={
                         "type": "object",
@@ -384,16 +389,14 @@ class WorkerSkill(Skill):
                 ("", error_message) on failure.
         """
         from arc.agent.loop import AgentLoop, AgentConfig
-        from arc.platforms.virtual.app import VirtualPlatform
+        from arc.agent.runner import run_agent_on_virtual_platform
         from arc.security.engine import SecurityEngine
 
         # Extract a short readable label from the task_id  ("research_a1b2c3d4" → "research")
-        # The task_id format is "{task_name}_{8-hex}"; strip the hex suffix for the label.
         parts = task_id.rsplit("_", 1)
         task_label = parts[0] if len(parts) == 2 and len(parts[1]) == 8 else task_id
 
-        platform = VirtualPlatform(name=task_id)
-        worker = AgentLoop(
+        agent = AgentLoop(
             kernel=self._kernel,
             llm=self._llm,
             skill_manager=self._skill_manager,
@@ -407,26 +410,12 @@ class WorkerSkill(Skill):
             memory_manager=None,
             agent_id=f"worker:{task_label}",
         )
-
-        platform_task = asyncio.create_task(platform.run(worker.run))
-        try:
-            result = await asyncio.wait_for(
-                platform.send_message(prompt),
-                timeout=float(timeout_seconds),
-            )
-            await platform.stop()
-            await asyncio.wait_for(platform_task, timeout=5.0)
-            return result, None
-
-        except asyncio.TimeoutError:
-            platform_task.cancel()
-            await asyncio.gather(platform_task, return_exceptions=True)
-            return "", f"Worker timed out after {timeout_seconds}s"
-
-        except Exception as exc:
-            platform_task.cancel()
-            await asyncio.gather(platform_task, return_exceptions=True)
-            return "", str(exc)
+        return await run_agent_on_virtual_platform(
+            agent=agent,
+            prompt=prompt,
+            name=task_id,
+            timeout_seconds=float(timeout_seconds),
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

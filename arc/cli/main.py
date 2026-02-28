@@ -188,10 +188,27 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         "- Once you have enough information to answer, stop calling tools and respond."
     )
 
+    delegation_strategy = (
+        "\n\nDelegation Strategy (delegate_task vs. doing it yourself):\n"
+        "Do it YOURSELF (inline) when:\n"
+        "- The task needs ONE web search + 2-3 reads and a quick answer.\n"
+        "- The user wants an instant response and the work takes <30 seconds.\n"
+        "- It is a simple lookup, calculation, or short file read.\n\n"
+        "DELEGATE to a background worker when:\n"
+        "- The task requires many tool calls or multiple rounds of searching/reading.\n"
+        "- The user asks to research multiple things in parallel (start one worker per topic).\n"
+        "- The task is explicitly long-running: 'analyse this whole codebase', "
+        "'monitor X for the next hour', 'compile a detailed report'.\n"
+        "- The user wants to keep chatting while something runs in the background.\n\n"
+        "When you delegate: call delegate_task ONCE, then immediately reply to the user "
+        "in plain text confirming what you delegated. Do NOT call any other tools "
+        "after delegating — especially not list_workers. The result arrives automatically."
+    )
+
     # Soft skills — content of ~/.arc/skills/*.md injected as extra instructions
     soft_skill_text = discover_soft_skills()
 
-    system_prompt = identity["system_prompt"] + env_info + research_strategy + soft_skill_text
+    system_prompt = identity["system_prompt"] + env_info + research_strategy + delegation_strategy + soft_skill_text
 
     # Setup long-term memory
     mem_db_path = get_arc_home() / "memory" / "memory.db"
@@ -230,7 +247,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         + env_info
     )
 
-    def make_sub_agent() -> AgentLoop:
+    def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
         return AgentLoop(
             kernel=kernel,
             llm=llm,
@@ -243,6 +260,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
                 excluded_skills=frozenset({"scheduler"}),
             ),
             memory_manager=None,  # sub-agents have no long-term memory
+            agent_id=agent_id,  # distinct source so events are filtered from main chat
         )
 
     # Create CLI platform
@@ -289,6 +307,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
             llm=llm,
             agent_factory=make_sub_agent,
             router=notification_router,
+            kernel=kernel,
+            agent_registry=agent_registry,
         )
         cli.set_scheduler_store(sched_store)
 
@@ -311,8 +331,9 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     worker_log.open()
 
     # Worker-internal event types that must NOT bleed into the main chat.
-    # Workers tag every event with source="worker:<name>" (set in AgentLoop).
-    # We only let the coordination events (spawned / complete / escalation) through.
+    # Any agent that isn't the main agent (workers, scheduler sub-agents) tags
+    # events with source != "main".  Only coordination events (spawned /
+    # complete / escalation) from those agents pass through to the CLI.
     _WORKER_INTERNAL: frozenset[str] = frozenset({
         EventType.AGENT_THINKING,
         EventType.SKILL_TOOL_CALL,
@@ -324,8 +345,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
 
     # Connect events to CLI for status display
     async def forward_to_cli(event: Event) -> None:
-        if event.source.startswith("worker:") and event.type in _WORKER_INTERNAL:
-            return  # suppress — worker internals never reach the main chat window
+        if event.source != "main" and event.type in _WORKER_INTERNAL:
+            return  # suppress — sub-agent internals never reach the main chat window
         cli.on_event(event)
 
     kernel.on(EventType.AGENT_THINKING, forward_to_cli)
@@ -472,16 +493,17 @@ def workers(
         console.print(_build_panel(_read_tail(lines)))
         raise typer.Exit(0)
 
-    # --follow: live-tail with Rich Live, refresh every second
+    # --follow: live-tail with Rich Live, refresh every 0.1 s so THINKING
+    # and TOOL CALL events are visible in real-time before COMPLETE lands.
     last_size = 0
     try:
-        with Live(_build_panel(_read_tail(lines)), console=console, refresh_per_second=2) as live:
+        with Live(_build_panel(_read_tail(lines)), console=console, refresh_per_second=10) as live:
             while True:
                 current_size = log_path.stat().st_size
                 if current_size != last_size:
                     last_size = current_size
                     live.update(_build_panel(_read_tail(lines)))
-                _time.sleep(0.5)
+                _time.sleep(0.1)
     except KeyboardInterrupt:
         pass
 

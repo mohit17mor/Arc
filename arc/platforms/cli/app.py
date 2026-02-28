@@ -303,10 +303,19 @@ class CLIPlatform(Platform):
         ]
         for r in results:
             import datetime
+            import re as _re
             ts = datetime.datetime.fromtimestamp(r.fired_at).strftime("%H:%M")
+            # Strip the "✅ Worker/Scheduler 'X' completed:\n\n" prefix added by
+            # notification builders — it's redundant and can trigger list_workers polling.
+            raw = _re.sub(
+                r'^[\u2705\u274c]\s*(Worker|Scheduled job)\s+[\'"]?\S+[\'"]?\s+(completed|failed)[:\s]*\n*',
+                '',
+                r.content,
+                flags=_re.IGNORECASE,
+            ).strip()
             parts.append(
                 f"[Background task: \"{r.job_name}\" completed at {ts}]\n"
-                f"{r.content}\n"
+                f"{raw}\n"
             )
         parts.append(f"\n---\nUser message: {user_input}")
         return "\n".join(parts)
@@ -338,13 +347,26 @@ class CLIPlatform(Platform):
                 except Exception:
                     break
 
+                # Strip the "✅ Worker/Scheduler 'X' completed:\n\n" prefix that
+                # notification builders add — the wrapper below already provides
+                # that context, and seeing "worker completed" twice triggers
+                # unwanted list_workers polling by the LLM.
+                import re as _re
+                raw_content = _re.sub(
+                    r'^[\u2705\u274c]\s*(Worker|Scheduled job)\s+[\'"]?\S+[\'"]?\s+(completed|failed)[:\s]*\n*',
+                    '',
+                    notif.content,
+                    flags=_re.IGNORECASE,
+                ).strip()
+
                 # Build a synthetic stimulus — the main agent reads this and
                 # replies to the user naturally, no raw panel needed.
                 injected = (
-                    f"[SYSTEM: Background worker '{notif.job_name}' has just completed. "
-                    f"Present the result below to the user clearly and concisely. "
+                    f"[SYSTEM: The task '{notif.job_name}' has finished running in the background. "
+                    f"Summarise the result below for the user in plain text. "
+                    f"Do NOT call any tools — your response must be plain text only. "
                     f"Do not mention this system note.]"
-                    f"\n\n{notif.content}"
+                    f"\n\n{raw_content}"
                 )
                 self._turn_in_progress = True
                 try:
