@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "arc-agent"
 version = "0.1.0"
-description = "Micro-agents you can teach, share, and compose"
+description = "A personal AI agent that lives on your machine — browses the web, manages files, runs commands, and remembers you."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -24,13 +24,13 @@ dependencies = [
     "fastembed>=0.7.0",
     "sqlite-vec>=0.1.6",
     "croniter>=2.0",
+    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.30"]
 openai = ["openai>=1.0"]
-browsing = ["playwright>=1.40"]  # only needed for future CDP tier (forms, JS pages)
-all = ["arc-agent[anthropic,openai,browsing]"]
+all = ["arc-agent[anthropic,openai]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
