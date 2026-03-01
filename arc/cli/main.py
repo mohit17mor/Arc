@@ -157,6 +157,19 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         await skill_manager.register(skill)
     logger.debug(f"Skills registered: {skill_manager.skill_names}")
 
+    # Discover MCP servers from ~/.arc/mcp.json
+    from arc.mcp.manager import MCPManager
+    from arc.mcp.gateway import MCPGatewaySkill
+    mcp_manager = MCPManager()
+    mcp_manager.discover()  # populates internal skill map, no connections yet
+    if mcp_manager.has_servers:
+        mcp_gateway = MCPGatewaySkill(mcp_manager)
+        await skill_manager.register(mcp_gateway)
+        logger.info(
+            f"MCP gateway registered — {len(mcp_manager.server_names)} server(s): "
+            f"{', '.join(mcp_manager.server_names)}"
+        )
+
     # Inject scheduler store into SchedulerSkill (discovered automatically)
     sched_store = SchedulerStore(db_path=Path(config.scheduler.db_path).expanduser())
     if config.scheduler.enabled:
@@ -228,6 +241,19 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
 
     system_prompt = identity["system_prompt"] + env_info + research_strategy + delegation_strategy + browser_strategy + soft_skill_text
 
+    # Append MCP info if servers are configured
+    if mcp_manager.has_servers:
+        mcp_info = (
+            "\n\nMCP (Model Context Protocol) Servers:\n"
+            "External tool servers are available via two gateway tools:\n"
+            "  mcp_list_tools — discover servers and their tools\n"
+            "  mcp_call       — invoke a tool on a server\n"
+            "Servers connect lazily on first use. Call mcp_list_tools first "
+            "to see what's available, then mcp_call to use a tool.\n"
+            f"Configured servers: {', '.join(mcp_manager.server_names)}\n"
+        )
+        system_prompt += mcp_info
+
     # Setup long-term memory
     mem_db_path = get_arc_home() / "memory" / "memory.db"
     memory_manager = MemoryManager(db_path=str(mem_db_path))
@@ -295,6 +321,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     cli.set_approval_flow(agent.security.approval_flow)
     cli.set_escalation_bus(escalation_bus)
     cli.set_skill_manager(skill_manager)
+    if mcp_manager.has_servers:
+        cli.set_mcp_manager(mcp_manager)
     if memory_manager is not None:
         cli.set_memory_manager(memory_manager)
 

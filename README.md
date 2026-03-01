@@ -168,6 +168,7 @@ arc workers --follow      # live-tail background activity
 Inside chat:
 ```
 /skills          loaded skills and tools
+/mcp             MCP server status
 /memory          core facts · /memory episodic · /memory forget <id>
 /jobs            scheduled jobs · /jobs cancel <name>
 /cost            token usage this session
@@ -199,11 +200,76 @@ class MySkill(Skill):
 
 ---
 
+## MCP (Model Context Protocol) Support
+
+Arc can connect to external **MCP servers** as a client — giving it access to tools from any MCP-compatible service (GitHub, Jira, databases, etc.) without writing a single line of code.
+
+### Setup
+
+Create `~/.arc/mcp.json` (same format as Claude Desktop / Cursor):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_xxx" }
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    }
+  }
+}
+```
+
+SSE (remote) servers are also supported:
+```json
+{
+  "mcpServers": {
+    "remote": { "url": "http://localhost:8080/sse" }
+  }
+}
+```
+
+### How It Works
+
+Arc uses a **gateway pattern** — no matter how many MCP servers you configure, only **2 tools** are added to the LLM context:
+
+- **`mcp_list_tools`** — discover available servers and their tools
+- **`mcp_call`** — invoke a tool on a specific server
+
+Servers connect **lazily** on first use. If you have 10 servers configured but only use one, only that one starts up.
+
+### Chat Commands
+
+```
+/mcp              show configured servers and connection status
+/skills           MCP gateway appears alongside built-in skills
+```
+
+### Example
+
+```
+You:  "list files in my sandbox"
+Arc:  → mcp_list_tools({})           — sees: filesystem, github, memory
+      → mcp_call(server="filesystem", tool="list_directory",
+                 arguments={"path": "/path/to/allowed/dir"})
+      "Your sandbox contains: readme.txt, data.csv"
+```
+
+---
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # 424 tests
+pytest                    # 481 tests
 pytest --cov=arc          # with coverage
 ```
 

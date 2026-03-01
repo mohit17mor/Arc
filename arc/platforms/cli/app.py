@@ -55,6 +55,7 @@ class CLIPlatform(Platform):
         self._scheduler_store: Any = None  # Set via set_scheduler_store()
         self._pending_queue: asyncio.Queue | None = None  # Set via set_pending_queue()
         self._escalation_bus: Any = None  # Set via set_escalation_bus()
+        self._mcp_manager: Any = None  # Set via set_mcp_manager()
         self._turn_in_progress: bool = False  # True while agent is generating
 
         # Track state for display
@@ -98,6 +99,10 @@ class CLIPlatform(Platform):
     def set_pending_queue(self, queue: asyncio.Queue) -> None:
         """Set the queue that receives completed background-job results."""
         self._pending_queue = queue
+
+    def set_mcp_manager(self, mcp_manager: Any) -> None:
+        """Set reference to MCPManager for /mcp command."""
+        self._mcp_manager = mcp_manager
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -472,6 +477,7 @@ class CLIPlatform(Platform):
                     "  [cyan]/memory forget <id>[/cyan] \u2014 Delete a core memory by id\n"
                     "  [cyan]/jobs[/cyan]     \u2014 List scheduled jobs\n"
                     "  [cyan]/jobs cancel <name>[/cyan] \u2014 Cancel a scheduled job\n"
+                    "  [cyan]/mcp[/cyan]      \u2014 Show MCP server status\n"
                     "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
                     "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
                     "  [cyan]/clear[/cyan]    \u2014 Clear conversation history\n"
@@ -524,6 +530,34 @@ class CLIPlatform(Platform):
         elif cmd == "/perms":
             self._console.print("[dim]Permission memory: use /clear to reset[/dim]")
         
+        elif cmd == "/mcp":
+            if not self._mcp_manager:
+                self._console.print("[dim]No MCP servers configured[/dim]")
+                self._console.print(
+                    "[dim]Add servers to ~/.arc/mcp.json "
+                    "(Claude Desktop format)[/dim]"
+                )
+            else:
+                lines: list[str] = ["[bold]MCP Servers[/bold]\n"]
+                for info in self._mcp_manager.server_info():
+                    status = (
+                        "[green]connected[/green]"
+                        if info["connected"]
+                        else "[dim]not connected (lazy)[/dim]"
+                    )
+                    lines.append(
+                        f"  [bold cyan]{info['name']}[/bold cyan]  "
+                        f"{status}  "
+                        f"[dim]{info['transport']}[/dim]  "
+                        f"{info['tools']} tools"
+                    )
+                lines.append(
+                    "\n[dim]Servers connect lazily on first tool use[/dim]"
+                )
+                self._console.print(
+                    Panel("\n".join(lines), border_style="blue")
+                )
+
         elif cmd == "/clear":
             self._console.print("[dim]Conversation cleared[/dim]")
 

@@ -119,6 +119,45 @@ class SchedulerConfig(BaseModel):
     poll_interval: int = 30  # seconds
 
 
+class MCPServerDef(BaseModel):
+    """Definition of a single MCP server."""
+
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""  # for SSE/streamable-HTTP transport (alternative to command)
+
+
+class MCPConfig(BaseModel):
+    """MCP (Model Context Protocol) configuration.
+
+    Loaded from ~/.arc/mcp.json (Claude Desktop-compatible format).
+    """
+
+    servers: dict[str, MCPServerDef] = Field(default_factory=dict)
+
+    @staticmethod
+    def load_from_file(path: Path | None = None) -> "MCPConfig":
+        """Load MCP server definitions from mcp.json."""
+        import json as _json
+
+        mcp_path = path or Path.home() / ".arc" / "mcp.json"
+        if not mcp_path.exists():
+            return MCPConfig()
+
+        try:
+            data = _json.loads(mcp_path.read_text(encoding="utf-8"))
+        except Exception:
+            return MCPConfig()
+
+        # Claude Desktop format: {"mcpServers": {"name": {command, args, env}}}
+        raw_servers = data.get("mcpServers", data.get("servers", {}))
+        servers: dict[str, MCPServerDef] = {}
+        for name, cfg in raw_servers.items():
+            servers[name] = MCPServerDef(**cfg)
+        return MCPConfig(servers=servers)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Main Config
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

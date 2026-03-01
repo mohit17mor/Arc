@@ -51,6 +51,7 @@ class Capability(str, Enum):
     NETWORK_HTTP = "network:http"
     NETWORK_SOCKET = "network:socket"
     BROWSER = "browser"
+    MCP = "mcp"
     SYSTEM_ENV = "system:env"
     SYSTEM_PROCESS = "system:process"
 

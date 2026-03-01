@@ -25,6 +25,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "croniter>=2.0",
     "playwright>=1.40",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
