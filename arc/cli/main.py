@@ -40,25 +40,43 @@ def get_identity_path() -> Path:
 
 
 @app.command()
-def init(
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config"),
-) -> None:
-    """Initialize Arc — first-time setup wizard."""
+def init() -> None:
+    """Initialize or reconfigure Arc — interactive setup wizard."""
     from arc.identity.setup import run_first_time_setup
+    from arc.core.config import ArcConfig
 
     config_path = get_config_path()
     identity_path = get_identity_path()
 
-    # Check if already configured
-    if config_path.exists() and not force:
-        console.print(
-            f"[yellow]Arc is already configured at {config_path}[/yellow]\n"
-            f"[dim]Use --force to reconfigure[/dim]"
-        )
-        raise typer.Exit(0)
+    # Load existing config as defaults (empty dict on first run)
+    existing: dict = {}
+    if config_path.exists():
+        try:
+            cfg = ArcConfig.load(user_path=config_path)
+            existing = {
+                "user_name": cfg.identity.user_name or "User",
+                "agent_name": cfg.identity.agent_name,
+                "personality": cfg.identity.personality,
+                "provider": cfg.llm.default_provider,
+                "model": cfg.llm.default_model,
+                "base_url": cfg.llm.base_url,
+                "api_key": cfg.llm.api_key,
+            }
+            if cfg.llm.has_worker_override:
+                existing["worker_provider"] = cfg.llm.worker_provider
+                existing["worker_model"] = cfg.llm.worker_model
+                existing["worker_base_url"] = cfg.llm.worker_base_url
+                existing["worker_api_key"] = cfg.llm.worker_api_key
+            console.print(
+                f"[dim]Reconfiguring Arc — current values shown as defaults. "
+                f"Press Enter to keep.[/dim]"
+            )
+            console.print()
+        except Exception:
+            pass  # corrupt config — treat as fresh setup
 
     # Run setup
-    run_first_time_setup(config_path, identity_path, console)
+    run_first_time_setup(config_path, identity_path, console, existing=existing)
 
 
 @app.command()

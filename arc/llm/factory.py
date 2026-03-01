@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
 from arc.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -198,3 +200,55 @@ def _create_openai_compat(
         max_output_tokens=max_output_tokens,
         provider_name=provider_name,
     )
+
+
+# ── Dynamic model listing ─────────────────────────────────────────
+
+
+def fetch_models(
+    provider: str,
+    base_url: str,
+    api_key: str = "",
+    timeout: float = 10.0,
+) -> list[str]:
+    """
+    Fetch available model IDs from a provider's API.
+
+    This makes a real HTTP call, which also validates the connection
+    and API key.  Returns a sorted list of model ID strings.
+
+    Raises:
+        httpx.HTTPStatusError: On 401/403 (bad key) or other HTTP errors.
+        httpx.ConnectError: If the server is unreachable.
+        httpx.TimeoutException: If the request takes too long.
+    """
+    provider = provider.lower().strip()
+    preset = _PRESETS.get(provider)
+    is_ollama = preset and preset["class"] == "ollama"
+
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    client = httpx.Client(timeout=timeout, headers=headers)
+
+    try:
+        if is_ollama:
+            # Ollama: GET /api/tags → {"models": [{"name": "..."}]}
+            url = f"{base_url.rstrip('/')}/api/tags"
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m["name"] for m in data.get("models", [])]
+        else:
+            # OpenAI-compatible: GET /models → {"data": [{"id": "..."}]}
+            url = f"{base_url.rstrip('/')}/models"
+            resp = client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m["id"] for m in data.get("data", [])]
+
+        models.sort()
+        return models
+    finally:
+        client.close()
