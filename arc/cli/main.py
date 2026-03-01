@@ -208,7 +208,25 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     # Soft skills — content of ~/.arc/skills/*.md injected as extra instructions
     soft_skill_text = discover_soft_skills()
 
-    system_prompt = identity["system_prompt"] + env_info + research_strategy + delegation_strategy + soft_skill_text
+    browser_strategy = (
+        "\n\nBrowser Control Strategy:\n"
+        "You have TWO ways to access the web:\n"
+        "1. READING (web_search + web_read): For finding information, reading articles, "
+        "checking facts. Fast and cheap — use this by default.\n"
+        "2. INTERACTING (browser_go + browser_act): For clicking buttons, filling forms, "
+        "navigating multi-step flows, shopping, booking, logging in. Slower but more capable.\n\n"
+        "Use browser tools when the user needs you to DO something on a website, not just read it.\n"
+        "CRITICAL: When filling forms, ALWAYS use the [id] numbers from the page snapshot to "
+        "target fields (e.g., fill target='[3]'). Do NOT use text labels like 'Where to?' — "
+        "similar field names cause confusion. The snapshot gives each field a unique [id].\n"
+        "For combobox/dropdown fields (e.g., 'Round trip', 'Economy'), use 'fill' action with "
+        "the desired value — the engine handles clicking and picking automatically.\n"
+        "When using browser_act with forms, prefer fill_form (batch) over individual fill actions.\n"
+        "After each browser_act, you get a fresh page snapshot — check it before deciding next steps.\n"
+        "If the browser hits a CAPTCHA or login wall, it will ask the user for help automatically."
+    )
+
+    system_prompt = identity["system_prompt"] + env_info + research_strategy + delegation_strategy + browser_strategy + soft_skill_text
 
     # Setup long-term memory
     mem_db_path = get_arc_home() / "memory" / "memory.db"
@@ -323,6 +341,15 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
             agent_registry=agent_registry,
         )
         logger.info("WorkerSkill dependencies injected")
+
+    # Inject BrowserControlSkill dependencies
+    from arc.skills.builtin.browser_control import BrowserControlSkill
+    browser_skill = skill_manager.get_skill("browser_control")
+    if browser_skill and isinstance(browser_skill, BrowserControlSkill):
+        browser_skill.set_dependencies(
+            escalation_bus=escalation_bus,
+        )
+        logger.info("BrowserControlSkill dependencies injected")
 
     # Worker activity logger — writes to ~/.arc/worker_activity.log
     # Subscribe BEFORE forward_to_cli so worker events are logged even though
