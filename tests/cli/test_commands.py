@@ -23,11 +23,14 @@ def test_init_creates_files(runner, tmp_path, monkeypatch):
     # Redirect home directory
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Mock input
+    # Mock input — new setup flow:
+    # 1. User name, 2. Agent name, 3. Personality (3),
+    # 4. Provider (1=Ollama), 5. Base URL, 6. Model,
+    # 7. Worker model? (n)
     result = runner.invoke(
         app,
         ["init"],
-        input="Alex\nFriday\n3\nhttp://localhost:11434\nllama3.1\n",
+        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\n",
     )
 
     assert result.exit_code == 0

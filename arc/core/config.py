@@ -82,6 +82,17 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
+    # Worker / sub-agent model (optional — falls back to main if empty)
+    worker_provider: str = ""
+    worker_model: str = ""
+    worker_base_url: str = ""
+    worker_api_key: str = ""
+
+    @property
+    def has_worker_override(self) -> bool:
+        """True if a separate worker LLM is configured."""
+        return bool(self.worker_provider and self.worker_model)
+
 
 class ShellConfig(BaseModel):
     """Shell provider configuration."""
@@ -263,6 +274,10 @@ def _load_from_env() -> dict[str, Any]:
         "ARC_IDENTITY_USER_NAME": ("identity", "user_name"),
         "ARC_IDENTITY_AGENT_NAME": ("identity", "agent_name"),
         "ARC_IDENTITY_PERSONALITY": ("identity", "personality"),
+        "ARC_LLM_WORKER_PROVIDER": ("llm", "worker_provider"),
+        "ARC_LLM_WORKER_MODEL": ("llm", "worker_model"),
+        "ARC_LLM_WORKER_BASE_URL": ("llm", "worker_base_url"),
+        "ARC_LLM_WORKER_API_KEY": ("llm", "worker_api_key"),
     }
 
     for env_var, (section, key) in env_mapping.items():

@@ -77,7 +77,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.core.kernel import Kernel
     from arc.core.config import ArcConfig
     from arc.core.events import Event, EventType
-    from arc.llm.ollama import OllamaProvider
+    from arc.llm.factory import create_llm
     from arc.skills.manager import SkillManager
     from arc.skills.loader import discover_skills, discover_soft_skills
     from arc.security.engine import SecurityEngine
@@ -145,11 +145,28 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     kernel.use(cost_tracker.middleware)
 
     # Setup LLM
-    llm = OllamaProvider(
-        base_url=config.llm.base_url,
+    llm = create_llm(
+        config.llm.default_provider,
         model=config.llm.default_model,
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
     )
-    logger.info(f"LLM: {config.llm.default_model} at {config.llm.base_url}")
+    logger.info(f"LLM: {config.llm.default_provider}/{config.llm.default_model}")
+
+    # Setup worker LLM (falls back to main if not configured)
+    if config.llm.has_worker_override:
+        worker_llm = create_llm(
+            config.llm.worker_provider,
+            model=config.llm.worker_model,
+            base_url=config.llm.worker_base_url or config.llm.base_url,
+            api_key=config.llm.worker_api_key or config.llm.api_key,
+        )
+        logger.info(
+            f"Worker LLM: {config.llm.worker_provider}/{config.llm.worker_model}"
+        )
+    else:
+        worker_llm = llm
+        logger.info("Worker LLM: same as main")
 
     # Setup skills — auto-discovered from builtins + ~/.arc/skills/*.py
     skill_manager = SkillManager(kernel)
@@ -294,7 +311,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
         return AgentLoop(
             kernel=kernel,
-            llm=llm,
+            llm=worker_llm,
             skill_manager=skill_manager,
             security=SecurityEngine.make_permissive(kernel),
             system_prompt=sub_agent_system_prompt,
@@ -363,6 +380,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     if worker_skill and isinstance(worker_skill, WorkerSkill):
         worker_skill.set_dependencies(
             llm=llm,
+            worker_llm=worker_llm,
             skill_manager=skill_manager,
             escalation_bus=escalation_bus,
             notification_router=notification_router,
@@ -456,6 +474,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         await skill_manager.shutdown_all()
         await kernel.stop()
         await llm.close()
+        if worker_llm is not llm:
+            await worker_llm.close()
         if memory_manager is not None:
             await memory_manager.close()
 

@@ -59,6 +59,7 @@ class WorkerSkill(Skill):
 
         # Injected via set_dependencies()
         self._llm: Any = None
+        self._worker_llm: Any = None  # separate model for workers (falls back to _llm)
         self._skill_manager: Any = None
         self._escalation_bus: Any = None
         self._notification_router: Any = None
@@ -91,9 +92,11 @@ class WorkerSkill(Skill):
         notification_router: Any,
         agent_registry: Any,
         system_prompt: str | None = None,
+        worker_llm: Any = None,
     ) -> None:
         """Inject runtime dependencies. Must be called before first use."""
         self._llm = llm
+        self._worker_llm = worker_llm or llm
         self._skill_manager = skill_manager
         self._escalation_bus = escalation_bus
         self._notification_router = notification_router
@@ -398,7 +401,7 @@ class WorkerSkill(Skill):
 
         agent = AgentLoop(
             kernel=self._kernel,
-            llm=self._llm,
+            llm=self._worker_llm,
             skill_manager=self._skill_manager,
             security=SecurityEngine.make_permissive(self._kernel),
             system_prompt=self._worker_system_prompt,
