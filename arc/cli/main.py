@@ -62,6 +62,9 @@ def init() -> None:
                 "base_url": cfg.llm.base_url,
                 "api_key": cfg.llm.api_key,
                 "tavily_api_key": cfg.tavily.api_key,
+                "telegram_token": cfg.telegram.token,
+                "telegram_chat_id": cfg.telegram.chat_id,
+                "telegram_allowed_users": cfg.telegram.allowed_users,
             }
             if cfg.llm.has_worker_override:
                 existing["worker_provider"] = cfg.llm.worker_provider
@@ -641,6 +644,318 @@ def logs(
         
     for line in all_lines[-lines:]:
         console.print(line.rstrip())
+
+
+@app.command()
+def telegram(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
+) -> None:
+    """Run Arc as a Telegram bot (bidirectional chat)."""
+    asyncio.run(_run_telegram(verbose))
+
+
+async def _run_telegram(verbose: bool = False) -> None:
+    """Run the Telegram bot platform."""
+    import platform as plat
+
+    from arc.core.kernel import Kernel
+    from arc.core.config import ArcConfig
+    from arc.core.events import Event, EventType
+    from arc.llm.factory import create_llm
+    from arc.skills.manager import SkillManager
+    from arc.skills.loader import discover_skills, discover_soft_skills
+    from arc.security.engine import SecurityEngine
+    from arc.agent.loop import AgentLoop, AgentConfig
+    from arc.identity.soul import SoulManager
+    from arc.platforms.telegram.app import TelegramPlatform
+    from arc.middleware.cost import CostTracker
+    from arc.middleware.logging import setup_logging, EventLogger
+    from arc.memory.manager import MemoryManager
+    from arc.notifications.router import NotificationRouter
+    from arc.notifications.channels.file import FileChannel
+    from arc.notifications.channels.telegram import TelegramChannel
+    from arc.scheduler.store import SchedulerStore
+    from arc.scheduler.engine import SchedulerEngine
+    from arc.skills.builtin.scheduler import SchedulerSkill
+    from arc.skills.builtin.worker import WorkerSkill
+    from arc.agent.registry import AgentRegistry
+    from arc.core.escalation import EscalationBus
+    from arc.agent.worker_log import WorkerActivityLog
+
+    config_path = get_config_path()
+    identity_path = get_identity_path()
+
+    # Setup logging
+    log_level = logging.DEBUG if verbose else logging.INFO
+    setup_logging(
+        log_dir=get_arc_home() / "logs",
+        console_level=log_level,
+    )
+    logger = logging.getLogger("arc")
+    logger.info("Starting Arc Telegram bot")
+
+    # Check if configured
+    if not config_path.exists():
+        console.print(
+            "[yellow]Arc is not configured yet.[/yellow]\n"
+            "[dim]Run [bold]arc init[/bold] first.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # Load config
+    config = ArcConfig.load()
+
+    if not config.telegram.platform_configured:
+        console.print(
+            "[yellow]Telegram bot is not configured.[/yellow]\n"
+            "[dim]Run [bold]arc init[/bold] and set up a Telegram bot token,\n"
+            "or add it manually to ~/.arc/config.toml:\n\n"
+            "  [telegram]\n"
+            '  token = "YOUR_BOT_TOKEN"\n'
+            '  allowed_users = ["YOUR_CHAT_ID"][/dim]'
+        )
+        raise typer.Exit(1)
+
+    # Load identity
+    soul = SoulManager(identity_path)
+    identity = soul.load()
+
+    # Create kernel
+    kernel = Kernel(config=config)
+
+    # Setup logging middleware
+    event_logger = EventLogger(log_dir=get_arc_home() / "logs")
+    kernel.use(event_logger.middleware)
+
+    # Setup cost tracking
+    cost_tracker = CostTracker()
+    kernel.use(cost_tracker.middleware)
+
+    # Setup LLM
+    llm = create_llm(
+        config.llm.default_provider,
+        model=config.llm.default_model,
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
+    )
+
+    # Setup worker LLM
+    if config.llm.has_worker_override:
+        worker_llm = create_llm(
+            config.llm.worker_provider,
+            model=config.llm.worker_model,
+            base_url=config.llm.worker_base_url or config.llm.base_url,
+            api_key=config.llm.worker_api_key or config.llm.api_key,
+        )
+    else:
+        worker_llm = llm
+
+    # Setup skills
+    skill_manager = SkillManager(kernel)
+    for skill in discover_skills():
+        await skill_manager.register(skill)
+
+    # Discover MCP servers
+    from arc.mcp.manager import MCPManager
+    from arc.mcp.gateway import MCPGatewaySkill
+    mcp_manager = MCPManager()
+    mcp_manager.discover()
+    if mcp_manager.has_servers:
+        mcp_gateway = MCPGatewaySkill(mcp_manager)
+        await skill_manager.register(mcp_gateway)
+
+    # Scheduler store
+    sched_store = SchedulerStore(db_path=Path(config.scheduler.db_path).expanduser())
+    if config.scheduler.enabled:
+        await sched_store.initialize()
+        sched_skill = skill_manager.get_skill("scheduler")
+        if sched_skill and isinstance(sched_skill, SchedulerSkill):
+            sched_skill.set_store(sched_store)
+
+    # Setup security (auto-approve for Telegram — no interactive terminal)
+    security = SecurityEngine.make_permissive(kernel)
+
+    # Build system prompt
+    env_info = (
+        f"\n\nEnvironment:\n"
+        f"- OS: {plat.system()} {plat.release()}\n"
+        f"- Working directory: {Path.cwd()}\n"
+        f"- Platform: Telegram bot\n"
+    )
+
+    research_strategy = (
+        "\n\nWeb Research Strategy:\n"
+        "- For any question that needs web data: run ONE web_search, "
+        "then read at most 2-3 of the most relevant URLs with web_read, "
+        "then synthesize everything and give your answer. Stop there.\n"
+        "- Do NOT loop: search → read → search → read. One search is almost always enough.\n"
+    )
+
+    soft_skill_text = discover_soft_skills()
+
+    system_prompt = (
+        identity["system_prompt"] + env_info + research_strategy + soft_skill_text
+        + "\n\nYou are running as a Telegram bot. Keep responses concise — "
+        "Telegram messages have a 4096 character limit. Use short paragraphs "
+        "and avoid very long code blocks unless the user explicitly asks."
+    )
+
+    # Setup long-term memory
+    mem_db_path = get_arc_home() / "memory" / "memory.db"
+    memory_manager = MemoryManager(db_path=str(mem_db_path))
+    try:
+        await memory_manager.initialize()
+    except Exception as e:
+        logger.warning(f"Long-term memory init failed: {e}")
+        memory_manager = None  # type: ignore[assignment]
+
+    # Create agent
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=llm,
+        skill_manager=skill_manager,
+        security=security,
+        system_prompt=system_prompt,
+        config=AgentConfig(
+            max_iterations=config.agent.max_iterations,
+            temperature=config.agent.temperature,
+        ),
+        memory_manager=memory_manager,
+    )
+
+    # Sub-agent factory
+    sub_agent_system_prompt = (
+        "You are a proactive background assistant completing a scheduled task. "
+        "Use tools as needed to fulfil the task fully and accurately. "
+        "Return a concise, well-structured answer."
+        + env_info
+    )
+
+    def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
+        return AgentLoop(
+            kernel=kernel,
+            llm=worker_llm,
+            skill_manager=skill_manager,
+            security=SecurityEngine.make_permissive(kernel),
+            system_prompt=sub_agent_system_prompt,
+            config=AgentConfig(
+                max_iterations=config.agent.max_iterations,
+                temperature=0.5,
+                excluded_skills=frozenset({"scheduler"}),
+            ),
+            memory_manager=None,
+            agent_id=agent_id,
+        )
+
+    # Multi-agent infrastructure
+    agent_registry = AgentRegistry()
+    escalation_bus = EscalationBus(kernel)
+
+    # Notification router (no CLI channel in Telegram mode)
+    notification_router = NotificationRouter()
+    if config.telegram.configured:
+        notification_router.register(
+            TelegramChannel(config.telegram.token, config.telegram.chat_id)
+        )
+    notification_router.register(FileChannel(get_arc_home() / "notifications.log"))
+
+    # Scheduler engine
+    scheduler_engine: SchedulerEngine | None = None
+    if config.scheduler.enabled:
+        scheduler_engine = SchedulerEngine(
+            store=sched_store,
+            llm=llm,
+            agent_factory=make_sub_agent,
+            router=notification_router,
+            kernel=kernel,
+            agent_registry=agent_registry,
+        )
+
+    # Inject WorkerSkill dependencies
+    worker_skill = skill_manager.get_skill("worker")
+    if worker_skill and isinstance(worker_skill, WorkerSkill):
+        worker_skill.set_dependencies(
+            llm=llm,
+            worker_llm=worker_llm,
+            skill_manager=skill_manager,
+            escalation_bus=escalation_bus,
+            notification_router=notification_router,
+            agent_registry=agent_registry,
+        )
+
+    # Inject BrowserControlSkill dependencies
+    from arc.skills.builtin.browser_control import BrowserControlSkill
+    browser_skill = skill_manager.get_skill("browser_control")
+    if browser_skill and isinstance(browser_skill, BrowserControlSkill):
+        browser_skill.set_dependencies(escalation_bus=escalation_bus)
+
+    # Worker activity logger
+    worker_log = WorkerActivityLog(get_arc_home() / "worker_activity.log")
+    worker_log.open()
+
+    # Create Telegram platform
+    allowed = set(config.telegram.allowed_users) if config.telegram.allowed_users else None
+    tg_platform = TelegramPlatform(
+        token=config.telegram.token,
+        allowed_chat_ids=allowed,
+        agent_name=identity["agent_name"],
+    )
+
+    # Wire events → logger
+    async def log_event(event: Event) -> None:
+        logger.debug("Event: %s %s", event.type, getattr(event, 'data', ''))
+
+    kernel.on(EventType.AGENT_THINKING, log_event)
+    kernel.on(EventType.SKILL_TOOL_CALL, log_event)
+    kernel.on(EventType.SKILL_TOOL_RESULT, log_event)
+    kernel.on(EventType.AGENT_SPAWNED, worker_log.handle)
+    kernel.on(EventType.AGENT_THINKING, worker_log.handle)
+    kernel.on(EventType.SKILL_TOOL_CALL, worker_log.handle)
+    kernel.on(EventType.SKILL_TOOL_RESULT, worker_log.handle)
+    kernel.on(EventType.AGENT_TASK_COMPLETE, worker_log.handle)
+    kernel.on(EventType.AGENT_ERROR, worker_log.handle)
+
+    # Message handler
+    async def handle_message(user_input: str):
+        async for chunk in agent.run(user_input):
+            yield chunk
+
+    # Run
+    console.print(
+        Panel(
+            f"[bold green]Telegram bot starting[/bold green]\n\n"
+            f"Bot: {identity['agent_name']}\n"
+            f"Allowed users: {config.telegram.allowed_users or 'everyone'}\n\n"
+            "[dim]Press Ctrl+C to stop[/dim]",
+            border_style="cyan",
+        )
+    )
+    try:
+        await kernel.start()
+        if scheduler_engine:
+            await scheduler_engine.start()
+        await tg_platform.run(handle_message)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        logger.exception(f"Error in Telegram bot: {e}")
+        raise
+    finally:
+        logger.info("Shutting down Telegram bot")
+        await tg_platform.stop()
+        worker_log.close()
+        await agent_registry.shutdown_all()
+        if scheduler_engine:
+            await scheduler_engine.stop()
+        if config.scheduler.enabled:
+            await sched_store.close()
+        await skill_manager.shutdown_all()
+        await kernel.stop()
+        await llm.close()
+        if worker_llm is not llm:
+            await worker_llm.close()
+        if memory_manager is not None:
+            await memory_manager.close()
 
 
 @app.command()

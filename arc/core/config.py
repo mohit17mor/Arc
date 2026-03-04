@@ -112,14 +112,20 @@ class IdentityConfig(BaseModel):
 
 
 class TelegramConfig(BaseModel):
-    """Telegram bot notification configuration."""
+    """Telegram bot configuration (notifications + bidirectional chat)."""
 
     token: str = ""
-    chat_id: str = ""
+    chat_id: str = ""  # for outbound notifications
+    allowed_users: list[str] = Field(default_factory=list)  # chat_ids allowed to interact
 
     @property
     def configured(self) -> bool:
         return bool(self.token and self.chat_id)
+
+    @property
+    def platform_configured(self) -> bool:
+        """True if the bot is set up for bidirectional chat."""
+        return bool(self.token)
 
 
 class TavilyConfig(BaseModel):

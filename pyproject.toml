@@ -35,7 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.30"]
 openai = ["openai>=1.0"]
-all = ["arc-agent[anthropic,openai]"]
+telegram = ["python-telegram-bot>=21.0"]
+all = ["arc-agent[anthropic,openai,telegram]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

@@ -462,6 +462,72 @@ def _pick_tavily(
     return {"api_key": api_key.strip()}
 
 
+def _pick_telegram(
+    console: Console,
+    interactive: bool = True,
+    existing_token: str = "",
+    existing_chat_id: str = "",
+    existing_allowed: str = "",
+) -> dict | None:
+    """Optionally configure Telegram bot for bidirectional chat."""
+    from rich.prompt import Confirm, Prompt
+
+    console.print(
+        "[dim]Telegram lets you chat with Arc from your phone via a Telegram bot.\n"
+        "Create a bot with [bold]@BotFather[/bold] on Telegram to get a token.\n"
+        "Send /start to your bot, then use @userinfobot to get your chat_id.[/dim]"
+    )
+
+    has_existing = bool(existing_token)
+    if interactive:
+        enable = _q_confirm(
+            "Configure Telegram bot?",
+            default=has_existing,
+        )
+    else:
+        enable = Confirm.ask(
+            "Configure Telegram bot?",
+            default=has_existing,
+        )
+    console.print()
+
+    if not enable:
+        return None
+
+    if interactive:
+        token = _q_text("Telegram bot token:", default=existing_token)
+        chat_id = _q_text(
+            "Your Telegram chat_id (for notifications):",
+            default=existing_chat_id,
+        )
+        allowed = _q_text(
+            "Allowed user chat_ids (comma-separated, blank=everyone):",
+            default=existing_allowed,
+        )
+    else:
+        token = Prompt.ask("[bold]Telegram bot token[/bold]", default=existing_token or "")
+        chat_id = Prompt.ask(
+            "[bold]Your Telegram chat_id[/bold]", default=existing_chat_id or ""
+        )
+        allowed = Prompt.ask(
+            "[bold]Allowed user chat_ids (comma-separated)[/bold]",
+            default=existing_allowed or "",
+        )
+
+    if not token.strip():
+        console.print("  [yellow]⚠ No token provided — Telegram disabled.[/yellow]")
+        console.print()
+        return None
+
+    console.print("  [green]✓[/green] Telegram bot configured!")
+    console.print()
+    return {
+        "token": token.strip(),
+        "chat_id": chat_id.strip(),
+        "allowed_users": [u.strip() for u in allowed.split(",") if u.strip()],
+    }
+
+
 # ── Main setup wizard ────────────────────────────────────────────
 
 
@@ -603,6 +669,14 @@ def run_first_time_setup(
         existing_key=e.get("tavily_api_key", ""),
     )
 
+    # ── Telegram Bot ─────────────────────────────────────────
+    telegram_cfg = _pick_telegram(
+        console, interactive=interactive,
+        existing_token=e.get("telegram_token", ""),
+        existing_chat_id=e.get("telegram_chat_id", ""),
+        existing_allowed=",".join(e.get("telegram_allowed_users", [])),
+    )
+
     # Connection is already validated by fetch_models() in _pick_provider.
     # Show a summary of the selected configuration.
     console.print(
@@ -663,6 +737,18 @@ def run_first_time_setup(
             "",
         ]
 
+    if telegram_cfg:
+        config_lines += [
+            "[telegram]",
+            f'token = "{telegram_cfg["token"]}"',
+        ]
+        if telegram_cfg.get("chat_id"):
+            config_lines.append(f'chat_id = "{telegram_cfg["chat_id"]}"')
+        if telegram_cfg.get("allowed_users"):
+            users_str = ", ".join(f'"{u}"' for u in telegram_cfg["allowed_users"])
+            config_lines.append(f"allowed_users = [{users_str}]")
+        config_lines.append("")
+
     config_content = "\n".join(config_lines)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -674,6 +760,8 @@ def run_first_time_setup(
         model_info += f"\n[green]✓[/green] Worker: {worker_cfg['provider']}/{worker_cfg['model']}"
     if tavily_cfg:
         model_info += "\n[green]✓[/green] Liquid Web: enabled (Tavily)"
+    if telegram_cfg:
+        model_info += "\n[green]✓[/green] Telegram bot: enabled"
 
     console.print(
         Panel(
@@ -684,6 +772,7 @@ def run_first_time_setup(
             "[bold]You're all set! Here's what you can do:[/bold]\n"
             "\n"
             "  [cyan]arc chat[/cyan]          — Talk to me\n"
+            "  [cyan]arc telegram[/cyan]      — Run as Telegram bot\n"
             "  [cyan]arc run <recipe>[/cyan]  — Run a micro-agent\n"
             "  [cyan]arc teach <name>[/cyan]  — Teach me a new task\n"
             "\n"
@@ -709,4 +798,8 @@ def run_first_time_setup(
         result["worker_api_key"] = worker_cfg["api_key"]
     if tavily_cfg:
         result["tavily_api_key"] = tavily_cfg["api_key"]
+    if telegram_cfg:
+        result["telegram_token"] = telegram_cfg["token"]
+        result["telegram_chat_id"] = telegram_cfg.get("chat_id", "")
+        result["telegram_allowed_users"] = telegram_cfg.get("allowed_users", [])
     return result

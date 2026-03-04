@@ -26,11 +26,11 @@ def test_init_creates_files(runner, tmp_path, monkeypatch):
     # Mock input — setup flow (non-interactive fallback):
     # 1. User name, 2. Agent name, 3. Personality (3),
     # 4. Provider (1=Ollama), 5. Base URL, 6. Model,
-    # 7. Worker model? (n), 8. Tavily? (n)
+    # 7. Worker model? (n), 8. Tavily? (n), 9. Telegram? (n)
     result = runner.invoke(
         app,
         ["init"],
-        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\nn\n",
+        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0
@@ -46,17 +46,17 @@ def test_init_reconfigure_keeps_defaults(runner, tmp_path, monkeypatch):
     result1 = runner.invoke(
         app,
         ["init"],
-        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\nn\n",
+        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\nn\nn\n",
     )
     assert result1.exit_code == 0
 
     # Second run — just press Enter for everything (keep defaults)
     # Non-interactive path: user_name, agent_name, personality, provider,
-    # base_url, model, worker_confirm, tavily_confirm
+    # base_url, model, worker_confirm, tavily_confirm, telegram_confirm
     result2 = runner.invoke(
         app,
         ["init"],
-        input="\n\n\n\n\n\n\n\n",
+        input="\n\n\n\n\n\n\n\n\n",
     )
     assert result2.exit_code == 0
     assert "Reconfiguring" in result2.stdout
