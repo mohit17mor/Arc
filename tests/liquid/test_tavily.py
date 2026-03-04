@@ -24,10 +24,16 @@ def mock_tavily_response():
                 "score": 0.87,
             },
             {
+                "url": "https://www.lowscore.com/item",
+                "title": "Low score result",
+                "content": "Should be filtered by min_score",
+                "score": 0.5,
+            },
+            {
                 "url": "",  # Empty URL — should be filtered
                 "title": "Empty result",
                 "content": "Should be skipped",
-                "score": 0.1,
+                "score": 0.9,
             },
         ]
     }
@@ -41,7 +47,7 @@ async def test_tavily_search_returns_results(mock_tavily_response):
     with patch("tavily.AsyncTavilyClient", return_value=mock_client):
         results = await tavily_search("best camera", api_key="test-key")
 
-    assert len(results) == 2  # Empty URL filtered out
+    assert len(results) == 2  # Empty URL + low score filtered out
     assert results[0].url == "https://www.amazon.in/dp/B07MVCPZ1Q"
     assert results[0].domain == "amazon.in"
     assert results[0].title == "Sony Alpha a6400 Camera"
@@ -88,3 +94,27 @@ async def test_tavily_search_empty_results():
         results = await tavily_search("nonexistent product", api_key="test-key")
 
     assert results == []
+
+
+async def test_tavily_search_min_score_filter(mock_tavily_response):
+    """Results below min_score are excluded."""
+    mock_client = AsyncMock()
+    mock_client.search = AsyncMock(return_value=mock_tavily_response)
+
+    with patch("tavily.AsyncTavilyClient", return_value=mock_client):
+        # Default min_score=0.8 keeps only 0.95 and 0.87
+        results = await tavily_search("camera", api_key="test-key")
+    assert len(results) == 2
+    assert all(r.score >= 0.8 for r in results)
+
+    with patch("tavily.AsyncTavilyClient", return_value=mock_client):
+        # Lower threshold includes the 0.5 result too
+        results = await tavily_search("camera", api_key="test-key", min_score=0.4)
+    assert len(results) == 3
+    assert results[2].score == 0.5
+
+    with patch("tavily.AsyncTavilyClient", return_value=mock_client):
+        # High threshold filters everything except 0.95
+        results = await tavily_search("camera", api_key="test-key", min_score=0.9)
+    assert len(results) == 1
+    assert results[0].score == 0.95

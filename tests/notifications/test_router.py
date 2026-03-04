@@ -207,3 +207,103 @@ class TestNotification:
         assert n.content == "hello"
         assert n.job_id == "abc12345"
         assert n.fired_at > 0
+
+
+# ── TelegramChannel ──────────────────────────────────────────────────────────
+
+from arc.notifications.channels.telegram import TelegramChannel, _split_text
+
+
+class TestSplitText:
+    def test_short_text_not_split(self):
+        assert _split_text("hello", 100) == ["hello"]
+
+    def test_split_at_paragraph_boundary(self):
+        text = "A" * 3000 + "\n\n" + "B" * 3000
+        chunks = _split_text(text, 4096)
+        assert len(chunks) == 2
+        assert chunks[0].strip() == "A" * 3000
+        assert chunks[1] == "B" * 3000
+
+    def test_split_respects_limit(self):
+        text = "x" * 10000
+        chunks = _split_text(text, 4096)
+        assert all(len(c) <= 4096 for c in chunks)
+        assert "".join(chunks) == text
+
+
+@pytest.mark.asyncio
+class TestTelegramChannel:
+    def test_inactive_without_config(self):
+        ch = TelegramChannel()
+        assert not ch.is_active
+        assert ch.is_external
+
+    def test_active_with_config(self):
+        ch = TelegramChannel(token="tok", chat_id="123")
+        assert ch.is_active
+
+    async def test_deliver_inactive_returns_false(self):
+        ch = TelegramChannel()
+        notif = _make_notification()
+        assert await ch.deliver(notif) is False
+
+    async def test_deliver_success(self):
+        """Successful send with Markdown."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+        import httpx
+
+        ch = TelegramChannel(token="tok", chat_id="123")
+        notif = _make_notification(content="simple text")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("arc.notifications.channels.telegram.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await ch.deliver(notif)
+
+        assert result is True
+        mock_client.post.assert_called_once()
+        call_kwargs = mock_client.post.call_args
+        assert call_kwargs[1]["json"]["parse_mode"] == "Markdown"
+
+    async def test_deliver_markdown_fallback_plain(self):
+        """400 on Markdown → retries without parse_mode."""
+        from unittest.mock import AsyncMock, patch, MagicMock
+        import httpx
+
+        ch = TelegramChannel(token="tok", chat_id="123")
+        notif = _make_notification(content="text with _bad_ *markdown")
+
+        # First call raises 400, second succeeds
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        error_resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "400", request=MagicMock(), response=error_resp,
+            )
+        )
+
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.raise_for_status = MagicMock()
+
+        with patch("arc.notifications.channels.telegram.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(side_effect=[error_resp, ok_resp])
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await ch.deliver(notif)
+
+        assert result is True
+        assert mock_client.post.call_count == 2
+        # Second call should not have parse_mode
+        retry_json = mock_client.post.call_args_list[1][1]["json"]
+        assert "parse_mode" not in retry_json

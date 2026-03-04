@@ -31,6 +31,7 @@ class LiquidWebSkill(Skill):
     def __init__(self):
         self._config = None
         self._server = None
+        self._auto_open = True  # False on non-desktop platforms (Telegram, etc.)
 
     def manifest(self) -> SkillManifest:
         return SkillManifest(
@@ -259,16 +260,25 @@ class LiquidWebSkill(Skill):
 
         self._server = LiquidServer(
             ngrok_auth_token=ngrok_token,
-            auto_open=True,
+            auto_open=self._auto_open,
             shutdown_timeout=600.0,
         )
         public_url = await self._server.start(html)
 
+        if self._auto_open:
+            browser_note = (
+                "IMPORTANT: The page has already been opened in the user's browser automatically. "
+                "Do NOT try to browse, open, navigate to, or search for this URL. "
+            )
+        else:
+            browser_note = (
+                "Share the URL above with the user so they can open it. "
+            )
+
         return (
             f"Found {len(unique_products)} products from {len(source_domains)} sites. "
             f"Comparison page is live at: {public_url}\n\n"
-            "IMPORTANT: The page has already been opened in the user's browser automatically. "
-            "Do NOT try to browse, open, navigate to, or search for this URL. "
+            f"{browser_note}"
             "Your task is complete — just tell the user about the results and the link."
         )
 

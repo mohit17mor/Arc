@@ -161,7 +161,7 @@ class WorkerSkill(Skill):
                             "timeout_seconds": {
                                 "type": "integer",
                                 "description": (
-                                    "Wall-clock timeout in seconds. Default 120. "
+                                    "Wall-clock timeout in seconds. Default 300 (5 min). "
                                     "Increase for long-running tasks "
                                     "(e.g. 600 for a 10-minute deep research task). "
                                     "Maximum allowed: 1800 (30 minutes)."
@@ -214,7 +214,7 @@ class WorkerSkill(Skill):
                 task_name=arguments.get("task_name", "unnamed_task"),
                 prompt=arguments.get("prompt", ""),
                 allowed_skills=arguments.get("allowed_skills"),
-                timeout_seconds=arguments.get("timeout_seconds", 120),
+                timeout_seconds=arguments.get("timeout_seconds", 300),
                 max_iterations=arguments.get("max_iterations", 15),
             )
         if tool_name == "list_workers":
@@ -324,7 +324,7 @@ class WorkerSkill(Skill):
         task_name: str,
         prompt: str,
         excluded: frozenset[str],
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 300,
         max_iterations: int = 15,
     ) -> None:
         """

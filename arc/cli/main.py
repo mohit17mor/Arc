@@ -62,6 +62,7 @@ def init() -> None:
                 "base_url": cfg.llm.base_url,
                 "api_key": cfg.llm.api_key,
                 "tavily_api_key": cfg.tavily.api_key,
+                "ngrok_auth_token": cfg.ngrok.auth_token,
                 "telegram_token": cfg.telegram.token,
                 "telegram_chat_id": cfg.telegram.chat_id,
                 "telegram_allowed_users": cfg.telegram.allowed_users,
@@ -883,6 +884,12 @@ async def _run_telegram(verbose: bool = False) -> None:
     browser_skill = skill_manager.get_skill("browser_control")
     if browser_skill and isinstance(browser_skill, BrowserControlSkill):
         browser_skill.set_dependencies(escalation_bus=escalation_bus)
+
+    # Disable auto-open for Liquid Web (no desktop browser on Telegram)
+    from arc.skills.builtin.liquid_web import LiquidWebSkill
+    lw_skill = skill_manager.get_skill("liquid_web")
+    if lw_skill and isinstance(lw_skill, LiquidWebSkill):
+        lw_skill._auto_open = False
 
     # Worker activity logger
     worker_log = WorkerActivityLog(get_arc_home() / "worker_activity.log")

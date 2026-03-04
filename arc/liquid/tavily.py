@@ -38,6 +38,7 @@ async def tavily_search(
     search_depth: str = "basic",
     max_results: int = 10,
     time_range: str | None = None,
+    min_score: float = 0.8,
 ) -> list[SearchResult]:
     """
     Search via Tavily and return structured results.
@@ -54,6 +55,8 @@ async def tavily_search(
         search_depth: "basic" (1 credit) or "advanced" (2 credits, better relevance).
         max_results: Maximum results to return (1-20).
         time_range: Filter by recency — "day", "week", "month", or "year".
+        min_score: Minimum relevance score (0-1). Results below this
+                   threshold are discarded. Default 0.8.
 
     Returns:
         List of SearchResult with URLs suitable for product extraction.
@@ -84,9 +87,15 @@ async def tavily_search(
         return []
 
     results: list[SearchResult] = []
+    skipped = 0
     for item in response.get("results", []):
         url = item.get("url", "")
         if not url:
+            continue
+
+        score = item.get("score", 0.0)
+        if score < min_score:
+            skipped += 1
             continue
 
         domain = ""
@@ -101,9 +110,14 @@ async def tavily_search(
                 title=item.get("title", ""),
                 snippet=item.get("content", "")[:300],
                 domain=domain,
-                score=item.get("score", 0.0),
+                score=score,
             )
         )
 
+    if skipped:
+        logger.info(
+            "Tavily: dropped %d low-confidence results (score < %.1f)",
+            skipped, min_score,
+        )
     logger.info("Tavily returned %d results for: %s", len(results), query)
     return results

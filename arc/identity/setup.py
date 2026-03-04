@@ -419,8 +419,9 @@ def _pick_tavily(
     console: Console,
     interactive: bool = True,
     existing_key: str = "",
+    existing_ngrok: str = "",
 ) -> dict | None:
-    """Optionally configure Tavily API for Liquid Web."""
+    """Optionally configure Tavily API and ngrok for Liquid Web."""
     from rich.prompt import Confirm, Prompt
 
     console.print(
@@ -459,7 +460,32 @@ def _pick_tavily(
 
     console.print("  [green]✓[/green] Tavily API configured — Liquid Web enabled!")
     console.print()
-    return {"api_key": api_key.strip()}
+
+    # Ngrok — optional, needed for public URLs (Telegram, sharing)
+    console.print(
+        "[dim]Ngrok creates a public URL so the comparison page is accessible\n"
+        "from Telegram, mobile, or anywhere. Free at [bold]https://ngrok.com[/bold]\n"
+        "Without it, results are only available on localhost.[/dim]"
+    )
+    if interactive:
+        ngrok_token = _q_text(
+            "Ngrok auth token (blank to skip):",
+            default=existing_ngrok,
+        )
+    else:
+        ngrok_token = Prompt.ask(
+            "[bold]Ngrok auth token (blank to skip)[/bold]",
+            default=existing_ngrok or "",
+        )
+    console.print()
+
+    if ngrok_token.strip():
+        console.print("  [green]✓[/green] Ngrok configured — public URLs enabled!")
+    else:
+        console.print("  [dim]No ngrok token — results will be on localhost only.[/dim]")
+    console.print()
+
+    return {"api_key": api_key.strip(), "ngrok_token": ngrok_token.strip()}
 
 
 def _pick_telegram(
@@ -560,7 +586,8 @@ def _show_current_config(console: Console, e: dict) -> None:
 
     # Tavily
     if e.get("tavily_api_key"):
-        lines.append("  🌐 [bold]Liquid Web:[/bold]  [green]✓ enabled[/green]")
+        ngrok_status = "  + ngrok" if e.get("ngrok_auth_token") else "  [dim](localhost only)[/dim]"
+        lines.append(f"  🌐 [bold]Liquid Web:[/bold]  [green]✓ enabled[/green]{ngrok_status}")
     else:
         lines.append("  🌐 [bold]Liquid Web:[/bold]  [dim]✗ not configured[/dim]")
 
@@ -810,9 +837,13 @@ def _run_sections(
         tavily_cfg = _pick_tavily(
             console, interactive=interactive,
             existing_key=e.get("tavily_api_key", ""),
+            existing_ngrok=e.get("ngrok_auth_token", ""),
         )
     else:
-        tavily_cfg = {"api_key": e["tavily_api_key"]} if e.get("tavily_api_key") else None
+        tavily_cfg = {
+            "api_key": e["tavily_api_key"],
+            "ngrok_token": e.get("ngrok_auth_token", ""),
+        } if e.get("tavily_api_key") else None
 
     # ── Telegram Bot ─────────────────────────────────────────
     if "telegram" in sections:
@@ -880,6 +911,12 @@ def _run_sections(
             f'api_key = "{tavily_cfg["api_key"]}"',
             "",
         ]
+        if tavily_cfg.get("ngrok_token"):
+            config_lines += [
+                "[ngrok]",
+                f'auth_token = "{tavily_cfg["ngrok_token"]}"',
+                "",
+            ]
 
     if telegram_cfg:
         config_lines += [
@@ -942,6 +979,8 @@ def _run_sections(
         result["worker_api_key"] = worker_cfg["api_key"]
     if tavily_cfg:
         result["tavily_api_key"] = tavily_cfg["api_key"]
+        if tavily_cfg.get("ngrok_token"):
+            result["ngrok_auth_token"] = tavily_cfg["ngrok_token"]
     if telegram_cfg:
         result["telegram_token"] = telegram_cfg["token"]
         result["telegram_chat_id"] = telegram_cfg.get("chat_id", "")
