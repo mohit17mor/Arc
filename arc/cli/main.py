@@ -61,6 +61,7 @@ def init() -> None:
                 "model": cfg.llm.default_model,
                 "base_url": cfg.llm.base_url,
                 "api_key": cfg.llm.api_key,
+                "tavily_api_key": cfg.tavily.api_key,
             }
             if cfg.llm.has_worker_override:
                 existing["worker_provider"] = cfg.llm.worker_provider

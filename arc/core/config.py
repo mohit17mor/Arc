@@ -122,6 +122,26 @@ class TelegramConfig(BaseModel):
         return bool(self.token and self.chat_id)
 
 
+class TavilyConfig(BaseModel):
+    """Tavily search API configuration."""
+
+    api_key: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key)
+
+
+class NgrokConfig(BaseModel):
+    """Ngrok tunnel configuration for Liquid Web."""
+
+    auth_token: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.auth_token)
+
+
 class SchedulerConfig(BaseModel):
     """Scheduler configuration."""
 
@@ -186,6 +206,8 @@ class ArcConfig(BaseModel):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    tavily: TavilyConfig = Field(default_factory=TavilyConfig)
+    ngrok: NgrokConfig = Field(default_factory=NgrokConfig)
 
     @staticmethod
     def load(
@@ -278,6 +300,8 @@ def _load_from_env() -> dict[str, Any]:
         "ARC_LLM_WORKER_MODEL": ("llm", "worker_model"),
         "ARC_LLM_WORKER_BASE_URL": ("llm", "worker_base_url"),
         "ARC_LLM_WORKER_API_KEY": ("llm", "worker_api_key"),
+        "ARC_TAVILY_API_KEY": ("tavily", "api_key"),
+        "ARC_NGROK_AUTH_TOKEN": ("ngrok", "auth_token"),
     }
 
     for env_var, (section, key) in env_mapping.items():

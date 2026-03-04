@@ -415,6 +415,53 @@ def _pick_worker_model(
     return _pick_provider(console, interactive=interactive, defaults=defaults)
 
 
+def _pick_tavily(
+    console: Console,
+    interactive: bool = True,
+    existing_key: str = "",
+) -> dict | None:
+    """Optionally configure Tavily API for Liquid Web."""
+    from rich.prompt import Confirm, Prompt
+
+    console.print(
+        "[dim]Liquid Web lets Arc search products across the web and render\n"
+        "a beautiful comparison UI. It uses the Tavily API (free tier: 1000 searches/month).\n"
+        "Get a key at [bold]https://tavily.com[/bold][/dim]"
+    )
+
+    has_existing = bool(existing_key)
+    if interactive:
+        enable = _q_confirm(
+            "Enable Liquid Web (Tavily search)?",
+            default=has_existing,
+        )
+    else:
+        enable = Confirm.ask(
+            "Enable Liquid Web (Tavily search)?",
+            default=has_existing,
+        )
+    console.print()
+
+    if not enable:
+        return None
+
+    if interactive:
+        api_key = _q_password("Tavily API key:") if not existing_key else _q_text(
+            "Tavily API key:", default=existing_key
+        )
+    else:
+        api_key = Prompt.ask("[bold]Tavily API key[/bold]", default=existing_key or "")
+
+    if not api_key.strip():
+        console.print("  [yellow]⚠ No key provided — Liquid Web disabled.[/yellow]")
+        console.print()
+        return None
+
+    console.print("  [green]✓[/green] Tavily API configured — Liquid Web enabled!")
+    console.print()
+    return {"api_key": api_key.strip()}
+
+
 # ── Main setup wizard ────────────────────────────────────────────
 
 
@@ -550,6 +597,12 @@ def run_first_time_setup(
         console, interactive=interactive, defaults=worker_defaults,
     )
 
+    # ── Tavily (Liquid Web) ──────────────────────────────────
+    tavily_cfg = _pick_tavily(
+        console, interactive=interactive,
+        existing_key=e.get("tavily_api_key", ""),
+    )
+
     # Connection is already validated by fetch_models() in _pick_provider.
     # Show a summary of the selected configuration.
     console.print(
@@ -603,6 +656,13 @@ def run_first_time_setup(
         "",
     ]
 
+    if tavily_cfg:
+        config_lines += [
+            "[tavily]",
+            f'api_key = "{tavily_cfg["api_key"]}"',
+            "",
+        ]
+
     config_content = "\n".join(config_lines)
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -612,6 +672,8 @@ def run_first_time_setup(
     model_info = f"{provider_cfg['provider']}/{provider_cfg['model']}"
     if worker_cfg:
         model_info += f"\n[green]✓[/green] Worker: {worker_cfg['provider']}/{worker_cfg['model']}"
+    if tavily_cfg:
+        model_info += "\n[green]✓[/green] Liquid Web: enabled (Tavily)"
 
     console.print(
         Panel(
@@ -645,4 +707,6 @@ def run_first_time_setup(
         result["worker_model"] = worker_cfg["model"]
         result["worker_base_url"] = worker_cfg["base_url"]
         result["worker_api_key"] = worker_cfg["api_key"]
+    if tavily_cfg:
+        result["tavily_api_key"] = tavily_cfg["api_key"]
     return result

@@ -73,6 +73,52 @@ Spawn background worker agents for long tasks. Keep chatting while research happ
 ### 🔔 Get Notified
 Results delivered in-chat, to a log file, or via Telegram.
 
+### 🛍️ Liquid Web — Product Search & Comparison
+Ask Arc to find products and it renders a **live 3D carousel** you can browse in your browser:
+
+```
+You:  "find me the best wireless earbuds under ₹5000"
+Arc:  *searches Tavily → scrapes Amazon, Flipkart, etc. in parallel
+       → extracts product data → renders a 3D carousel UI
+       → opens it in your browser*
+      "Found 12 products from 4 sites. Comparison page is live at: http://localhost:63350"
+```
+
+**How it works:**
+
+1. **Search** — queries [Tavily API](https://tavily.com) (free tier: 1,000 searches/month) to find relevant product pages
+2. **Scrape** — launches parallel headless Chromium contexts via `BrowserPool` to extract product data
+3. **Extract** — pulls structured data using JSON-LD, OpenGraph, and DOM heuristics, plus site-specific extractors for Amazon and Flipkart
+4. **Filter** — scores products on quality (price, name, image, rating) and drops blog/review page noise
+5. **Deduplicate** — removes near-duplicate products by name similarity
+6. **Render** — generates a responsive 3D carousel with convex arc layout, neon gradient borders, and glassmorphism effects
+7. **Serve** — starts a local HTTP server (optionally tunneled via ngrok for mobile/Telegram access)
+
+**Server lifecycle:**
+- The server runs **independently** in the background — you can keep chatting with Arc
+- Closing the browser tab doesn't kill the server — revisit the URL anytime
+- Auto-shuts down after **10 minutes** of inactivity
+- A new search **automatically replaces** the old one (only one result page is live at a time)
+- Everything cleans up when you exit `arc chat`
+
+**Setup:**
+
+```bash
+arc init   # enable Liquid Web when prompted, paste your Tavily API key
+```
+
+Or add manually to `~/.arc/config.toml`:
+```toml
+[tavily]
+api_key = "tvly-..."
+```
+
+Optionally, for public URLs accessible from mobile or Telegram:
+```toml
+[ngrok]
+auth_token = "..."
+```
+
 ---
 
 ## Architecture
@@ -95,6 +141,7 @@ Results delivered in-chat, to a log file, or via Telegram.
                               │        Skills            │
                               │ files · terminal · web   │
                               │ browser · workers · jobs │
+                              │     · liquid web ·       │
                               └──────────────────────────┘
 ```
 
@@ -148,6 +195,9 @@ default_policy = "ask"
 
 [scheduler]
 enabled = true
+
+[tavily]
+api_key = ""    # Liquid Web — get a free key at tavily.com
 
 [telegram]
 token = ""      # optional
