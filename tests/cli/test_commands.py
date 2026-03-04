@@ -50,21 +50,51 @@ def test_init_reconfigure_keeps_defaults(runner, tmp_path, monkeypatch):
     )
     assert result1.exit_code == 0
 
-    # Second run — just press Enter for everything (keep defaults)
-    # Non-interactive path: user_name, agent_name, personality, provider,
+    # Second run — reconfigure
+    # Non-interactive path: section_menu (default=Everything),
+    # user_name, agent_name, personality, provider,
     # base_url, model, worker_confirm, tavily_confirm, telegram_confirm
     result2 = runner.invoke(
         app,
         ["init"],
-        input="\n\n\n\n\n\n\n\n\n",
+        input="\n\n\n\n\n\n\n\n\n\n",
     )
     assert result2.exit_code == 0
-    assert "Reconfiguring" in result2.stdout
+    assert "Current Configuration" in result2.stdout
 
     # Verify config preserved
     cfg_text = (tmp_path / ".arc" / "config.toml").read_text()
     assert 'default_model = "llama3.1"' in cfg_text
     assert 'user_name = "Alex"' in cfg_text
+
+
+def test_init_reconfigure_single_section(runner, tmp_path, monkeypatch):
+    """arc init with section selection only prompts for that section."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # First run — create initial config
+    result1 = runner.invoke(
+        app,
+        ["init"],
+        input="Alex\nFriday\n3\n1\nhttp://localhost:11434\nllama3.1\nn\nn\nn\n",
+    )
+    assert result1.exit_code == 0
+
+    # Second run — pick section 3 (Liquid Web / Tavily) only,
+    # then exit (6) from the menu loop
+    # Non-interactive: section_menu=3, tavily prompt (n), section_menu=6 (exit)
+    result2 = runner.invoke(
+        app,
+        ["init"],
+        input="3\nn\n6\n",
+    )
+    assert result2.exit_code == 0
+
+    # Verify identity and model config are preserved (not re-prompted)
+    cfg_text = (tmp_path / ".arc" / "config.toml").read_text()
+    assert 'default_model = "llama3.1"' in cfg_text
+    assert 'user_name = "Alex"' in cfg_text
+    assert 'agent_name = "Friday"' in cfg_text
 
 
 def test_chat_without_init(runner, tmp_path, monkeypatch):

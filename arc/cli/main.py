@@ -71,11 +71,6 @@ def init() -> None:
                 existing["worker_model"] = cfg.llm.worker_model
                 existing["worker_base_url"] = cfg.llm.worker_base_url
                 existing["worker_api_key"] = cfg.llm.worker_api_key
-            console.print(
-                f"[dim]Reconfiguring Arc — current values shown as defaults. "
-                f"Press Enter to keep.[/dim]"
-            )
-            console.print()
         except Exception:
             pass  # corrupt config — treat as fresh setup
 

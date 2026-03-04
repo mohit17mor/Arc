@@ -528,6 +528,84 @@ def _pick_telegram(
     }
 
 
+# ── Section menu (reconfiguration) ───────────────────────────────
+
+SETUP_SECTIONS = [
+    {"value": "identity", "name": "🤖  Identity — name & personality"},
+    {"value": "models",   "name": "🧠  Models — LLM provider, model & worker"},
+    {"value": "tavily",   "name": "🌐  Liquid Web — Tavily search API"},
+    {"value": "telegram", "name": "📱  Telegram — bot platform"},
+    {"value": "all",      "name": "⚙️   Everything — full reconfiguration"},
+    {"value": "exit",     "name": "✖   Exit — no changes"},
+]
+
+
+def _show_current_config(console: Console, e: dict) -> None:
+    """Display a compact summary of current configuration."""
+    lines = []
+
+    # Identity
+    user = e.get("user_name", "User")
+    agent = e.get("agent_name", "Arc")
+    pers = e.get("personality", "helpful")
+    lines.append(f"  🤖 [bold]Identity:[/bold]   {user} → {agent} ({pers})")
+
+    # Models
+    provider = e.get("provider", "?")
+    model = e.get("model", "?")
+    model_str = f"{provider}/{model}"
+    if e.get("worker_provider"):
+        model_str += f"  [dim]worker: {e['worker_provider']}/{e.get('worker_model', '?')}[/dim]"
+    lines.append(f"  🧠 [bold]Models:[/bold]     {model_str}")
+
+    # Tavily
+    if e.get("tavily_api_key"):
+        lines.append("  🌐 [bold]Liquid Web:[/bold]  [green]✓ enabled[/green]")
+    else:
+        lines.append("  🌐 [bold]Liquid Web:[/bold]  [dim]✗ not configured[/dim]")
+
+    # Telegram
+    if e.get("telegram_token"):
+        lines.append("  📱 [bold]Telegram:[/bold]   [green]✓ enabled[/green]")
+    else:
+        lines.append("  📱 [bold]Telegram:[/bold]   [dim]✗ not configured[/dim]")
+
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="[bold]Current Configuration[/bold]",
+            border_style="dim",
+        )
+    )
+    console.print()
+
+
+def _pick_section(console: Console, interactive: bool = True) -> str:
+    """Let the user choose which section to reconfigure."""
+    if interactive:
+        return _q_select(
+            "What would you like to configure?",
+            SETUP_SECTIONS,
+            default="all",
+        )
+    else:
+        from rich.table import Table
+
+        console.print("[bold]What would you like to reconfigure?[/bold]")
+        console.print()
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        for i, s in enumerate(SETUP_SECTIONS, 1):
+            table.add_row(f"[bold cyan]{i}[/bold cyan]", s["name"])
+        console.print(table)
+        console.print()
+        choice = Prompt.ask(
+            "[bold]Pick a number[/bold]",
+            choices=[str(i) for i in range(1, len(SETUP_SECTIONS) + 1)],
+            default=str(len(SETUP_SECTIONS)),  # default = "Everything"
+        )
+        return SETUP_SECTIONS[int(choice) - 1]["value"]
+
+
 # ── Main setup wizard ────────────────────────────────────────────
 
 
@@ -540,10 +618,11 @@ def run_first_time_setup(
     """
     Run the first-time setup wizard.
 
+    On first run, walks through all sections.  On reconfiguration,
+    shows a section menu so the user can update only what they need.
+
     Args:
         existing: previously saved config values to use as defaults.
-                  When present, each prompt pre-selects the current value
-                  so the user can press Enter to keep it unchanged.
 
     Returns dict with configuration values.
     """
@@ -554,144 +633,209 @@ def run_first_time_setup(
 
     # Banner
     console.print()
-    if is_reconfig:
-        console.print(
-            Panel(
-                "[bold cyan]"
-                "   █████╗ ██████╗  ██████╗\n"
-                "  ██╔══██╗██╔══██╗██╔════╝\n"
-                "  ███████║██████╔╝██║     \n"
-                "  ██╔══██║██╔══██╗██║     \n"
-                "  ██║  ██║██║  ██║╚██████╗\n"
-                "  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝\n"
-                "[/bold cyan]\n"
-                "[dim]Reconfiguring — press Enter to keep current values.[/dim]",
-                border_style="cyan",
-            )
+    console.print(
+        Panel(
+            "[bold cyan]"
+            "   █████╗ ██████╗  ██████╗\n"
+            "  ██╔══██╗██╔══██╗██╔════╝\n"
+            "  ███████║██████╔╝██║     \n"
+            "  ██╔══██║██╔══██╗██║     \n"
+            "  ██║  ██║██║  ██║╚██████╗\n"
+            "  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝\n"
+            "[/bold cyan]\n"
+            "[dim]" + (
+                "Select a section to reconfigure."
+                if is_reconfig else
+                "Welcome, human. Let's get acquainted."
+            ) + "[/dim]",
+            border_style="cyan",
         )
-    else:
-        console.print(
-            Panel(
-                "[bold cyan]"
-                "   █████╗ ██████╗  ██████╗\n"
-                "  ██╔══██╗██╔══██╗██╔════╝\n"
-                "  ███████║██████╔╝██║     \n"
-                "  ██╔══██║██╔══██╗██║     \n"
-                "  ██║  ██║██║  ██║╚██████╗\n"
-                "  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝\n"
-                "[/bold cyan]\n"
-                "[dim]Welcome, human. Let's get acquainted.[/dim]",
-                border_style="cyan",
-            )
-        )
+    )
     console.print()
+
+    # ── Section selection (reconfigure only) ──────────────────
+    ALL_SECTIONS = frozenset({"identity", "models", "tavily", "telegram"})
+
+    if is_reconfig:
+        # Loop: pick section → configure → save → back to menu
+        while True:
+            _show_current_config(console, e)
+            section = _pick_section(console, interactive)
+            console.print()
+            if section == "exit":
+                console.print("  [dim]No changes made.[/dim]")
+                return e
+            sections = ALL_SECTIONS if section == "all" else frozenset({section})
+
+            result = _run_sections(
+                sections, e, console, interactive,
+                config_path, identity_path,
+            )
+
+            # Update e with what was just configured so the menu reflects it
+            e.update(result)
+
+            # If they chose "Everything", no need to loop
+            if section == "all":
+                return result
+    else:
+        sections = ALL_SECTIONS  # first run → everything
+        return _run_sections(
+            sections, e, console, interactive,
+            config_path, identity_path,
+        )
+
+
+def _run_sections(
+    sections: frozenset[str],
+    e: dict,
+    console: Console,
+    interactive: bool,
+    config_path: Path,
+    identity_path: Path,
+) -> dict:
+    """Run the selected setup sections, save config, and return result dict."""
 
     # ── Identity ──────────────────────────────────────────────
-    default_user = e.get("user_name", "User")
-    default_agent = e.get("agent_name", "Arc")
-    default_personality = e.get("personality", "helpful")
+    if "identity" in sections:
+        default_user = e.get("user_name", "User")
+        default_agent = e.get("agent_name", "Arc")
+        default_personality = e.get("personality", "helpful")
 
-    if interactive:
-        user_name = _q_text("What should I call you?", default=default_user)
-    else:
-        user_name = Prompt.ask("[bold]What should I call you?[/bold]", default=default_user)
-    console.print()
-
-    if interactive:
-        agent_name = _q_text(f"Nice to meet you, {user_name}! Now give me a name:", default=default_agent)
-    else:
-        agent_name = Prompt.ask(f"[bold]Nice to meet you, {user_name}! Now give me a name[/bold]", default=default_agent)
-    console.print()
-
-    # ── Personality ───────────────────────────────────────────
-    personalities = list_personalities()
-
-    if interactive:
-        personality_choices = [
-            {"value": p.id, "name": f"{p.emoji}  {p.name} — {p.description}"}
-            for p in personalities
-        ]
-        personality_id = _q_select(
-            f"Alright, I'm {agent_name}. What kind of AI am I?",
-            personality_choices,
-            default=default_personality,
-        )
-        personality = get_personality(personality_id)
-    else:
-        from rich.table import Table
-        console.print(f"[bold]Alright, I'm {agent_name}. What kind of AI am I?[/bold]")
+        if interactive:
+            user_name = _q_text("What should I call you?", default=default_user)
+        else:
+            user_name = Prompt.ask("[bold]What should I call you?[/bold]", default=default_user)
         console.print()
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        for i, p in enumerate(personalities, 1):
-            table.add_row(f"[bold cyan]{i}[/bold cyan]", f"{p.emoji} [bold]{p.name}[/bold]")
-            table.add_row("", f"[dim]{p.description}[/dim]")
-            table.add_row("", "")
-        console.print(table)
-        # Pre-select existing personality by index
-        fallback_choice = "1"
-        for i, p in enumerate(personalities, 1):
-            if p.id == default_personality:
-                fallback_choice = str(i)
-                break
-        choice = Prompt.ask("[bold]Pick a number[/bold]",
-                            choices=[str(i) for i in range(1, len(personalities) + 1)],
-                            default=fallback_choice)
-        personality = personalities[int(choice) - 1]
 
-    console.print(f"  [green]✓[/green] {personality.emoji} {personality.name} it is!")
-    console.print()
+        if interactive:
+            agent_name = _q_text(f"Nice to meet you, {user_name}! Now give me a name:", default=default_agent)
+        else:
+            agent_name = Prompt.ask(f"[bold]Nice to meet you, {user_name}! Now give me a name[/bold]", default=default_agent)
+        console.print()
 
-    # ── LLM Provider ─────────────────────────────────────────
-    provider_defaults = {
-        "provider": e.get("provider", "ollama"),
-        "model": e.get("model", ""),
-        "base_url": e.get("base_url", ""),
-        "api_key": e.get("api_key", ""),
-    }
-    provider_cfg = _pick_provider(console, interactive=interactive, defaults=provider_defaults)
+        # Personality
+        personalities = list_personalities()
 
-    # ── Worker Model (optional) ──────────────────────────────
-    worker_defaults: dict | None = None
-    if e.get("worker_provider"):
-        worker_defaults = {
-            "provider": e["worker_provider"],
-            "model": e.get("worker_model", ""),
-            "base_url": e.get("worker_base_url", ""),
-            "api_key": e.get("worker_api_key", ""),
+        if interactive:
+            personality_choices = [
+                {"value": p.id, "name": f"{p.emoji}  {p.name} — {p.description}"}
+                for p in personalities
+            ]
+            personality_id = _q_select(
+                f"Alright, I'm {agent_name}. What kind of AI am I?",
+                personality_choices,
+                default=default_personality,
+            )
+            personality = get_personality(personality_id)
+        else:
+            from rich.table import Table
+            console.print(f"[bold]Alright, I'm {agent_name}. What kind of AI am I?[/bold]")
+            console.print()
+            table = Table(show_header=False, box=None, padding=(0, 2))
+            for i, p in enumerate(personalities, 1):
+                table.add_row(f"[bold cyan]{i}[/bold cyan]", f"{p.emoji} [bold]{p.name}[/bold]")
+                table.add_row("", f"[dim]{p.description}[/dim]")
+                table.add_row("", "")
+            console.print(table)
+            fallback_choice = "1"
+            for i, p in enumerate(personalities, 1):
+                if p.id == default_personality:
+                    fallback_choice = str(i)
+                    break
+            choice = Prompt.ask("[bold]Pick a number[/bold]",
+                                choices=[str(i) for i in range(1, len(personalities) + 1)],
+                                default=fallback_choice)
+            personality = personalities[int(choice) - 1]
+
+        console.print(f"  [green]✓[/green] {personality.emoji} {personality.name} it is!")
+        console.print()
+    else:
+        # Carry forward existing identity
+        user_name = e.get("user_name", "User")
+        agent_name = e.get("agent_name", "Arc")
+        personality = get_personality(e.get("personality", "helpful"))
+
+    # ── LLM Provider + Worker ─────────────────────────────────
+    if "models" in sections:
+        provider_defaults = {
+            "provider": e.get("provider", "ollama"),
+            "model": e.get("model", ""),
+            "base_url": e.get("base_url", ""),
+            "api_key": e.get("api_key", ""),
         }
-    worker_cfg = _pick_worker_model(
-        console, interactive=interactive, defaults=worker_defaults,
-    )
+        provider_cfg = _pick_provider(console, interactive=interactive, defaults=provider_defaults)
+
+        # Worker model (optional)
+        worker_defaults: dict | None = None
+        if e.get("worker_provider"):
+            worker_defaults = {
+                "provider": e["worker_provider"],
+                "model": e.get("worker_model", ""),
+                "base_url": e.get("worker_base_url", ""),
+                "api_key": e.get("worker_api_key", ""),
+            }
+        worker_cfg = _pick_worker_model(
+            console, interactive=interactive, defaults=worker_defaults,
+        )
+
+        console.print(
+            f"  [bold]Provider:[/bold] {provider_cfg['provider']}  "
+            f"[bold]Model:[/bold] {provider_cfg['model']}"
+        )
+        if worker_cfg:
+            console.print(
+                f"  [bold]Worker:[/bold]   {worker_cfg['provider']}/{worker_cfg['model']}"
+            )
+        console.print()
+    else:
+        # Carry forward existing model config
+        provider_cfg = {
+            "provider": e.get("provider", "ollama"),
+            "model": e.get("model", ""),
+            "base_url": e.get("base_url", ""),
+            "api_key": e.get("api_key", ""),
+        }
+        worker_cfg = None
+        if e.get("worker_provider"):
+            worker_cfg = {
+                "provider": e["worker_provider"],
+                "model": e.get("worker_model", ""),
+                "base_url": e.get("worker_base_url", ""),
+                "api_key": e.get("worker_api_key", ""),
+            }
 
     # ── Tavily (Liquid Web) ──────────────────────────────────
-    tavily_cfg = _pick_tavily(
-        console, interactive=interactive,
-        existing_key=e.get("tavily_api_key", ""),
-    )
+    if "tavily" in sections:
+        tavily_cfg = _pick_tavily(
+            console, interactive=interactive,
+            existing_key=e.get("tavily_api_key", ""),
+        )
+    else:
+        tavily_cfg = {"api_key": e["tavily_api_key"]} if e.get("tavily_api_key") else None
 
     # ── Telegram Bot ─────────────────────────────────────────
-    telegram_cfg = _pick_telegram(
-        console, interactive=interactive,
-        existing_token=e.get("telegram_token", ""),
-        existing_chat_id=e.get("telegram_chat_id", ""),
-        existing_allowed=",".join(e.get("telegram_allowed_users", [])),
-    )
-
-    # Connection is already validated by fetch_models() in _pick_provider.
-    # Show a summary of the selected configuration.
-    console.print(
-        f"  [bold]Provider:[/bold] {provider_cfg['provider']}  "
-        f"[bold]Model:[/bold] {provider_cfg['model']}"
-    )
-    if worker_cfg:
-        console.print(
-            f"  [bold]Worker:[/bold]   {worker_cfg['provider']}/{worker_cfg['model']}"
+    if "telegram" in sections:
+        telegram_cfg = _pick_telegram(
+            console, interactive=interactive,
+            existing_token=e.get("telegram_token", ""),
+            existing_chat_id=e.get("telegram_chat_id", ""),
+            existing_allowed=",".join(e.get("telegram_allowed_users", [])),
         )
-    console.print()
+    else:
+        if e.get("telegram_token"):
+            telegram_cfg = {
+                "token": e["telegram_token"],
+                "chat_id": e.get("telegram_chat_id", ""),
+                "allowed_users": e.get("telegram_allowed_users", []),
+            }
+        else:
+            telegram_cfg = None
 
-    # ── Create identity file ─────────────────────────────────
-    soul = SoulManager(identity_path)
-    soul.create(agent_name, user_name, personality.id)
+    # ── Create identity file (only if identity was changed) ──
+    if "identity" in sections:
+        soul = SoulManager(identity_path)
+        soul.create(agent_name, user_name, personality.id)
 
     # ── Create config file ───────────────────────────────────
     config_lines = [
