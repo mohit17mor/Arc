@@ -34,6 +34,7 @@ class TerminalSkill(Skill):
             version="1.0.0",
             description="Execute shell commands",
             capabilities=frozenset([Capability.SHELL_EXEC]),
+            always_available=True,
             tools=(
                 ToolSpec(
                     name="execute",

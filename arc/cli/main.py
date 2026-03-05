@@ -116,6 +116,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     from arc.agent.registry import AgentRegistry
     from arc.core.escalation import EscalationBus
     from arc.agent.worker_log import WorkerActivityLog
+    from arc.skills.router import SkillRouter
 
     config_path = get_config_path()
     identity_path = get_identity_path()
@@ -217,6 +218,9 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     # Setup security
     security = SecurityEngine(config.security, kernel)
 
+    # Create skill router (two-tier tool selection)
+    skill_router = SkillRouter(skill_manager)
+
     # Build system prompt with environment info
     env_info = (
         f"\n\nEnvironment:\n"
@@ -311,6 +315,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
             temperature=config.agent.temperature,
         ),
         memory_manager=memory_manager,
+        router=skill_router,
     )
 
     # Sub-agent factory for the scheduler.
@@ -356,6 +361,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     cli.set_approval_flow(agent.security.approval_flow)
     cli.set_escalation_bus(escalation_bus)
     cli.set_skill_manager(skill_manager)
+    cli.set_skill_router(skill_router)
     if mcp_manager.has_servers:
         cli.set_mcp_manager(mcp_manager)
     if memory_manager is not None:
@@ -677,6 +683,7 @@ async def _run_telegram(verbose: bool = False) -> None:
     from arc.agent.registry import AgentRegistry
     from arc.core.escalation import EscalationBus
     from arc.agent.worker_log import WorkerActivityLog
+    from arc.skills.router import SkillRouter
 
     config_path = get_config_path()
     identity_path = get_identity_path()
@@ -771,6 +778,9 @@ async def _run_telegram(verbose: bool = False) -> None:
     # Setup security (auto-approve for Telegram — no interactive terminal)
     security = SecurityEngine.make_permissive(kernel)
 
+    # Create skill router (two-tier tool selection)
+    skill_router = SkillRouter(skill_manager)
+
     # Build system prompt
     env_info = (
         f"\n\nEnvironment:\n"
@@ -817,6 +827,7 @@ async def _run_telegram(verbose: bool = False) -> None:
             temperature=config.agent.temperature,
         ),
         memory_manager=memory_manager,
+        router=skill_router,
     )
 
     # Sub-agent factory

@@ -51,6 +51,7 @@ class CLIPlatform(Platform):
         self._approval_flow: Any = None  # Set via set_approval_flow()
         self._pending_approval: asyncio.Event = asyncio.Event()
         self._skill_manager: Any = None  # Set via set_skill_manager()
+        self._skill_router: Any = None  # Set via set_skill_router()
         self._memory_manager: Any = None  # Set via set_memory_manager()
         self._scheduler_store: Any = None  # Set via set_scheduler_store()
         self._pending_queue: asyncio.Queue | None = None  # Set via set_pending_queue()
@@ -87,6 +88,10 @@ class CLIPlatform(Platform):
     def set_skill_manager(self, skill_manager: Any) -> None:
         """Set reference to skill manager for /skills command."""
         self._skill_manager = skill_manager
+
+    def set_skill_router(self, router: Any) -> None:
+        """Set reference to skill router for /skills command."""
+        self._skill_router = router
 
     def set_memory_manager(self, memory_manager: Any) -> None:
         """Set reference to memory manager for /memory command."""
@@ -507,22 +512,73 @@ class CLIPlatform(Platform):
             if not self._skill_manager:
                 self._console.print("[dim]No skill manager available[/dim]")
             else:
-                lines: list[str] = ["[bold]Available Skills[/bold]\n"]
-                for skill_name in sorted(self._skill_manager.skill_names):
-                    skill = self._skill_manager.get_skill(skill_name)
-                    if skill is None:
+                lines: list[str] = ["[bold]Skill Router — Two-Tier Tool Selection[/bold]\n"]
+
+                # Group skills by tier using cached manifests
+                always_on: list[str] = []
+                on_demand: list[str] = []
+                for name in sorted(self._skill_manager.skill_names):
+                    manifest = self._skill_manager.get_manifest(name)
+                    if manifest is None:
                         continue
-                    manifest = skill.manifest()
-                    lines.append(f"  [bold cyan]{manifest.name}[/bold cyan] v{manifest.version}")
+                    if manifest.always_available:
+                        always_on.append(name)
+                    else:
+                        on_demand.append(name)
+
+                # Tier 1 — Always Available
+                lines.append("  [bold green]━━ Tier 1 — Always Available ━━[/bold green]")
+                lines.append("  [dim]These tools are sent to the LLM on every call[/dim]\n")
+                for name in always_on:
+                    manifest = self._skill_manager.get_manifest(name)
+                    if manifest is None:
+                        continue
+                    tool_count = len(manifest.tools)
+                    lines.append(
+                        f"  [bold cyan]{manifest.name}[/bold cyan] v{manifest.version}"
+                        f"  [dim]({tool_count} tool{'s' if tool_count != 1 else ''})[/dim]"
+                    )
                     lines.append(f"  [dim]{manifest.description}[/dim]")
                     for tool_spec in manifest.tools:
-                        lines.append(f"    [yellow]⟳[/yellow] [bold]{tool_spec.name}[/bold]")
-                        # Wrap description at ~60 chars for readability
-                        desc = tool_spec.description.split(". ")[0]  # first sentence only
+                        lines.append(f"    [green]●[/green] [bold]{tool_spec.name}[/bold]")
+                        desc = tool_spec.description.split(". ")[0]
                         if len(desc) > 70:
                             desc = desc[:67] + "..."
                         lines.append(f"      [dim]{desc}[/dim]")
                     lines.append("")
+
+                # Tier 2 — On Demand
+                if on_demand:
+                    lines.append("  [bold yellow]━━ Tier 2 — On Demand (via use_skill) ━━[/bold yellow]")
+                    lines.append("  [dim]LLM calls use_skill(name) to activate these[/dim]\n")
+                    for name in on_demand:
+                        manifest = self._skill_manager.get_manifest(name)
+                        if manifest is None:
+                            continue
+                        tool_names = ", ".join(t.name for t in manifest.tools)
+                        tool_count = len(manifest.tools)
+                        lines.append(
+                            f"  [bold cyan]{manifest.name}[/bold cyan] v{manifest.version}"
+                            f"  [dim]({tool_count} tool{'s' if tool_count != 1 else ''})[/dim]"
+                        )
+                        lines.append(f"  [dim]{manifest.description}[/dim]")
+                        lines.append(f"    [yellow]⟳[/yellow] Tools: [bold]{tool_names}[/bold]")
+                        lines.append("")
+
+                # Summary
+                total_tools = len(self._skill_manager.tool_names)
+                always_tool_count = sum(
+                    len(self._skill_manager.get_manifest(n).tools)
+                    for n in always_on
+                    if self._skill_manager.get_manifest(n)
+                )
+                lines.append(
+                    f"  [dim]Total: {len(always_on) + len(on_demand)} skills, "
+                    f"{total_tools} tools — LLM sees "
+                    f"{always_tool_count} + use_skill per call "
+                    f"(was {total_tools} flat)[/dim]"
+                )
+
                 self._console.print(
                     Panel("\n".join(lines).rstrip(), border_style="blue")
                 )

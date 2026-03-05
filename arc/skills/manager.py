@@ -11,10 +11,13 @@ import logging
 from typing import Any
 
 from arc.core.errors import SkillError
-from arc.core.types import ToolResult, ToolSpec
+from arc.core.types import SkillManifest, ToolResult, ToolSpec
 from arc.skills.base import Skill
 
 logger = logging.getLogger(__name__)
+
+# Minimum description length before a warning is emitted at registration time.
+_MIN_DESC_LEN = 15
 
 
 class SkillManager:
@@ -36,7 +39,9 @@ class SkillManager:
     def __init__(self, kernel: Any) -> None:
         self._kernel = kernel
         self._skills: dict[str, Skill] = {}  # name → skill
+        self._manifests: dict[str, SkillManifest] = {}  # name → cached manifest
         self._tool_to_skill: dict[str, str] = {}  # tool_name → skill_name
+        self._tool_specs: dict[str, ToolSpec] = {}  # tool_name → ToolSpec (O(1))
         self._activated: set[str] = set()  # skill names that have been activated
         self._initialized: set[str] = set()  # skill names that have been initialized
 
@@ -49,6 +54,7 @@ class SkillManager:
         Register a skill.
 
         Calls skill.initialize() but NOT activate() (lazy activation).
+        Caches the manifest and individual tool specs for O(1) lookup.
         """
         manifest = skill.manifest()
         name = manifest.name
@@ -57,6 +63,15 @@ class SkillManager:
             logger.warning(f"Skill '{name}' already registered, replacing")
 
         self._skills[name] = skill
+        self._manifests[name] = manifest
+
+        # Warn on short/missing skill description
+        if len(manifest.description) < _MIN_DESC_LEN:
+            logger.warning(
+                f"Skill '{name}' has a very short description "
+                f"({len(manifest.description)} chars) — "
+                f"the LLM may not understand when to use it"
+            )
 
         # Map tools to this skill
         for tool_spec in manifest.tools:
@@ -67,6 +82,14 @@ class SkillManager:
                     f"now owned by '{name}'"
                 )
             self._tool_to_skill[tool_spec.name] = name
+            self._tool_specs[tool_spec.name] = tool_spec
+
+            # Warn on short tool descriptions
+            if len(tool_spec.description) < _MIN_DESC_LEN:
+                logger.warning(
+                    f"Tool '{tool_spec.name}' (skill '{name}') has a very "
+                    f"short description — LLM tool selection may suffer"
+                )
 
         # Initialize
         await skill.initialize(self._kernel, config or {})
@@ -124,9 +147,22 @@ class SkillManager:
     def get_all_tool_specs(self) -> list[ToolSpec]:
         """Get all tool specifications from all registered skills."""
         specs = []
-        for skill in self._skills.values():
-            specs.extend(skill.manifest().tools)
+        for manifest in self._manifests.values():
+            specs.extend(manifest.tools)
         return specs
+
+    def get_tool_spec(self, tool_name: str) -> ToolSpec | None:
+        """Get a single tool spec by name — O(1) lookup."""
+        return self._tool_specs.get(tool_name)
+
+    def get_manifest(self, skill_name: str) -> SkillManifest | None:
+        """Get the cached manifest for a skill."""
+        return self._manifests.get(skill_name)
+
+    @property
+    def manifests(self) -> dict[str, SkillManifest]:
+        """All cached manifests keyed by skill name."""
+        return dict(self._manifests)
 
     def get_skill(self, name: str) -> Skill | None:
         """Get a skill by name."""

@@ -213,6 +213,9 @@ class SkillManifest:
     tools: tuple[ToolSpec, ...] = ()
     config_schema: dict[str, Any] = field(default_factory=dict)
     platforms: tuple[str, ...] = ("all",)
+    always_available: bool = False
+    """When True, this skill's tools are sent to the LLM on every call
+    without requiring explicit activation via the skill router."""
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -68,16 +68,18 @@ class WorkerSkill(Skill):
             "You are a focused background worker completing a specific sub-task. "
             "Do not ask clarifying questions — make your best effort with the "
             "information provided. Return a clear, structured result.\n\n"
-            "Web research rules (STRICT):\n"
-            "- Run ONE web_search, then read at most 2-3 of the most relevant URLs. Stop there.\n"
-            "- Do NOT loop: search → read → search → read. One search is always enough.\n"
-            "- For live data (prices, rates, weather) prefer http_get against a known API URL.\n"
-            "- Once you have enough information, STOP calling tools and write your result.\n"
-            "- If a page fails to load, skip it and use what you already have.\n\n"
-            "Tool use rules:\n"
-            "- Use the minimum number of tool calls needed to complete the task.\n"
+            "Tool selection:\n"
+            "- Review ALL available tools before choosing — pick the most "
+            "capable tool for the job, not just the most familiar one.\n"
+            "- If a specialised tool exists for the task (e.g. product comparison, "
+            "browser automation), prefer it over generic web search.\n"
+            "- One well-chosen tool call often replaces several generic ones.\n\n"
+            "Efficiency rules (STRICT):\n"
+            "- Use the MINIMUM number of tool calls needed.\n"
+            "- Do NOT loop: search → read → search → read. One round is enough.\n"
             "- Never call the same tool twice with the same or similar arguments.\n"
-            "- If you have sufficient information to answer, do not make more tool calls."
+            "- Once you have enough information, STOP calling tools and write your result.\n"
+            "- If a page or tool call fails, skip it and use what you already have."
         )
 
     # ------------------------------------------------------------------ #
@@ -114,6 +116,7 @@ class WorkerSkill(Skill):
             version="1.0.0",
             description="Delegate a sub-task to a background worker agent and continue immediately",
             capabilities=frozenset([Capability.FILE_READ]),
+            always_available=True,
             tools=[
                 ToolSpec(
                     name="delegate_task",
@@ -129,7 +132,8 @@ class WorkerSkill(Skill):
                         "Example reply: 'I've started a background worker to fetch "
                         "today's AI news. I'll share the results as soon as it's done.' "
                         "Use this for tasks that need live data or take a long time: "
-                        "web research, file analysis, multi-step data gathering."
+                        "web research, product search/comparison, "
+                        "file analysis, multi-step data gathering."
                     ),
                     parameters={
                         "type": "object",
@@ -152,10 +156,11 @@ class WorkerSkill(Skill):
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": (
-                                    "Optional: skill names the worker may use "
-                                    "(e.g. ['browsing', 'filesystem']). "
-                                    "Omit to give the worker all available skills "
-                                    "except 'worker' and 'scheduler'."
+                                    "Optional: restrict which skills the worker may use. "
+                                    "Omit to give the worker ALL available skills "
+                                    "(except 'worker' and 'scheduler'). "
+                                    "Only set this when you need to restrict access — "
+                                    "leaving it out is almost always correct."
                                 ),
                             },
                             "timeout_seconds": {
@@ -269,7 +274,7 @@ class WorkerSkill(Skill):
             )
 
         # Clamp to safe bounds
-        timeout_seconds = max(10, min(int(timeout_seconds), self._MAX_TIMEOUT))
+        timeout_seconds = max(120, min(int(timeout_seconds), self._MAX_TIMEOUT))
         max_iterations = max(1, min(int(max_iterations), self._MAX_ITERATIONS))
 
         task_id = f"{task_name}_{uuid.uuid4().hex[:8]}"
@@ -382,7 +387,7 @@ class WorkerSkill(Skill):
         task_id: str,
         prompt: str,
         excluded: frozenset[str],
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 300,
         max_iterations: int = 15,
     ) -> tuple[str, str | None]:
         """
@@ -394,10 +399,16 @@ class WorkerSkill(Skill):
         from arc.agent.loop import AgentLoop, AgentConfig
         from arc.agent.runner import run_agent_on_virtual_platform
         from arc.security.engine import SecurityEngine
+        from arc.skills.router import SkillRouter
 
         # Extract a short readable label from the task_id  ("research_a1b2c3d4" → "research")
         parts = task_id.rsplit("_", 1)
         task_label = parts[0] if len(parts) == 2 and len(parts[1]) == 8 else task_id
+
+        # Worker gets its own router with excluded skills hidden
+        worker_router = SkillRouter(
+            self._skill_manager, excluded_skills=excluded
+        )
 
         agent = AgentLoop(
             kernel=self._kernel,
@@ -412,6 +423,7 @@ class WorkerSkill(Skill):
             ),
             memory_manager=None,
             agent_id=f"worker:{task_label}",
+            router=worker_router,
         )
         return await run_agent_on_virtual_platform(
             agent=agent,

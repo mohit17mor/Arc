@@ -39,6 +39,7 @@ class FilesystemSkill(Skill):
             capabilities=frozenset(
                 [Capability.FILE_READ, Capability.FILE_WRITE]
             ),
+            always_available=True,
             tools=(
                 ToolSpec(
                     name="read_file",

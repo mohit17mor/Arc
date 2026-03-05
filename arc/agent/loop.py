@@ -34,6 +34,7 @@ from arc.memory.context import ContextComposer
 from arc.memory.session import SessionMemory
 from arc.security.engine import SecurityEngine
 from arc.skills.manager import SkillManager
+from arc.skills.router import SkillRouter
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class AgentLoop:
         config: AgentConfig | None = None,
         memory_manager: MemoryManager | None = None,
         agent_id: str = "main",
+        router: SkillRouter | None = None,
     ) -> None:
         self._kernel = kernel
         self._llm = llm
@@ -94,6 +96,7 @@ class AgentLoop:
         self._config = config or AgentConfig()
         self._memory_manager = memory_manager
         self._agent_id = agent_id
+        self._router = router
         
         # Memory
         self._memory = SessionMemory()
@@ -121,6 +124,10 @@ class AgentLoop:
         self._memory.add_user_message(user_input)
         self._state.status = AgentStatus.COMPOSING
         self._iteration = 0
+
+        # Reset the router so each user turn starts with a clean slate
+        if self._router:
+            self._router.reset()
         
         await self._emit(EventType.AGENT_START, {"input": user_input})
         
@@ -144,13 +151,18 @@ class AgentLoop:
                 # 2. THINK — call LLM
                 self._state.status = AgentStatus.THINKING
                 
-                # Get available tools, excluding any skills blocked for this agent
-                excluded = self._config.excluded_skills
-                all_specs = self._skills.get_all_tool_specs()
-                tool_specs = [
-                    ts for ts in all_specs
-                    if self._skills.get_tool_skill(ts.name) not in excluded
-                ] if excluded else all_specs
+                # Get available tools
+                if self._router:
+                    # Two-tier: always-on + activated + use_skill meta-tool
+                    tool_specs = self._router.get_active_tool_specs()
+                else:
+                    # Flat mode (legacy / no router): all tools minus excluded
+                    excluded = self._config.excluded_skills
+                    all_specs = self._skills.get_all_tool_specs()
+                    tool_specs = [
+                        ts for ts in all_specs
+                        if self._skills.get_tool_skill(ts.name) not in excluded
+                    ] if excluded else all_specs
                 
                 collected_text = ""
                 collected_tool_calls: list[ToolCall] = []
@@ -212,8 +224,20 @@ class AgentLoop:
                 )
                 
                 for tool_call in collected_tool_calls:
-                    result = await self._execute_tool_with_approval(tool_call)
-                    self._memory.add_tool_result(result, tool_call.name)
+                    # Intercept use_skill — handled by router, not by skills
+                    if self._router and self._router.is_use_skill_call(tool_call.name):
+                        msg = self._router.activate(
+                            tool_call.arguments.get("skill_name", "")
+                        )
+                        result = ToolResult(
+                            tool_call_id=tool_call.id,
+                            success=True,
+                            output=msg,
+                        )
+                        self._memory.add_tool_result(result, tool_call.name)
+                    else:
+                        result = await self._execute_tool_with_approval(tool_call)
+                        self._memory.add_tool_result(result, tool_call.name)
                 
                 # 5. OBSERVE — loop continues with tool results in context
             
@@ -290,9 +314,8 @@ class AgentLoop:
     async def _execute_tool_with_approval(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call with security checks and approval flow."""
         
-        # Get tool spec
-        tool_specs = self._skills.get_all_tool_specs()
-        tool_spec = next((t for t in tool_specs if t.name == tool_call.name), None)
+        # Get tool spec — O(1) lookup
+        tool_spec = self._skills.get_tool_spec(tool_call.name)
         
         if tool_spec is None:
             return ToolResult(

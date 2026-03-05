@@ -44,9 +44,6 @@ logger = logging.getLogger(__name__)
 # Telegram message length limit
 _MAX_MESSAGE_LENGTH = 4096
 
-# Minimum interval between edits to avoid rate limits (seconds)
-_EDIT_INTERVAL = 1.5
-
 
 class TelegramPlatform(Platform):
     """
@@ -262,75 +259,63 @@ class TelegramPlatform(Platform):
     async def _process_message(
         self, update: Any, context: Any, user_text: str,
     ) -> None:
-        """Process a single message: send to agent, stream response back."""
+        """Process a single message: collect full response, then send."""
         chat_id = update.effective_chat.id
 
-        # Send "typing" indicator
-        await update.effective_chat.send_action("typing")
+        # Send "typing" indicator (re-sent every ~4s while processing)
+        typing_task = asyncio.create_task(
+            self._keep_typing(update.effective_chat)
+        )
 
-        # Send initial placeholder
-        reply = await update.message.reply_text("💭 Thinking...")
-
-        # Collect response from agent
+        # Collect full response from agent (no mid-stream edits)
         collected = ""
-        last_edit_time = 0.0
-        chunk_count = 0
-
         try:
             async for chunk in self._handler(user_text):
                 collected += chunk
-                chunk_count += 1
-
-                # Update the message periodically (not every chunk — rate limits)
-                now = asyncio.get_event_loop().time()
-                if now - last_edit_time >= _EDIT_INTERVAL and collected.strip():
-                    await self._safe_edit(reply, collected + " ▌")
-                    last_edit_time = now
-                    # Re-send typing indicator
-                    await update.effective_chat.send_action("typing")
-
         except Exception as e:
             logger.error("Telegram agent error: %s", e, exc_info=True)
             collected = f"❌ An error occurred: {e}"
-
-        # Final update — remove the cursor
-        if collected.strip():
-            await self._send_final(reply, chat_id, collected)
-        else:
-            await self._safe_edit(reply, "🤔 I didn't have anything to say.")
-
-    async def _safe_edit(self, message: Any, text: str) -> None:
-        """Edit a message, handling length limits and errors."""
-        try:
-            # Truncate if too long for a single message
-            if len(text) > _MAX_MESSAGE_LENGTH:
-                text = text[:_MAX_MESSAGE_LENGTH - 20] + "\n\n_(truncated)_"
-            await message.edit_text(text)
-        except Exception as e:
-            # "Message is not modified" is fine — skip it
-            if "not modified" not in str(e).lower():
-                logger.debug("Failed to edit message: %s", e)
-
-    async def _send_final(
-        self, placeholder: Any, chat_id: int, text: str,
-    ) -> None:
-        """Send the final response, splitting into multiple messages if needed."""
-        if len(text) <= _MAX_MESSAGE_LENGTH:
-            await self._safe_edit(placeholder, text)
-            return
-
-        # For very long responses, edit the placeholder with the first chunk,
-        # then send the rest as new messages
-        chunks = _split_text(text, _MAX_MESSAGE_LENGTH)
-        await self._safe_edit(placeholder, chunks[0])
-
-        for chunk in chunks[1:]:
+        finally:
+            typing_task.cancel()
             try:
-                await placeholder.get_bot().send_message(
-                    chat_id=chat_id, text=chunk,
-                )
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+
+        # Send the complete response as a new message (preserves ordering)
+        if collected.strip():
+            await self._send_response(chat_id, collected)
+        else:
+            await self._send_response(
+                chat_id, "🤔 I didn't have anything to say."
+            )
+
+    async def _keep_typing(self, chat: Any) -> None:
+        """Re-send typing indicator every 4 seconds until cancelled."""
+        try:
+            while True:
+                await chat.send_action("typing")
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+
+    async def _send_response(self, chat_id: int, text: str) -> None:
+        """Send the full response, splitting into multiple messages if needed."""
+        bot = self._application.bot
+        chunks = _split_text(text, _MAX_MESSAGE_LENGTH)
+
+        for chunk in chunks:
+            try:
+                await bot.send_message(chat_id=chat_id, text=chunk)
             except Exception as e:
-                logger.warning("Failed to send continuation message: %s", e)
+                # Markdown-like chars can break — retry as plain
+                if "parse" in str(e).lower() or "400" in str(e):
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=chunk)
+                    except Exception as e2:
+                        logger.warning("Failed to send message chunk: %s", e2)
+                else:
+                    logger.warning("Failed to send message chunk: %s", e)
 
 
 def _split_text(text: str, max_length: int) -> list[str]:

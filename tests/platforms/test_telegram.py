@@ -113,12 +113,6 @@ def _make_update(chat_id: int = 123, text: str = "hello", first_name: str = "Tes
     update.message.reply_text = AsyncMock(return_value=MagicMock())
     update.effective_chat.send_action = AsyncMock()
 
-    # The reply message (placeholder for streaming)
-    reply = MagicMock()
-    reply.edit_text = AsyncMock()
-    reply.get_bot.return_value.send_message = AsyncMock()
-    update.message.reply_text.return_value = reply
-
     return update
 
 
@@ -223,30 +217,71 @@ class TestMessageHandling:
     async def test_process_message_echo(self):
         tp = TelegramPlatform(token="t")
         tp._handler = echo_handler
+        # Mock _application.bot for send_message
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
         update = _make_update(chat_id=123, text="world")
         ctx = _make_context()
 
         await tp._process_message(update, ctx, "world")
 
-        # Check that placeholder was sent then edited with final response
-        reply = update.message.reply_text.return_value
-        # Final edit should contain "echo: world"
-        last_edit = reply.edit_text.call_args_list[-1][0][0]
-        assert "echo: world" in last_edit
+        # Should send response as a NEW message (not edit placeholder)
+        tp._application.bot.send_message.assert_called()
+        sent_text = tp._application.bot.send_message.call_args[1]["text"]
+        assert "echo: world" in sent_text
 
     @pytest.mark.asyncio
     async def test_process_message_error_handling(self):
         tp = TelegramPlatform(token="t")
         tp._handler = error_handler
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
         update = _make_update(chat_id=123, text="oops")
         ctx = _make_context()
 
         await tp._process_message(update, ctx, "oops")
 
-        reply = update.message.reply_text.return_value
         # Should send error message
-        last_edit = reply.edit_text.call_args_list[-1][0][0]
-        assert "error" in last_edit.lower()
+        tp._application.bot.send_message.assert_called()
+        sent_text = tp._application.bot.send_message.call_args[1]["text"]
+        assert "error" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_message_no_placeholder_edit(self):
+        """Response should be a new message, not an edit of a placeholder."""
+        tp = TelegramPlatform(token="t")
+        tp._handler = echo_handler
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
+        update = _make_update(chat_id=123, text="test")
+        ctx = _make_context()
+
+        await tp._process_message(update, ctx, "test")
+
+        # No reply_text (no "Thinking..." placeholder)
+        update.message.reply_text.assert_not_called()
+        # Response sent via bot.send_message
+        tp._application.bot.send_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_typing_indicator_sent(self):
+        """Typing indicator should be sent for longer-running handlers."""
+        tp = TelegramPlatform(token="t")
+
+        async def slow_echo(msg: str):
+            await asyncio.sleep(0.1)  # give typing task time to fire
+            yield f"echo: {msg}"
+
+        tp._handler = slow_echo
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
+        update = _make_update(chat_id=123, text="test")
+        ctx = _make_context()
+
+        await tp._process_message(update, ctx, "test")
+
+        # Typing action should have been sent at least once
+        update.effective_chat.send_action.assert_called()
 
     @pytest.mark.asyncio
     async def test_concurrent_message_rejected(self):
@@ -274,32 +309,6 @@ class TestMessageHandling:
         assert "still working" in text.lower() or "please wait" in text.lower()
 
         lock.release()
-
-
-class TestSafeEdit:
-    """Test _safe_edit message editing."""
-
-    @pytest.mark.asyncio
-    async def test_truncates_long_text(self):
-        tp = TelegramPlatform(token="t")
-        msg = MagicMock()
-        msg.edit_text = AsyncMock()
-
-        long_text = "X" * 5000
-        await tp._safe_edit(msg, long_text)
-
-        called_text = msg.edit_text.call_args[0][0]
-        assert len(called_text) <= 4096
-        assert "truncated" in called_text
-
-    @pytest.mark.asyncio
-    async def test_ignores_not_modified_error(self):
-        tp = TelegramPlatform(token="t")
-        msg = MagicMock()
-        msg.edit_text = AsyncMock(side_effect=Exception("Message is not modified"))
-
-        # Should not raise
-        await tp._safe_edit(msg, "same text")
 
 
 # ---------------------------------------------------------------------------
