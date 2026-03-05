@@ -67,10 +67,19 @@ class TelegramPlatform(Platform):
         self._handler: MessageHandler | None = None
         self._application: Any = None  # telegram.ext.Application
         self._processing_lock: dict[int, asyncio.Lock] = {}  # per-chat locks
+        self._cost_tracker: dict | None = None  # set via set_cost_tracker
 
     @property
     def name(self) -> str:
         return "telegram"
+
+    def set_cost_tracker(self, tracker_ref: Any) -> None:
+        """Set a reference to the CostTracker for per-message token display.
+
+        Pass the CostTracker *object* (not summary dict) so we can read
+        live turn counters after each response.
+        """
+        self._cost_tracker = tracker_ref
 
     async def run(self, handler: MessageHandler) -> None:
         """
@@ -283,7 +292,19 @@ class TelegramPlatform(Platform):
                 pass
 
         # Send the complete response as a new message (preserves ordering)
-        if collected.strip():
+        if collected.strip():            # Append per-turn token usage footer
+            if self._cost_tracker:
+                t = self._cost_tracker
+                t_peak = getattr(t, 'turn_peak_input', 0)
+                t_out = getattr(t, 'turn_output_tokens', 0)
+                ctx_win = getattr(t, 'context_window', 0)
+                t_total = t_peak + t_out
+                if t_total > 0:
+                    if ctx_win > 0 and t_peak > 0:
+                        collected += f"\n\n\u2514 {t_peak:,} / {ctx_win:,} ctx \u00b7 {t_out:,} out"
+                    else:
+                        t_in = getattr(t, 'turn_input_tokens', 0)
+                        collected += f"\n\n\u2514 {t_in + t_out:,} tokens \u00b7 {t_in:,} in \u00b7 {t_out:,} out"
             await self._send_response(chat_id, collected)
         else:
             await self._send_response(

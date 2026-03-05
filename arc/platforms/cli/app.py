@@ -494,16 +494,47 @@ class CLIPlatform(Platform):
         elif cmd == "/cost":
             if self._cost_tracker:
                 summary = self._cost_tracker
-                self._console.print(
-                    Panel(
-                        f"[bold]Session Cost[/bold]\n\n"
-                        f"  Requests:      {summary.get('requests', 0)}\n"
-                        f"  Input tokens:  {summary.get('input_tokens', 0):,}\n"
-                        f"  Output tokens: {summary.get('output_tokens', 0):,}\n"
-                        f"  Total tokens:  {summary.get('total_tokens', 0):,}\n"
-                        f"  Cost:          ${summary.get('cost_usd', 0):.4f}",
-                        border_style="yellow",
+                main_total = summary.get('total_tokens', 0)
+                worker_total = summary.get('worker_total_tokens', 0)
+                grand_total = summary.get('grand_total_tokens', 0)
+
+                ctx_win = summary.get('context_window', 0)
+                peak = summary.get('turn_peak_input', 0)
+
+                lines = (
+                    f"[bold]Session Cost[/bold]\n\n"
+                    f"  [bold]Main Agent[/bold]\n"
+                    f"  Requests:      {summary.get('requests', 0)}\n"
+                    f"  Input tokens:  {summary.get('input_tokens', 0):,}\n"
+                    f"  Output tokens: {summary.get('output_tokens', 0):,}\n"
+                    f"  Total tokens:  {main_total:,}\n"
+                )
+
+                if ctx_win > 0:
+                    pct = (peak / ctx_win * 100) if peak > 0 else 0
+                    lines += (
+                        f"\n  [bold]Context Window[/bold]\n"
+                        f"  Model limit:   {ctx_win:,} tokens\n"
+                        f"  Last turn:     {peak:,} / {ctx_win:,} ({pct:.0f}%)\n"
                     )
+
+                if worker_total > 0:
+                    lines += (
+                        f"\n  [bold]Workers (combined)[/bold]\n"
+                        f"  Requests:      {summary.get('worker_requests', 0)}\n"
+                        f"  Input tokens:  {summary.get('worker_input_tokens', 0):,}\n"
+                        f"  Output tokens: {summary.get('worker_output_tokens', 0):,}\n"
+                        f"  Total tokens:  {worker_total:,}\n"
+                    )
+
+                lines += (
+                    f"\n  [bold]Grand Total[/bold]\n"
+                    f"  Total tokens:  {grand_total:,}\n"
+                    f"  Cost:          ${summary.get('cost_usd', 0):.4f}"
+                )
+
+                self._console.print(
+                    Panel(lines, border_style="yellow")
                 )
             else:
                 self._console.print("[dim]Cost tracking not available[/dim]")
@@ -774,6 +805,28 @@ class CLIPlatform(Platform):
                 self._console.print()
                 self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
                 self._console.print("[dim]Done.[/dim]")
+
+            # Show per-turn token usage
+            if self._cost_tracker:
+                t_in = self._cost_tracker.get('turn_input_tokens', 0)
+                t_out = self._cost_tracker.get('turn_output_tokens', 0)
+                t_total = self._cost_tracker.get('turn_total_tokens', 0)
+                t_reqs = self._cost_tracker.get('turn_requests', 0)
+                t_peak = self._cost_tracker.get('turn_peak_input', 0)
+                ctx_win = self._cost_tracker.get('context_window', 0)
+                if t_total > 0:
+                    parts = []
+                    # Context utilization: peak_input / context_window
+                    if ctx_win > 0 and t_peak > 0:
+                        parts.append(f"{t_peak:,} / {ctx_win:,} ctx")
+                    else:
+                        parts.append(f"{t_in:,} in")
+                    parts.append(f"{t_out:,} out")
+                    if t_reqs > 1:
+                        parts.append(f"{t_reqs} calls")
+                    self._console.print(
+                        f"[dim]└ {' · '.join(parts)}[/dim]"
+                    )
         
         except Exception as e:
             self._console.print(f"\n[red]Error: {e}[/red]")

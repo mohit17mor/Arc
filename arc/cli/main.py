@@ -172,6 +172,9 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     )
     logger.info(f"LLM: {config.llm.default_provider}/{config.llm.default_model}")
 
+    # Tell cost tracker about context window
+    cost_tracker.context_window = llm.get_model_info().context_window
+
     # Setup worker LLM (falls back to main if not configured)
     if config.llm.has_worker_override:
         worker_llm = create_llm(
@@ -464,7 +467,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
 
     # Message handler
     async def handle_message(user_input: str):
-        # Update cost tracker reference before each message
+        # Reset per-turn counters and update cost tracker before each message
+        cost_tracker.start_turn()
         cli.set_cost_tracker(cost_tracker.summary())
         logger.info(f"User input: {user_input[:100]}...")
 
@@ -742,6 +746,9 @@ async def _run_telegram(verbose: bool = False) -> None:
         api_key=config.llm.api_key,
     )
 
+    # Tell cost tracker about context window
+    cost_tracker.context_window = llm.get_model_info().context_window
+
     # Setup worker LLM
     if config.llm.has_worker_override:
         worker_llm = create_llm(
@@ -913,6 +920,7 @@ async def _run_telegram(verbose: bool = False) -> None:
         allowed_chat_ids=allowed,
         agent_name=identity["agent_name"],
     )
+    tg_platform.set_cost_tracker(cost_tracker)
 
     # Wire events → logger
     async def log_event(event: Event) -> None:
@@ -930,6 +938,7 @@ async def _run_telegram(verbose: bool = False) -> None:
 
     # Message handler
     async def handle_message(user_input: str):
+        cost_tracker.start_turn()
         async for chunk in agent.run(user_input):
             yield chunk
 
