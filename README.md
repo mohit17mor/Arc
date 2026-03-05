@@ -138,14 +138,46 @@ auth_token = "..."
                  │Ollama│ │3-tier│ │   │  Engine   │
                  └──────┘ └─────┘ │   └───────────┘
                               ┌───▼──────────────────────┐
-                              │        Skills            │
-                              │ files · terminal · web   │
-                              │ browser · workers · jobs │
-                              │     · liquid web ·       │
+                              │      Skill Router        │
+                              │   (two-tier selection)   │
+                              ├──────────────────────────┤
+                              │ Tier 1 — Always Active   │
+                              │ files · terminal · worker│
+                              ├──────────────────────────┤
+                              │ Tier 2 — On Demand       │
+                              │ browser · scheduler ·    │
+                              │ liquid web · MCP gateway │
                               └──────────────────────────┘
 ```
 
 **Micro-kernel design** — every subsystem is independent, wired through an event bus. Swap Ollama for Claude or GPT by changing one config line.
+
+### Two-Tier Skill Router
+
+Real agents have many skills, but sending every tool spec to the LLM on every call wastes tokens and confuses the model. Arc uses a **two-tier routing system** that keeps the LLM context lean:
+
+**Tier 1 — Always Active**
+Core tools the agent needs constantly:
+- **filesystem** — read/write files
+- **terminal** — run shell commands
+- **worker** — delegate tasks to background agents
+
+These tools are sent with every LLM call.
+
+**Tier 2 — On Demand**
+Specialized tools activated only when needed:
+- **browsing** — browser_go, browser_act, browser_look
+- **scheduler** — create/manage scheduled jobs
+- **liquid_web** — product search and comparison
+- **MCP servers** — any external tool servers
+
+The LLM activates these by calling `use_skill("browsing")`, which injects that skill's tools into the next call. Skills reset at the start of each new user turn.
+
+**Why this matters:**
+- Without routing: ~2,500 tokens of tool specs on every call
+- With routing: ~800 tokens (Tier 1 + compact `use_skill` menu)
+- The LLM naturally calls `use_skill` when it recognizes it needs browsing, scheduling, etc.
+- Zero manual wiring — new skills auto-appear in the `use_skill` menu
 
 ---
 
@@ -319,7 +351,7 @@ Arc:  → mcp_list_tools({})           — sees: filesystem, github, memory
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # 481 tests
+pytest                    # 640 tests
 pytest --cov=arc          # with coverage
 ```
 
