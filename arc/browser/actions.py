@@ -28,8 +28,8 @@ from arc.browser.snapshot import InteractiveElement, PageAnalyzer, PageSnapshot
 logger = logging.getLogger(__name__)
 
 # Timeouts for interactive waits (ms)
-AUTOCOMPLETE_WAIT_MS = 500
-NAVIGATION_WAIT_MS = 5000
+AUTOCOMPLETE_WAIT_MS = 300
+NAVIGATION_WAIT_MS = 1000
 ACTION_TIMEOUT_MS = 10000
 
 
@@ -180,6 +180,7 @@ class ActionExecutor:
         """
         Find an element on the page using a cascade of strategies.
 
+        0. AX locator — role/label/selector from CDP accessibility tree
         1. Snapshot ID match — [3] matches element with id=3
         2. CSS selector — #id, .class, [attr] passed through directly
         3. Playwright text locator — exact then partial match
@@ -189,18 +190,47 @@ class ActionExecutor:
         """
         target = target.strip()
 
-        # Strategy 1: Snapshot ID — e.g., "[3]" or "3"
+        # Strategy 0: AX tree locator — highest priority when available
+        # If the target is a snapshot ID and the element has a locator_strategy
+        # from the AX tree, use the resolved locator directly.
         id_match = re.match(r"^\[?(\d+)\]?$", target)
         if id_match and elements:
             element_id = int(id_match.group(1))
             for el in elements:
-                if el.id == element_id and el.selector:
+                if el.id != element_id:
+                    continue
+
+                # Try AX-derived locator first
+                if el.locator_strategy == "role" and el.locator_value:
+                    try:
+                        parts = el.locator_value.split("::", 1)
+                        if len(parts) == 2:
+                            role, name = parts
+                            locator = page.get_by_role(role, name=name)
+                            if await locator.count() > 0:
+                                return locator.first
+                    except Exception:
+                        pass
+
+                if el.locator_strategy == "label" and el.locator_value:
+                    try:
+                        locator = page.get_by_label(el.locator_value)
+                        if await locator.count() > 0:
+                            return locator.first
+                    except Exception:
+                        pass
+
+                # Fall through to CSS selector (original Strategy 1)
+                if el.selector:
                     try:
                         locator = page.locator(el.selector)
                         if await locator.count() > 0:
                             return locator.first
                     except Exception:
                         pass
+
+        # Strategy 1: Snapshot ID without AX locator — already handled above
+        # (the id_match block above covers the CSS selector fallback)
 
         # Strategy 2: CSS selector pass-through
         if target.startswith(("#", ".", "[")) or "::" in target:
@@ -318,7 +348,12 @@ class ActionExecutor:
         if err:
             return err
 
-        await locator.click(timeout=ACTION_TIMEOUT_MS)
+        clicked = await _smart_click(page, locator, timeout=ACTION_TIMEOUT_MS)
+        if not clicked:
+            return ActionResult(
+                success=False, action_type="click", target=target,
+                error="All click strategies failed (normal, force, JS, mouse)",
+            )
         # Wait for any navigation or dynamic content
         await _wait_for_stable(page)
 
@@ -634,10 +669,10 @@ class ActionExecutor:
         is_combobox = await _is_combobox(locator)
         if is_combobox:
             # Two kinds of combobox:
-            #   1. Input combobox (<input role=combobox>) — type + pick
-            #   2. Select combobox (<div role=combobox>)  — click + pick option
+            #   1. Input/textarea combobox — type + pick suggestion
+            #   2. Select combobox (<div role=combobox>) — click + pick option
             tag = await locator.evaluate("el => el.tagName.toLowerCase()")
-            if tag == "input":
+            if tag in ("input", "textarea"):
                 return await self._fill_autocomplete(page, locator, value, target)
             else:
                 return await self._fill_select_combobox(page, locator, value, target)
@@ -1497,7 +1532,7 @@ async def _wait_for_stable(page: "Page", timeout_ms: int = NAVIGATION_WAIT_MS) -
         pass
     try:
         # Short wait for any AJAX / dynamic rendering
-        await page.wait_for_load_state("networkidle", timeout=2000)
+        await page.wait_for_load_state("networkidle", timeout=1000)
     except Exception:
         pass  # networkidle can timeout on pages with persistent connections
 

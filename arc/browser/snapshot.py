@@ -24,6 +24,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
+from arc.browser.accessibility import AXTreeExtractor, AXElement, _INTERACTIVE_ROLES
+
 logger = logging.getLogger(__name__)
 
 # Max text content to include in snapshot (chars)
@@ -93,6 +95,19 @@ class InteractiveElement:
     required: bool = False
     selector: str = ""  # CSS selector for targeting
 
+    # ── AX tree enrichment (set when PageAnalyzer uses CDP path) ──
+    locator_strategy: str = ""    # "role" | "label" | "selector" | ""
+    locator_value: str = ""       # e.g. "textbox::Where from?" or CSS
+    expanded: bool | None = None  # combobox / menu open state
+    selected: bool | None = None  # tab / option selected
+    focused: bool = False         # currently focused element
+    level: int | None = None      # heading level
+    autocomplete: str = ""        # ARIA autocomplete hint
+    haspopup: str = ""            # ARIA haspopup ("menu", "listbox", ...)
+    description: str = ""         # accessible description
+    invalid: str = ""             # "true" | "grammar" | "spelling" | ""
+    backend_dom_node_id: int | None = None  # CDP DOM node id
+
     def to_snapshot_line(self) -> str:
         """Format this element as a single line for the snapshot."""
         parts = [f"[{self.id}]"]
@@ -126,11 +141,23 @@ class InteractiveElement:
         if self.checked is not None:
             parts.append(f"checked={self.checked}")
 
+        # ARIA state annotations (from AX tree)
+        if self.expanded is not None:
+            parts.append(f"expanded={self.expanded}")
+        if self.selected is True:
+            parts.append("(selected)")
+        if self.haspopup:
+            parts.append(f"popup={self.haspopup}")
+        if self.invalid and self.invalid != "false":
+            parts.append("(invalid)")
+
         # Flags
         if self.disabled:
             parts.append("(disabled)")
         if self.required:
             parts.append("(required)")
+        if self.focused:
+            parts.append("(focused)")
 
         return " ".join(parts)
 
@@ -147,6 +174,12 @@ class PageSnapshot:
     text_content: str = ""
     forms_count: int = 0
     links_count: int = 0
+
+    # ── AX tree enrichment ──
+    landmarks: list[str] = field(default_factory=list)    # e.g. ["navigation", "main", "search"]
+    alerts: list[str] = field(default_factory=list)       # live region text
+    focused_element_id: int | None = None                 # ID of the focused element
+    ax_source: bool = False                               # True if snapshot used AX tree
 
     def to_text(self) -> str:
         """Render the snapshot as structured text for the LLM."""
@@ -202,6 +235,20 @@ class PageSnapshot:
             if len(links) > 15:
                 lines.append(f"  ... and {len(links) - 15} more links")
 
+        # Landmarks — structural context for the LLM
+        if self.landmarks:
+            lines.append("")
+            lines.append("[Page Structure]")
+            for lm in self.landmarks:
+                lines.append(f"  {lm}")
+
+        # Alerts / live regions — validation errors, status messages
+        if self.alerts:
+            lines.append("")
+            lines.append("[Alerts]")
+            for alert in self.alerts:
+                lines.append(f"  ⚠ {alert}")
+
         # Text content — truncated
         if self.text_content:
             lines.append("")
@@ -221,15 +268,40 @@ class PageAnalyzer:
     Uses a combination of accessibility tree inspection and targeted DOM
     queries to extract interactive elements, detect page type, and identify
     obstacles — all without vision or screenshots.
+
+    Two extraction paths:
+    - **AX tree (preferred)**: CDP Accessibility.getFullAXTree → fast, accurate
+      accessible names, ARIA states, shadow-DOM-aware. Augmented with targeted
+      DOM queries for tag/input-type/options/href.
+    - **DOM fallback**: original JS page.evaluate() with 15 CSS selectors.
+      Used when CDP is unavailable (e.g. Firefox, headless shell).
     """
+
+    def __init__(self, use_ax_tree: bool = True):
+        self._use_ax_tree = use_ax_tree
+        self._ax_extractor = AXTreeExtractor() if use_ax_tree else None
 
     async def analyze(self, page: "Page") -> PageSnapshot:
         """Produce a complete PageSnapshot for the current page state."""
         title = await page.title()
         url = page.url
 
-        # Gather data in parallel
-        elements = await self._extract_interactive_elements(page)
+        # Try AX tree extraction first, fall back to DOM
+        elements: list[InteractiveElement] = []
+        landmarks: list[str] = []
+        alerts: list[str] = []
+        ax_source = False
+
+        if self._use_ax_tree and self._ax_extractor:
+            try:
+                elements, landmarks, alerts = await self._extract_interactive_elements_ax(page)
+                ax_source = len(elements) > 0
+            except Exception as e:
+                logger.warning(f"AX tree extraction failed, falling back to DOM: {e}")
+
+        if not elements:
+            elements = await self._extract_interactive_elements_dom(page)
+
         obstacles = await self._detect_obstacles(page)
         text_content = await self._extract_text_content(page)
         forms_count = await page.locator("form").count()
@@ -244,6 +316,13 @@ class PageAnalyzer:
             text_content=text_content,
         )
 
+        # Find focused element
+        focused_id = None
+        for el in elements:
+            if el.focused:
+                focused_id = el.id
+                break
+
         return PageSnapshot(
             url=url,
             title=title,
@@ -252,10 +331,104 @@ class PageAnalyzer:
             obstacles=obstacles,
             text_content=text_content,
             forms_count=forms_count,
-            links_count=len([e for e in elements if e.tag == "a"]),
+            links_count=len([e for e in elements if e.tag == "a" or e.role == "link"]),
+            landmarks=landmarks,
+            alerts=alerts,
+            focused_element_id=focused_id,
+            ax_source=ax_source,
         )
 
-    async def _extract_interactive_elements(self, page: "Page") -> list[InteractiveElement]:
+    async def _extract_interactive_elements_ax(
+        self,
+        page: "Page",
+    ) -> tuple[list[InteractiveElement], list[str], list[str]]:
+        """
+        Extract elements via CDP Accessibility Tree + DOM augmentation.
+
+        Returns (elements, landmarks, alerts).
+        """
+        ax_result = await self._ax_extractor.extract(page)
+
+        if not ax_result.elements:
+            return [], ax_result.landmarks, ax_result.alerts
+
+        # Augment with DOM data (tag, input_type, options, href, selector)
+        # Also returns elements the AX tree missed (DOM gap-fill)
+        dom_gap_elements = await self._ax_extractor.augment_from_dom(page, ax_result.elements)
+
+        # Resolve locator strategies
+        locators = await self._ax_extractor.resolve_locators(page, ax_result.elements)
+
+        # Convert AXElement → InteractiveElement
+        elements: list[InteractiveElement] = []
+        element_id = 1
+
+        for i, ax_el in enumerate(ax_result.elements):
+            # Skip headings and images with no interactivity (keep for context)
+            if ax_el.role in ("heading", "image"):
+                # Include headings for page structure context
+                el = InteractiveElement(
+                    id=element_id,
+                    tag=ax_el.tag or ("h" + str(ax_el.level or 2) if ax_el.role == "heading" else "img"),
+                    role=ax_el.role,
+                    name=ax_el.name,
+                    level=ax_el.level,
+                )
+                elements.append(el)
+                element_id += 1
+                continue
+
+            # Get locator info
+            strategy, value = locators.get(i, ("", ""))
+
+            el = InteractiveElement(
+                id=element_id,
+                tag=ax_el.tag or _role_to_tag(ax_el.role),
+                role=ax_el.role,
+                name=ax_el.name,
+                type=ax_el.input_type,
+                value=ax_el.value,
+                placeholder=ax_el.placeholder,
+                options=ax_el.options,
+                checked=_parse_checked(ax_el.checked),
+                disabled=ax_el.disabled,
+                required=ax_el.required,
+                selector=ax_el.selector,
+                # AX enrichment
+                locator_strategy=strategy,
+                locator_value=value,
+                expanded=ax_el.expanded,
+                selected=ax_el.selected,
+                focused=ax_el.focused,
+                level=ax_el.level,
+                autocomplete=ax_el.autocomplete,
+                haspopup=ax_el.haspopup,
+                description=ax_el.description,
+                invalid=ax_el.invalid,
+                backend_dom_node_id=ax_el.backend_dom_node_id,
+            )
+            elements.append(el)
+            element_id += 1
+
+        # Add DOM-only elements that AX tree missed (gap-fill)
+        for gap_el in dom_gap_elements:
+            el = InteractiveElement(
+                id=element_id,
+                tag=gap_el.tag or "button",
+                role=gap_el.role or "button",
+                name=gap_el.name,
+                type=gap_el.input_type,
+                selector=gap_el.selector,
+                disabled=gap_el.disabled,
+                locator_strategy="selector" if gap_el.selector else "name",
+                locator_value=gap_el.selector if gap_el.selector else gap_el.name,
+            )
+            elements.append(el)
+            element_id += 1
+
+        return elements, ax_result.landmarks, ax_result.alerts
+
+    async def _extract_interactive_elements_dom(self, page: "Page") -> list[InteractiveElement]:
         """Extract all interactive elements from the page."""
         elements: list[InteractiveElement] = []
         element_id = 1
@@ -581,3 +754,40 @@ class PageAnalyzer:
             return "article"
 
         return "other"
+
+
+# ━━━ Helpers ━━━
+
+def _role_to_tag(role: str) -> str:
+    """Map ARIA role to most likely HTML tag."""
+    return {
+        "textbox": "input",
+        "searchbox": "input",
+        "combobox": "select",
+        "checkbox": "input",
+        "radio": "input",
+        "button": "button",
+        "link": "a",
+        "spinbutton": "input",
+        "slider": "input",
+        "switch": "input",
+        "tab": "button",
+        "menuitem": "li",
+        "treeitem": "li",
+        "option": "option",
+        "heading": "h2",
+        "image": "img",
+    }.get(role, "div")
+
+
+def _parse_checked(checked: str | None) -> bool | None:
+    """Parse AX tree checked state to bool."""
+    if checked is None:
+        return None
+    if checked == "true":
+        return True
+    if checked == "false":
+        return False
+    if checked == "mixed":
+        return False  # "mixed" → treat as unchecked for display
+    return None

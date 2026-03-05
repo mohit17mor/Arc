@@ -15,6 +15,7 @@ from arc.browser.snapshot import (
     PageAnalyzer,
     PageSnapshot,
 )
+from arc.browser.accessibility import AXElement, AXTreeExtractor
 
 
 # ━━━ InteractiveElement ━━━
@@ -318,3 +319,130 @@ class TestPageAnalyzer:
 
         # Should detect the CAPTCHA obstacle
         assert any(obs.type == "captcha" for obs in snapshot.obstacles)
+
+
+# ━━━ AXTreeExtractor gap-fill ━━━
+
+class TestAXTreeGapFill:
+    """Tests for _build_gap_elements and _match_ax_to_dom improvements."""
+
+    def test_build_gap_elements_catches_submit_input(self):
+        """<input type="submit" value="Add to Cart"> missing from AX tree is gap-filled."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "input", "type": "submit", "name": "Add to Cart",
+             "value": "Add to Cart", "selector": "#add-to-cart-button", "disabled": False},
+        ]
+        ax_elements = [
+            AXElement(role="button", name="Buy Now"),
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, ax_elements)
+        assert len(gaps) == 1
+        assert gaps[0].name == "Add to Cart"
+        assert gaps[0].tag == "input"
+        assert gaps[0].input_type == "submit"
+        assert gaps[0].selector == "#add-to-cart-button"
+
+    def test_build_gap_elements_skips_non_button_types(self):
+        """Non-button DOM elements (links, text inputs) are NOT gap-filled."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "a", "type": "", "name": "Home", "value": "",
+             "selector": "#nav-home", "disabled": False},
+            {"tag": "input", "type": "text", "name": "Search",
+             "value": "", "selector": "#q", "disabled": False},
+        ]
+        gaps = ext._build_gap_elements(unmatched_dom, [])
+        assert len(gaps) == 0
+
+    def test_build_gap_elements_dedup_by_name(self):
+        """If AX tree already has a button with matching name, skip the gap."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "input", "type": "submit", "name": "Add to Cart",
+             "value": "Add to Cart", "selector": "#add-btn", "disabled": False},
+        ]
+        ax_elements = [
+            AXElement(role="button", name="Add to Cart"),
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, ax_elements)
+        assert len(gaps) == 0
+
+    def test_build_gap_elements_dedup_by_selector(self):
+        """If AX tree already has an element with matching selector, skip."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "button", "type": "", "name": "Submit",
+             "value": "", "selector": "#submit-btn", "disabled": False},
+        ]
+        ax_elements = [
+            AXElement(role="button", name="Submit Order", selector="#submit-btn"),
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, ax_elements)
+        assert len(gaps) == 0
+
+    def test_build_gap_elements_dedup_by_substring_name(self):
+        """AX name 'Add to cart, shift, alt, K' should match DOM 'Add to cart'."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "input", "type": "submit", "name": "Add to cart",
+             "value": "Add to cart", "selector": "#atc", "disabled": False},
+        ]
+        ax_elements = [
+            AXElement(role="button", name="Add to cart, shift, alt, K"),
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, ax_elements)
+        assert len(gaps) == 0
+
+    def test_build_gap_elements_button_element(self):
+        """<button> elements missing from AX tree are gap-filled."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "button", "type": "button", "name": "Checkout",
+             "value": "", "selector": "#checkout-btn", "disabled": False},
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, [])
+        assert len(gaps) == 1
+        assert gaps[0].name == "Checkout"
+        assert gaps[0].role == "button"
+
+    def test_build_gap_elements_skips_unidentifiable(self):
+        """Elements with no name, value, or selector are skipped."""
+        ext = AXTreeExtractor()
+
+        unmatched_dom = [
+            {"tag": "input", "type": "submit", "name": "",
+             "value": "", "selector": "", "disabled": False},
+        ]
+
+        gaps = ext._build_gap_elements(unmatched_dom, [])
+        assert len(gaps) == 0
+
+    def test_match_ax_to_dom_uses_input_value_as_name(self):
+        """_match_ax_to_dom should match AX elements by DOM input value."""
+        ext = AXTreeExtractor()
+
+        ax_elements = [
+            AXElement(role="button", name="Add to Cart"),
+        ]
+        dom_elements = [
+            {"tag": "input", "type": "submit", "name": "",
+             "value": "Add to Cart", "selector": "#atc"},
+        ]
+
+        unmatched = ext._match_ax_to_dom(ax_elements, dom_elements)
+        # Should have matched — input value "Add to Cart" matches AX name
+        assert ax_elements[0].selector == "#atc"
+        assert ax_elements[0].tag == "input"
+        assert len(unmatched) == 0

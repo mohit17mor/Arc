@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 _PROFILES_DIR = Path.home() / ".arc" / "browser" / "profiles"
 
 # Navigation timeouts (ms)
-_NAV_TIMEOUT = 30_000
-_STABLE_TIMEOUT = 5_000
+_NAV_TIMEOUT = 15_000
+_STABLE_TIMEOUT = 1_000
 
 
 class BrowserEngine:
@@ -141,6 +141,9 @@ class BrowserEngine:
             "**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,eot,mp4,webm}",
             lambda route: route.abort(),
         )
+
+        # Track new tabs/popups — auto-switch to them
+        self._context.on("page", self._on_new_page)
 
         self._launched = True
         logger.info(
@@ -283,6 +286,8 @@ class BrowserEngine:
         """
         self._ensure_launched()
 
+        pages_before = len(self._context.pages)
+
         # Get current elements for fuzzy matching
         elements = []
         if self._last_snapshot:
@@ -290,7 +295,20 @@ class BrowserEngine:
 
         result = await self._executor.execute(self._page, actions, elements)
 
-        if result.snapshot:
+        # If a new tab was opened, switch to it
+        if len(self._context.pages) > pages_before:
+            new_page = self._context.pages[-1]
+            logger.info(f"New tab detected — switching to {new_page.url}")
+            self._page = new_page
+            self._last_snapshot = None
+            # Re-snapshot from the new page
+            try:
+                await self._wait_stable()
+                result.snapshot = await self._analyzer.analyze(self._page)
+                self._last_snapshot = result.snapshot
+            except Exception as e:
+                logger.warning(f"Failed to snapshot new tab: {e}")
+        elif result.snapshot:
             self._last_snapshot = result.snapshot
 
         return result
@@ -330,6 +348,10 @@ class BrowserEngine:
         self._ensure_launched()
         return await self._context.cookies()
 
+    def _on_new_page(self, page: "Page") -> None:
+        """Handle new tab/popup opened by a click."""
+        logger.info(f"New page/tab opened: {page.url}")
+
     async def _wait_stable(self) -> None:
         """Wait for page to settle."""
         try:
@@ -337,7 +359,7 @@ class BrowserEngine:
         except Exception:
             pass
         try:
-            await self._page.wait_for_load_state("networkidle", timeout=2000)
+            await self._page.wait_for_load_state("networkidle", timeout=1000)
         except Exception:
             pass
 
