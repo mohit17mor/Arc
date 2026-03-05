@@ -124,16 +124,15 @@ class WorkerSkill(Skill):
                         "Spawn a background worker for a focused sub-task. "
                         "Returns IMMEDIATELY — you do NOT wait for the result. "
                         "The worker runs in the background and its result will be "
-                        "delivered as a notification when ready — you do NOT need to "
-                        "check or poll for it. "
+                        "delivered as a notification when ready. "
+                        "MULTIPLE TASKS: When the user gives 2+ independent tasks, "
+                        "call delegate_task ONCE PER TASK in the same response — "
+                        "they run in PARALLEL. "
                         "AFTER calling this tool: respond to the user in plain text "
                         "confirming what you delegated, then STOP — do NOT call any "
                         "more tools (especially not list_workers). "
-                        "Example reply: 'I've started a background worker to fetch "
-                        "today's AI news. I'll share the results as soon as it's done.' "
-                        "Use this for tasks that need live data or take a long time: "
-                        "web research, product search/comparison, "
-                        "file analysis, multi-step data gathering."
+                        "Use for: web research, product comparison, file analysis, "
+                        "multi-step data gathering, anything that takes >30 seconds."
                     ),
                     parameters={
                         "type": "object",

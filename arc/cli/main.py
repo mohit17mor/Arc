@@ -244,20 +244,22 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     )
 
     delegation_strategy = (
-        "\n\nDelegation Strategy (delegate_task vs. doing it yourself):\n"
-        "Do it YOURSELF (inline) when:\n"
-        "- The task needs ONE web search + 2-3 reads and a quick answer.\n"
-        "- The user wants an instant response and the work takes <30 seconds.\n"
-        "- It is a simple lookup, calculation, or short file read.\n\n"
-        "DELEGATE to a background worker when:\n"
-        "- The task requires many tool calls or multiple rounds of searching/reading.\n"
-        "- The user asks to research multiple things in parallel (start one worker per topic).\n"
-        "- The task is explicitly long-running: 'analyse this whole codebase', "
-        "'monitor X for the next hour', 'compile a detailed report'.\n"
-        "- The user wants to keep chatting while something runs in the background.\n\n"
-        "When you delegate: call delegate_task ONCE, then immediately reply to the user "
-        "in plain text confirming what you delegated. Do NOT call any other tools "
-        "after delegating — especially not list_workers. The result arrives automatically."
+        "\n\nDelegation Strategy (delegate_task):\n"
+        "MANDATORY RULE — ALWAYS DELEGATE MULTI-TASK REQUESTS:\n"
+        "When the user gives you N tasks (numbered, comma-separated, or multiple requests "
+        "in one message):\n"
+        "  1. You may handle AT MOST 1 trivial task yourself (quick lookup, simple calculation).\n"
+        "  2. You MUST delegate ALL remaining tasks — call delegate_task once per task.\n"
+        "  3. If N >= 3, delegate ALL of them (including the easy ones) — do not do any yourself.\n"
+        "  4. Workers run in PARALLEL, which is dramatically faster than sequential execution.\n\n"
+        "Example: User says 'find me the best laptop under $1000, summarise today's AI news, "
+        "and check the weather in NYC'.\n"
+        "Correct: call delegate_task 3 times (one per topic), then reply confirming.\n"
+        "Wrong: do the weather yourself and only delegate the other two.\n\n"
+        "Do it YOURSELF (no delegation) ONLY when there is exactly 1 simple task.\n\n"
+        "After delegating: reply to the user confirming what you delegated and how many "
+        "workers you spawned. Do NOT call any other tools after delegating — "
+        "especially not list_workers. Results arrive automatically."
     )
 
     # Soft skills — content of ~/.arc/skills/*.md injected as extra instructions
@@ -804,10 +806,29 @@ async def _run_telegram(verbose: bool = False) -> None:
         "- Do NOT loop: search → read → search → read. One search is almost always enough.\n"
     )
 
+    delegation_strategy = (
+        "\n\nDelegation Strategy (delegate_task):\n"
+        "MANDATORY RULE — ALWAYS DELEGATE MULTI-TASK REQUESTS:\n"
+        "When the user gives you N tasks (numbered, comma-separated, or multiple requests "
+        "in one message):\n"
+        "  1. You may handle AT MOST 1 trivial task yourself (quick lookup, simple calculation).\n"
+        "  2. You MUST delegate ALL remaining tasks — call delegate_task once per task.\n"
+        "  3. If N >= 3, delegate ALL of them (including the easy ones) — do not do any yourself.\n"
+        "  4. Workers run in PARALLEL, which is dramatically faster than sequential execution.\n\n"
+        "Example: User says 'find me the best laptop under $1000, summarise today's AI news, "
+        "and check the weather in NYC'.\n"
+        "Correct: call delegate_task 3 times (one per topic), then reply confirming.\n"
+        "Wrong: do the weather yourself and only delegate the other two.\n\n"
+        "Do it YOURSELF (no delegation) ONLY when there is exactly 1 simple task.\n\n"
+        "After delegating: reply to the user confirming what you delegated and how many "
+        "workers you spawned. Do NOT call any other tools after delegating — "
+        "especially not list_workers. Results arrive automatically."
+    )
+
     soft_skill_text = discover_soft_skills()
 
     system_prompt = (
-        identity["system_prompt"] + env_info + research_strategy + soft_skill_text
+        identity["system_prompt"] + env_info + research_strategy + delegation_strategy + soft_skill_text
         + "\n\nYou are running as a Telegram bot. Keep responses concise — "
         "Telegram messages have a 4096 character limit. Use short paragraphs "
         "and avoid very long code blocks unless the user explicitly asks."
