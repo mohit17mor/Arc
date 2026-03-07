@@ -290,10 +290,12 @@ class BrowserEngine:
 
         # Get current elements for fuzzy matching
         elements = []
+        products = []
         if self._last_snapshot:
             elements = self._last_snapshot.elements
+            products = self._last_snapshot.products
 
-        result = await self._executor.execute(self._page, actions, elements)
+        result = await self._executor.execute(self._page, actions, elements, products)
 
         # If a new tab was opened, switch to it
         if len(self._context.pages) > pages_before:

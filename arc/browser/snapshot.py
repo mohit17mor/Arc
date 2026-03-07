@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from playwright.async_api import Page
 
 from arc.browser.accessibility import AXTreeExtractor, AXElement, _INTERACTIVE_ROLES
+from arc.liquid.extract import ProductData, extract_generic, filter_quality_products, EXTRACTORS
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,7 @@ class InteractiveElement:
     haspopup: str = ""            # ARIA haspopup ("menu", "listbox", ...)
     description: str = ""         # accessible description
     invalid: str = ""             # "true" | "grammar" | "spelling" | ""
+    context: str = ""             # nearest ancestor heading for disambiguation
     backend_dom_node_id: int | None = None  # CDP DOM node id
 
     def to_snapshot_line(self) -> str:
@@ -159,6 +162,10 @@ class InteractiveElement:
         if self.focused:
             parts.append("(focused)")
 
+        # Section context — disambiguates duplicate buttons like "Add to Cart"
+        if self.context and self.role in ("button", "link"):
+            parts.append(f"in: {self.context}")
+
         return " ".join(parts)
 
 
@@ -174,6 +181,9 @@ class PageSnapshot:
     text_content: str = ""
     forms_count: int = 0
     links_count: int = 0
+
+    # ── Structured product data (for search results / listing pages) ──
+    products: list[ProductData] = field(default_factory=list)
 
     # ── AX tree enrichment ──
     landmarks: list[str] = field(default_factory=list)    # e.g. ["navigation", "main", "search"]
@@ -195,6 +205,24 @@ class PageSnapshot:
             lines.append("[Obstacles Detected]")
             for obs in self.obstacles:
                 lines.append(f"  ⚠ {obs.type}: {obs.description}")
+
+        # Structured product data — when available, show a clean numbered list
+        # so the LLM can use select_product instead of guessing element IDs
+        if len(self.products) >= 2:
+            lines.append("")
+            lines.append(f"[Products] ({len(self.products)} found — use select_product action with the product number)")
+            for i, p in enumerate(self.products, 1):
+                parts = [f"  {i}. {p.name}"]
+                if p.price:
+                    currency = p.currency or ""
+                    parts.append(f"  {currency}{p.price}")
+                if p.rating:
+                    parts.append(f"  ★{p.rating}")
+                if p.brand:
+                    parts.append(f"  by {p.brand}")
+                lines.append(" —".join(parts))
+            lines.append("")
+            lines.append("  → To select a product: {type: 'select_product', index: 1}")
 
         # Interactive elements grouped by type
         forms_unsorted = [
@@ -323,6 +351,12 @@ class PageAnalyzer:
                 focused_id = el.id
                 break
 
+        # Extract structured product data on listing / search / form pages
+        # (many e-commerce search results have filter forms → classify as "form")
+        products: list[ProductData] = []
+        if page_type in ("search_results", "listing", "form"):
+            products = await self._extract_products(page, url)
+
         return PageSnapshot(
             url=url,
             title=title,
@@ -332,6 +366,7 @@ class PageAnalyzer:
             text_content=text_content,
             forms_count=forms_count,
             links_count=len([e for e in elements if e.tag == "a" or e.role == "link"]),
+            products=products,
             landmarks=landmarks,
             alerts=alerts,
             focused_element_id=focused_id,
@@ -347,7 +382,12 @@ class PageAnalyzer:
 
         Returns (elements, landmarks, alerts).
         """
+        import time
+
+        t0 = time.perf_counter()
         ax_result = await self._ax_extractor.extract(page)
+        t_ax = time.perf_counter()
+        logger.debug(f"AX tree: {len(ax_result.elements)} elements in {t_ax - t0:.2f}s")
 
         if not ax_result.elements:
             return [], ax_result.landmarks, ax_result.alerts
@@ -355,9 +395,13 @@ class PageAnalyzer:
         # Augment with DOM data (tag, input_type, options, href, selector)
         # Also returns elements the AX tree missed (DOM gap-fill)
         dom_gap_elements = await self._ax_extractor.augment_from_dom(page, ax_result.elements)
+        t_dom = time.perf_counter()
+        logger.debug(f"DOM augment: {t_dom - t_ax:.2f}s, {len(dom_gap_elements)} gap elements")
 
-        # Resolve locator strategies
+        # Resolve locator strategies (sync — no browser round-trips)
         locators = await self._ax_extractor.resolve_locators(page, ax_result.elements)
+        t_loc = time.perf_counter()
+        logger.debug(f"Locators: {t_loc - t_dom:.2f}s")
 
         # Convert AXElement → InteractiveElement
         elements: list[InteractiveElement] = []
@@ -405,6 +449,7 @@ class PageAnalyzer:
                 haspopup=ax_el.haspopup,
                 description=ax_el.description,
                 invalid=ax_el.invalid,
+                context=ax_el.context,
                 backend_dom_node_id=ax_el.backend_dom_node_id,
             )
             elements.append(el)
@@ -714,6 +759,29 @@ class PageAnalyzer:
             logger.warning(f"Failed to extract text content: {e}")
             return ""
 
+    async def _extract_products(self, page: "Page", url: str) -> list["ProductData"]:
+        """
+        Extract structured product data from a listing/search results page.
+
+        Uses site-specific extractors when available, falls back to generic
+        JSON-LD → OpenGraph → DOM heuristic extraction from Liquid Web.
+        Only returns products if ≥ 2 are found (single product = detail page).
+        """
+        try:
+            domain = urlparse(url).netloc.removeprefix("www.")
+            extractor = EXTRACTORS.get(domain)
+            if extractor:
+                products = await extractor(page, url)
+            else:
+                products = await extract_generic(page, url)
+            products = filter_quality_products(products)
+            if len(products) < 2:
+                return []
+            return products[:15]  # cap to avoid snapshot bloat
+        except Exception as e:
+            logger.debug(f"Product extraction failed: {e}")
+            return []
+
     def _classify_page(
         self,
         url: str,
@@ -733,7 +801,7 @@ class PageAnalyzer:
             return "login"
 
         # Search results
-        if any(kw in url_lower for kw in ("search", "results", "q=", "query=")):
+        if any(kw in url_lower for kw in ("search", "results", "q=", "query=", "/s?")):
             return "search_results"
 
         # Error page

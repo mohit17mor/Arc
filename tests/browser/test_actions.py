@@ -295,3 +295,134 @@ class TestActionExecutor:
         ])
 
         assert result.results[0].success is True
+
+
+# ━━━ Select Product ━━━
+
+
+class TestSelectProduct:
+    """Tests for the select_product action type."""
+
+    @pytest.fixture
+    def analyzer(self):
+        analyzer = PageAnalyzer()
+        analyzer.analyze = AsyncMock(return_value=PageSnapshot(
+            url="https://amazon.in/dp/B09ABC",
+            title="Product",
+            page_type="other",
+            elements=[],
+            obstacles=[],
+            text_content="",
+            forms_count=0,
+            links_count=0,
+        ))
+        return analyzer
+
+    @pytest.fixture
+    def executor(self, analyzer):
+        return ActionExecutor(analyzer)
+
+    @pytest.fixture
+    def mock_page(self):
+        page = AsyncMock()
+        page.url = "https://amazon.in/s?k=camera"
+        page.wait_for_load_state = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        page.goto = AsyncMock()
+        empty = MagicMock()
+        empty.count = AsyncMock(return_value=0)
+        empty.first = empty
+        page.get_by_text = MagicMock(return_value=empty)
+        page.get_by_role = MagicMock(return_value=empty)
+        page.get_by_label = MagicMock(return_value=empty)
+        page.get_by_placeholder = MagicMock(return_value=empty)
+        page.locator = MagicMock(return_value=empty)
+        return page
+
+    @pytest.fixture
+    def products(self):
+        from arc.liquid.extract import ProductData
+        return [
+            ProductData(name="Sony Alpha A6100", price="73159", url="https://amazon.in/dp/B09A"),
+            ProductData(name="Canon EOS M50", price="52999", url="https://amazon.in/dp/B09B"),
+            ProductData(name="Nikon Z50", price="86999", url="https://amazon.in/dp/B09C"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_select_product_navigates(self, executor, mock_page, products):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": 2}],
+            products=products,
+        )
+        assert result.results[0].success is True
+        assert result.results[0].action_type == "select_product"
+        assert "Canon" in result.results[0].target
+        mock_page.goto.assert_called_once_with(
+            "https://amazon.in/dp/B09B", timeout=10000,
+        )
+
+    @pytest.mark.asyncio
+    async def test_select_product_index_out_of_range(self, executor, mock_page, products):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": 5}],
+            products=products,
+        )
+        assert result.results[0].success is False
+        assert "out of range" in result.results[0].error
+
+    @pytest.mark.asyncio
+    async def test_select_product_missing_index(self, executor, mock_page, products):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product"}],
+            products=products,
+        )
+        assert result.results[0].success is False
+        assert "index" in result.results[0].error.lower()
+
+    @pytest.mark.asyncio
+    async def test_select_product_no_products(self, executor, mock_page):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": 1}],
+            products=[],
+        )
+        assert result.results[0].success is False
+        assert "No products" in result.results[0].error
+
+    @pytest.mark.asyncio
+    async def test_select_product_no_url(self, executor, mock_page):
+        from arc.liquid.extract import ProductData
+        products = [
+            ProductData(name="Mystery Product", price="999"),
+            ProductData(name="Another One", price="888"),
+        ]
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": 1}],
+            products=products,
+        )
+        assert result.results[0].success is False
+        assert "no URL" in result.results[0].error
+
+    @pytest.mark.asyncio
+    async def test_select_product_first_item(self, executor, mock_page, products):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": 1}],
+            products=products,
+        )
+        assert result.results[0].success is True
+        assert "Sony" in result.results[0].target
+
+    @pytest.mark.asyncio
+    async def test_select_product_invalid_index_type(self, executor, mock_page, products):
+        result = await executor.execute(
+            mock_page,
+            [{"type": "select_product", "index": "abc"}],
+            products=products,
+        )
+        assert result.results[0].success is False
+        assert "Invalid index" in result.results[0].error

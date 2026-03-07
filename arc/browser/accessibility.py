@@ -89,6 +89,7 @@ class AXElement:
     backend_dom_node_id: int | None = None
     ax_node_id: str = ""
     children_ids: list[str] = field(default_factory=list)
+    context: str = ""  # nearest ancestor heading/label for disambiguation
 
     # Derived by DOM augmentation
     tag: str = ""
@@ -150,6 +151,19 @@ class AXTreeExtractor:
         landmarks: list[str] = []
         alerts: list[str] = []
 
+        # Build parent map and heading index from raw nodes for context resolution
+        parent_map: dict[str, str] = {}   # nodeId → parentId
+        heading_map: dict[str, str] = {}  # nodeId → heading name (for headings only)
+        for node in nodes:
+            nid = node.get("nodeId", "")
+            pid = node.get("parentId", "")
+            if nid and pid:
+                parent_map[nid] = pid
+            role = _get_str(node, "role")
+            name = _get_str(node, "name")
+            if role == "heading" and name:
+                heading_map[nid] = name[:80]
+
         for node in nodes:
             if node.get("ignored", False):
                 continue
@@ -198,6 +212,10 @@ class AXTreeExtractor:
 
             # Interactive elements
             if role in _INTERACTIVE_ROLES:
+                # Resolve nearest heading ancestor for disambiguation
+                ctx = self._find_ancestor_heading(
+                    node.get("nodeId", ""), parent_map, heading_map
+                )
                 elem = AXElement(
                     role=role,
                     name=name[:100] if name else "",
@@ -218,6 +236,7 @@ class AXTreeExtractor:
                     backend_dom_node_id=node.get("backendDOMNodeId"),
                     ax_node_id=node.get("nodeId", ""),
                     children_ids=node.get("childIds", []),
+                    context=ctx,
                 )
                 elements.append(elem)
                 continue
@@ -271,6 +290,25 @@ class AXTreeExtractor:
                 props[name] = str(val) if val else ""
 
         return props
+
+    @staticmethod
+    def _find_ancestor_heading(
+        node_id: str,
+        parent_map: dict[str, str],
+        heading_map: dict[str, str],
+        max_depth: int = 15,
+    ) -> str:
+        """Walk up the AX tree to find the nearest heading ancestor."""
+        current = node_id
+        for _ in range(max_depth):
+            parent = parent_map.get(current)
+            if not parent:
+                break
+            heading = heading_map.get(parent)
+            if heading:
+                return heading
+            current = parent
+        return ""
 
     async def augment_from_dom(
         self,
@@ -471,11 +509,16 @@ class AXTreeExtractor:
         Convert unmatched DOM elements into AXElement entries for
         interactive elements that the CDP accessibility tree missed.
 
-        Focuses on submit buttons, button inputs, and button elements —
-        the types most commonly dropped by the AX tree on complex pages.
+        Focuses on submit buttons and button inputs — the types most
+        commonly dropped by the AX tree on complex pages.  Generic
+        <button> elements are skipped because the AX tree rarely
+        misses them; unmatched <button>s are usually noise (size
+        filters, pagination, etc.).
         """
         _GAP_FILL_INPUT_TYPES = {"submit", "button", "image"}
-        _GAP_FILL_TAGS = {"button"}
+
+        # Cap to avoid flooding the snapshot on huge pages
+        _MAX_GAP_ELEMENTS = 10
 
         # Known AX names for dedup (case-insensitive)
         known_names: set[str] = set()
@@ -494,10 +537,9 @@ class AXTreeExtractor:
             value = dom_el.get("value", "")
             selector = dom_el.get("selector", "")
 
-            # Only accept submit/button inputs and <button> elements
+            # Only accept submit/button input elements (not generic <button>)
             is_candidate = (
-                (tag == "input" and input_type in _GAP_FILL_INPUT_TYPES)
-                or tag in _GAP_FILL_TAGS
+                tag == "input" and input_type in _GAP_FILL_INPUT_TYPES
             )
             if not is_candidate:
                 continue
@@ -526,6 +568,8 @@ class AXTreeExtractor:
                 selector=selector,
                 disabled=dom_el.get("disabled", False),
             ))
+            if len(gaps) >= _MAX_GAP_ELEMENTS:
+                break
 
         if gaps:
             logger.info(
@@ -543,12 +587,11 @@ class AXTreeExtractor:
         Derive the best Playwright locator for each AX element.
 
         Returns a dict mapping element index → (strategy, value).
-        Strategy is one of: "role", "label", "selector".
-        
-        Priority:
-        1. get_by_role(role, name=name) — if unique match
-        2. get_by_label(name) — for form inputs
-        3. CSS selector — from DOM augmentation
+        Strategy is one of: "role", "label", "selector", "name", "skip".
+
+        This method assigns locators based on AX metadata alone —
+        no browser round-trips.  Locator uniqueness is verified
+        lazily at action time by _find_element's fallback cascade.
         """
         locators: dict[int, tuple[str, str]] = {}
 
@@ -560,30 +603,14 @@ class AXTreeExtractor:
 
             # Strategy 1: Role-based locator (preferred — survives redesigns)
             if el.role in _PLAYWRIGHT_ROLES and el.name:
-                try:
-                    loc = page.get_by_role(el.role, name=el.name)
-                    count = await loc.count()
-                    if count == 1:
-                        locators[i] = ("role", f'{el.role}::{el.name}')
-                        continue
-                    elif count > 1:
-                        # Multiple matches — still usable via .first or nth
-                        locators[i] = ("role", f'{el.role}::{el.name}')
-                        continue
-                except Exception:
-                    pass
+                locators[i] = ("role", f'{el.role}::{el.name}')
+                continue
 
             # Strategy 2: Label-based locator (for form inputs)
             if el.name and el.role in ("textbox", "combobox", "searchbox",
                                         "spinbutton", "slider"):
-                try:
-                    loc = page.get_by_label(el.name)
-                    count = await loc.count()
-                    if count >= 1:
-                        locators[i] = ("label", el.name)
-                        continue
-                except Exception:
-                    pass
+                locators[i] = ("label", el.name)
+                continue
 
             # Strategy 3: CSS selector fallback
             if el.selector:

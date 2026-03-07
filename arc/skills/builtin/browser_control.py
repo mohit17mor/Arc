@@ -95,6 +95,7 @@ _BROWSER_ACT_SPEC = ToolSpec(
         "  fill_form - {type: 'fill_form', fields: {'[id]': 'value', ...}} — "
         "batch fill multiple fields at once (PREFERRED for forms)\n"
         "  select   - {type: 'select', target: '[id]', value: 'option'} — for native <select> dropdowns\n"
+        "  select_product - {type: 'select_product', index: N} — navigate to product N from the [Products] list\n"
         "  check    - {type: 'check', target: '[id]', checked: true/false}\n"
         "  submit   - {type: 'submit'} — find and click the submit button\n"
         "  scroll   - {type: 'scroll', direction: 'down'|'up'}\n"
@@ -102,6 +103,8 @@ _BROWSER_ACT_SPEC = ToolSpec(
         "  wait     - {type: 'wait', for: 'text or CSS selector'}\n\n"
         "CRITICAL: ALWAYS use [id] references (e.g., [3], [72]) from the page snapshot "
         "to target elements — this avoids ambiguity with fields that have similar names. "
+        "When a [Products] list is shown, use select_product with the product number "
+        "instead of clicking element IDs — this ensures you navigate to the right product.\n"
         "For combobox dropdowns (trip type, cabin class, etc.), use 'fill' action — "
         "the engine will click to open and pick the matching option automatically.\n"
         "Prefer fill_form for forms — it fills ALL fields in one action."
@@ -117,7 +120,7 @@ _BROWSER_ACT_SPEC = ToolSpec(
                     "properties": {
                         "type": {
                             "type": "string",
-                            "description": "Action type: click, fill, fill_form, select, check, submit, scroll, back, wait",
+                            "description": "Action type: click, fill, fill_form, select, select_product, check, submit, scroll, back, wait",
                         },
                         "target": {
                             "type": "string",
@@ -126,6 +129,10 @@ _BROWSER_ACT_SPEC = ToolSpec(
                         "value": {
                             "type": "string",
                             "description": "Value to fill/select (for fill, select actions)",
+                        },
+                        "index": {
+                            "type": "integer",
+                            "description": "For select_product: product number from the [Products] list",
                         },
                         "fields": {
                             "type": "object",
@@ -322,6 +329,9 @@ class BrowserControlSkill(Skill):
                 error="No page loaded. Use browser_go first.",
             )
 
+        # Remember element count before action for stale-ID detection
+        prev_count = len(self._engine.last_snapshot.elements) if self._engine.last_snapshot else 0
+
         result = await self._engine.act(actions)
 
         # Build output
@@ -329,6 +339,13 @@ class BrowserControlSkill(Skill):
 
         # Add the new page snapshot after actions
         if result.snapshot:
+            new_count = len(result.snapshot.elements)
+            # Warn LLM when element count changed significantly (popup/overlay/navigation)
+            if prev_count > 0 and new_count != prev_count:
+                parts.append(
+                    f"\n⚠ Page changed: {prev_count} → {new_count} interactive elements. "
+                    "Previous element IDs are INVALID — use only the IDs shown below."
+                )
             snapshot_output = await self._process_snapshot(result.snapshot)
             parts.append(f"\n--- Page After Actions ---\n{snapshot_output}")
 

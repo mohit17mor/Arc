@@ -160,6 +160,68 @@ class TestPageSnapshot:
         text = snapshot.to_text()
         assert "about:blank" in text
 
+    def test_to_text_with_products(self):
+        """Products section should appear when 2+ products are present."""
+        from arc.liquid.extract import ProductData
+
+        products = [
+            ProductData(name="Sony Alpha A6100", price="73159", currency="₹", rating="4.5", brand="Sony"),
+            ProductData(name="Canon EOS M50", price="52999", currency="₹"),
+            ProductData(name="Nikon Z50", price="86999", currency="₹", rating="4.3"),
+        ]
+        snapshot = PageSnapshot(
+            url="https://amazon.in/s?k=camera",
+            title="Camera - Amazon.in",
+            page_type="search_results",
+            elements=[],
+            obstacles=[],
+            text_content="",
+            forms_count=0,
+            links_count=0,
+            products=products,
+        )
+        text = snapshot.to_text()
+        assert "[Products]" in text
+        assert "3 found" in text
+        assert "Sony Alpha A6100" in text
+        assert "Canon EOS M50" in text
+        assert "Nikon Z50" in text
+        assert "select_product" in text
+        assert "₹73159" in text
+
+    def test_to_text_single_product_no_section(self):
+        """A single product should NOT render the [Products] section."""
+        from arc.liquid.extract import ProductData
+
+        snapshot = PageSnapshot(
+            url="https://amazon.in/dp/B09A",
+            title="Sony Camera",
+            page_type="listing",
+            elements=[],
+            obstacles=[],
+            text_content="",
+            forms_count=0,
+            links_count=0,
+            products=[ProductData(name="Sony Alpha", price="73159")],
+        )
+        text = snapshot.to_text()
+        assert "[Products]" not in text
+
+    def test_to_text_no_products_no_section(self):
+        """No products = no [Products] section."""
+        snapshot = PageSnapshot(
+            url="https://google.com/travel/flights",
+            title="Google Flights",
+            page_type="form",
+            elements=[],
+            obstacles=[],
+            text_content="",
+            forms_count=0,
+            links_count=0,
+        )
+        text = snapshot.to_text()
+        assert "[Products]" not in text
+
 
 # ━━━ PageAnalyzer ━━━
 
@@ -403,8 +465,8 @@ class TestAXTreeGapFill:
         gaps = ext._build_gap_elements(unmatched_dom, ax_elements)
         assert len(gaps) == 0
 
-    def test_build_gap_elements_button_element(self):
-        """<button> elements missing from AX tree are gap-filled."""
+    def test_build_gap_elements_skips_generic_button(self):
+        """Generic <button> elements are NOT gap-filled (AX tree rarely misses them)."""
         ext = AXTreeExtractor()
 
         unmatched_dom = [
@@ -413,9 +475,7 @@ class TestAXTreeGapFill:
         ]
 
         gaps = ext._build_gap_elements(unmatched_dom, [])
-        assert len(gaps) == 1
-        assert gaps[0].name == "Checkout"
-        assert gaps[0].role == "button"
+        assert len(gaps) == 0
 
     def test_build_gap_elements_skips_unidentifiable(self):
         """Elements with no name, value, or selector are skipped."""

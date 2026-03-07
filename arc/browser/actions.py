@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from playwright.async_api import Page, ElementHandle, Locator
 
 from arc.browser.snapshot import InteractiveElement, PageAnalyzer, PageSnapshot
+from arc.liquid.extract import ProductData
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class ActionExecutor:
         page: "Page",
         actions: list[dict[str, Any]],
         elements: list[InteractiveElement] | None = None,
+        products: list[ProductData] | None = None,
     ) -> ActionsResult:
         """
         Execute a list of actions sequentially on the page.
@@ -99,6 +101,7 @@ class ActionExecutor:
             page: The Playwright page to act on
             actions: List of action dicts (type, target, value, etc.)
             elements: Pre-extracted elements from a previous snapshot (optional)
+            products: Structured product data from the snapshot (optional)
 
         Returns:
             ActionsResult with per-action results + final page snapshot
@@ -108,7 +111,7 @@ class ActionExecutor:
         for action in actions:
             action_type = action.get("type", "")
             try:
-                result = await self._dispatch_action(page, action, elements)
+                result = await self._dispatch_action(page, action, elements, products)
                 results.append(result)
 
                 if not result.success:
@@ -141,9 +144,14 @@ class ActionExecutor:
         page: "Page",
         action: dict[str, Any],
         elements: list[InteractiveElement] | None,
+        products: list[ProductData] | None = None,
     ) -> ActionResult:
         """Route an action to the right handler."""
         action_type = action.get("type", "")
+
+        # select_product is special — needs product data, not elements
+        if action_type == "select_product":
+            return await self._do_select_product(page, action, products)
 
         handlers = {
             "click": self._do_click,
@@ -171,6 +179,99 @@ class ActionExecutor:
 
     # ━━━ Element Finding ━━━
 
+    async def _locate_by_element_props(
+        self,
+        page: "Page",
+        el: InteractiveElement,
+    ) -> "Locator | None":
+        """
+        Try all locator strategies for a known snapshot element.
+
+        Used when we know WHICH element we want (by snapshot ID or
+        fuzzy match) but need to find it on the live page.
+        """
+        # 1. AX role+name locator
+        if el.locator_strategy == "role" and el.locator_value:
+            try:
+                parts = el.locator_value.split("::", 1)
+                if len(parts) == 2:
+                    role, name = parts
+                    locator = page.get_by_role(role, name=name)
+                    if await locator.count() > 0:
+                        return locator.first
+            except Exception:
+                pass
+
+        # 2. Label locator
+        if el.locator_strategy == "label" and el.locator_value:
+            try:
+                locator = page.get_by_label(el.locator_value)
+                if await locator.count() > 0:
+                    return locator.first
+            except Exception:
+                pass
+
+        # 3. CSS selector
+        if el.selector:
+            try:
+                locator = page.locator(el.selector)
+                if await locator.count() > 0:
+                    return locator.first
+            except Exception:
+                pass
+
+        # 4. Text content match (element name as visible text)
+        if el.name:
+            try:
+                locator = page.get_by_text(el.name, exact=True)
+                if await locator.count() > 0:
+                    return locator.first
+            except Exception:
+                pass
+
+        # 5. CDP backend node ID — targets the exact DOM node
+        if el.backend_dom_node_id:
+            return await self._resolve_by_cdp_node(
+                page, el.backend_dom_node_id, el.id,
+            )
+
+        return None
+
+    async def _resolve_by_cdp_node(
+        self,
+        page: "Page",
+        backend_node_id: int,
+        element_id: int,
+    ) -> "Locator | None":
+        """
+        Locate a DOM node by its CDP backend node ID (last-resort fallback).
+
+        Injects a temporary data-attribute so Playwright can locate the node.
+        """
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            try:
+                result = await cdp.send("DOM.resolveNode", {
+                    "backendNodeId": backend_node_id,
+                })
+                object_id = result["object"]["objectId"]
+                await cdp.send("Runtime.callFunctionOn", {
+                    "objectId": object_id,
+                    "functionDeclaration":
+                        f'function() {{ this.setAttribute("data-arc-target", "{element_id}"); }}',
+                })
+            finally:
+                try:
+                    await cdp.detach()
+                except Exception:
+                    pass
+            locator = page.locator(f'[data-arc-target="{element_id}"]')
+            if await locator.count() > 0:
+                return locator.first
+        except Exception as e:
+            logger.debug(f"CDP node resolution failed for node {backend_node_id}: {e}")
+        return None
+
     async def _find_element(
         self,
         page: "Page",
@@ -180,57 +281,30 @@ class ActionExecutor:
         """
         Find an element on the page using a cascade of strategies.
 
-        0. AX locator — role/label/selector from CDP accessibility tree
-        1. Snapshot ID match — [3] matches element with id=3
-        2. CSS selector — #id, .class, [attr] passed through directly
-        3. Playwright text locator — exact then partial match
-        4. Playwright role locators — button, link, textbox by name
-        5. Label association — find by form label text
-        6. Best-effort fuzzy match — normalize and compare
+        0. Snapshot ID — [3] matches element with id=3, uses all locator strategies
+        1. CSS selector — #id, .class, [attr] passed through directly
+        2. Playwright role locators — textbox, combobox, searchbox by name
+        3. Label / placeholder association
+        4. Playwright text locator — exact then partial match
+        5. Role locators — button, link, checkbox, etc. by name
+        6. Best-effort fuzzy match against snapshot elements
         """
         target = target.strip()
 
-        # Strategy 0: AX tree locator — highest priority when available
-        # If the target is a snapshot ID and the element has a locator_strategy
-        # from the AX tree, use the resolved locator directly.
+        # Strategy 0: Snapshot ID → use element's own locator strategies.
+        # If matched, we either find the element or return None (don't
+        # fall through to text strategies — "[3]" as text never helps).
         id_match = re.match(r"^\[?(\d+)\]?$", target)
         if id_match and elements:
             element_id = int(id_match.group(1))
             for el in elements:
-                if el.id != element_id:
-                    continue
-
-                # Try AX-derived locator first
-                if el.locator_strategy == "role" and el.locator_value:
-                    try:
-                        parts = el.locator_value.split("::", 1)
-                        if len(parts) == 2:
-                            role, name = parts
-                            locator = page.get_by_role(role, name=name)
-                            if await locator.count() > 0:
-                                return locator.first
-                    except Exception:
-                        pass
-
-                if el.locator_strategy == "label" and el.locator_value:
-                    try:
-                        locator = page.get_by_label(el.locator_value)
-                        if await locator.count() > 0:
-                            return locator.first
-                    except Exception:
-                        pass
-
-                # Fall through to CSS selector (original Strategy 1)
-                if el.selector:
-                    try:
-                        locator = page.locator(el.selector)
-                        if await locator.count() > 0:
-                            return locator.first
-                    except Exception:
-                        pass
-
-        # Strategy 1: Snapshot ID without AX locator — already handled above
-        # (the id_match block above covers the CSS selector fallback)
+                if el.id == element_id:
+                    locator = await self._locate_by_element_props(page, el)
+                    if locator:
+                        return locator
+                    break
+            # ID target couldn't be located on page
+            return None
 
         # Strategy 2: CSS selector pass-through
         if target.startswith(("#", ".", "[")) or "::" in target:
@@ -310,13 +384,10 @@ class ActionExecutor:
                         best_score = score
                         best_match = el
 
-            if best_match and best_match.selector:
-                try:
-                    locator = page.locator(best_match.selector)
-                    if await locator.count() > 0:
-                        return locator.first
-                except Exception:
-                    pass
+            if best_match:
+                locator = await self._locate_by_element_props(page, best_match)
+                if locator:
+                    return locator
 
         return None
 
@@ -354,8 +425,8 @@ class ActionExecutor:
                 success=False, action_type="click", target=target,
                 error="All click strategies failed (normal, force, JS, mouse)",
             )
-        # Wait for any navigation or dynamic content
-        await _wait_for_stable(page)
+        # Smart wait — only full wait if navigation was triggered
+        await _wait_after_click(page)
 
         return ActionResult(success=True, action_type="click", target=target)
 
@@ -595,6 +666,66 @@ class ActionExecutor:
                 success=False, action_type="js",
                 error=str(e),
             )
+
+    # ━━━ Product Selection ━━━
+
+    async def _do_select_product(
+        self, page: "Page", action: dict, products: list[ProductData] | None,
+    ) -> ActionResult:
+        """
+        Navigate to a product by its index from the [Products] list.
+
+        The LLM sees a numbered product list in the snapshot and
+        says {type: 'select_product', index: 3}. We look up the
+        corresponding ProductData and navigate to its URL.
+        """
+        index = action.get("index")
+        if index is None:
+            return ActionResult(
+                success=False, action_type="select_product",
+                error="Missing 'index' — specify the product number from the [Products] list",
+            )
+
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return ActionResult(
+                success=False, action_type="select_product",
+                error=f"Invalid index: {index} — must be a number",
+            )
+
+        if not products:
+            return ActionResult(
+                success=False, action_type="select_product",
+                error="No products available on this page. Use click with element [id] instead.",
+            )
+
+        if index < 1 or index > len(products):
+            return ActionResult(
+                success=False, action_type="select_product",
+                error=f"Product index {index} out of range (1-{len(products)})",
+            )
+
+        product = products[index - 1]  # 1-indexed
+        if not product.url:
+            return ActionResult(
+                success=False, action_type="select_product",
+                error=f"Product '{product.name}' has no URL — use click with element [id] instead.",
+            )
+
+        try:
+            await page.goto(product.url, timeout=NAVIGATION_WAIT_MS * 10)
+        except Exception:
+            pass  # Page may still be usable
+
+        await _wait_for_stable(page)
+
+        return ActionResult(
+            success=True,
+            action_type="select_product",
+            target=product.name[:80],
+            detail=f"Navigated to product page: {product.url}",
+        )
 
     # ━━━ Smart Fill (core) ━━━
 
@@ -996,22 +1127,29 @@ class ActionExecutor:
                 await locator.click(timeout=ACTION_TIMEOUT_MS, force=True)
             await page.wait_for_timeout(400)
 
-            # Step 2: Find the matching option
-            suggestion = page.locator("[role='option']:visible")
-            count = await suggestion.count()
+            # Step 2: Find the matching option.
+            # Try multiple selector patterns — Material Design, ARIA, plain lists.
+            # Some frameworks don't set `:visible` properly, so we try with
+            # and without the pseudo-class.
+            _OPTION_SELECTORS = [
+                "[role='option']:visible",
+                "[role='option']",
+                "[role='listbox'] li:visible",
+                "[role='listbox'] li",
+                "[role='menuitem']:visible",
+                "[role='menuitemradio']:visible",
+                "[role='menuitem']",
+                "[role='menuitemradio']",
+                "ul:visible li:visible",
+            ]
+            suggestion = page.locator(_OPTION_SELECTORS[0])
+            count = 0
 
-            if count == 0:
-                # Also try listbox li, menuitem
-                for sel in (
-                    "[role='listbox']:visible li:visible",
-                    "[role='menuitem']:visible",
-                    "[role='menuitemradio']:visible",
-                    "ul:visible li:visible",
-                ):
-                    suggestion = page.locator(sel)
-                    count = await suggestion.count()
-                    if count > 0:
-                        break
+            for sel in _OPTION_SELECTORS:
+                suggestion = page.locator(sel)
+                count = await suggestion.count()
+                if count > 0:
+                    break
 
             if count == 0:
                 return ActionResult(
@@ -1019,17 +1157,24 @@ class ActionExecutor:
                     error=f"No dropdown options appeared for '{target}'",
                 )
 
-            # Find best match by text
+            # Find best match by text.
+            # Normalize hyphens/dashes so "One-way" matches "One way".
             best_idx = 0
             best_score = 0.0
             best_text = ""
-            val_lower = value.lower()
+            val_norm = re.sub(r'[-–—]', ' ', value.lower()).strip()
 
-            for i in range(min(count, 12)):
+            for i in range(min(count, 20)):
                 try:
                     text = await suggestion.nth(i).inner_text()
                     text = text.strip()
-                    score = _score_suggestion(val_lower, text)
+                    if not text:
+                        continue
+                    text_norm = re.sub(r'[-–—]', ' ', text.lower()).strip()
+                    score = max(
+                        _score_suggestion(val_norm, text_norm),
+                        _score_suggestion(value.lower(), text),
+                    )
                     if score > best_score:
                         best_score = score
                         best_idx = i
@@ -1038,7 +1183,12 @@ class ActionExecutor:
                     continue
 
             if best_score > 0.15 or count == 1:
-                await suggestion.nth(best_idx).click(timeout=ACTION_TIMEOUT_MS)
+                try:
+                    await suggestion.nth(best_idx).click(timeout=ACTION_TIMEOUT_MS)
+                except Exception:
+                    # Option may be in a Material Design overlay that Playwright
+                    # considers "not visible" — force-click as fallback
+                    await suggestion.nth(best_idx).click(timeout=ACTION_TIMEOUT_MS, force=True)
                 await page.wait_for_timeout(300)
                 return ActionResult(
                     success=True, action_type="fill", target=target,
@@ -1521,11 +1671,28 @@ async def _smart_click(page: "Page", locator: "Locator", timeout: int = 5000) ->
     except Exception:
         pass
 
+    # Strategy 5: Click nearest clickable ancestor
+    # Handles cases where the locator points to an inner <span> inside
+    # an <a> or <button>, and the inner element can't receive clicks.
+    try:
+        clicked = await locator.evaluate("""el => {
+            const ancestor = el.closest('a, button, [role="link"], [role="button"]');
+            if (ancestor && ancestor !== el) {
+                ancestor.click();
+                return true;
+            }
+            return false;
+        }""")
+        if clicked:
+            return True
+    except Exception:
+        pass
+
     return False
 
 
 async def _wait_for_stable(page: "Page", timeout_ms: int = NAVIGATION_WAIT_MS) -> None:
-    """Wait for the page to be stable after an action."""
+    """Wait for the page to be stable after a navigation-triggering action."""
     try:
         await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
     except Exception:
@@ -1535,6 +1702,26 @@ async def _wait_for_stable(page: "Page", timeout_ms: int = NAVIGATION_WAIT_MS) -
         await page.wait_for_load_state("networkidle", timeout=1000)
     except Exception:
         pass  # networkidle can timeout on pages with persistent connections
+
+
+async def _wait_after_click(page: "Page") -> None:
+    """
+    Smart post-click wait — only does a full stable wait if the click
+    triggered a navigation.  For non-navigating clicks (dropdown toggle,
+    checkbox, menu expand) just a brief settle is enough.
+    """
+    url_before = page.url
+    # Brief pause to let any navigation start
+    await page.wait_for_timeout(150)
+    if page.url != url_before:
+        # URL changed — real navigation, wait for it to finish
+        await _wait_for_stable(page)
+    else:
+        # No navigation — just let dynamic content settle briefly
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=300)
+        except Exception:
+            pass
 
 
 async def _get_input_type(locator: "Locator") -> str:
