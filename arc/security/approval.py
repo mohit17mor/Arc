@@ -31,7 +31,7 @@ class ApprovalRequest:
     tool_description: str
     arguments: dict[str, Any]
     capabilities: list[str]
-    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    future: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
 
 
 class ApprovalFlow:
@@ -82,7 +82,7 @@ class ApprovalFlow:
             future: asyncio.Future[str] = loop.create_future()
         except RuntimeError:
             # Fallback for edge cases
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
         
         request = ApprovalRequest(
             request_id=request_id,

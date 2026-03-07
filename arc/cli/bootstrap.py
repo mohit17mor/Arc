@@ -338,6 +338,12 @@ async def bootstrap(
     if browser_skill and isinstance(browser_skill, BrowserControlSkill):
         browser_skill.set_dependencies(escalation_bus=escalation_bus)
 
+    # ── Workflow engine ──
+    from arc.workflow.skill import WorkflowSkill
+    workflow_skill = WorkflowSkill()
+    await skill_manager.register(workflow_skill)
+    workflow_skill.set_dependencies(agent=agent, kernel=kernel)
+
     # ── Worker activity log ──
     worker_log = WorkerActivityLog(arc_home / "worker_activity.log")
     worker_log.open()

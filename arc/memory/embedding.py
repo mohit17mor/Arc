@@ -82,7 +82,7 @@ class FastEmbedProvider(EmbeddingProvider):
         Runs in a thread pool — download/load can take a few seconds
         the first time but never blocks the event loop.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._load_model)
 
     def _load_model(self) -> None:
@@ -106,7 +106,7 @@ class FastEmbedProvider(EmbeddingProvider):
         if self._model is None:
             await self.initialize()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         vectors = await loop.run_in_executor(None, self._embed_sync, texts)
         return vectors
 

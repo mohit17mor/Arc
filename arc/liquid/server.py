@@ -93,7 +93,7 @@ class LiquidServer:
         from pyngrok import ngrok, conf
 
         # Configure ngrok (runs in thread to avoid blocking)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _setup_tunnel():
             conf.get_default().auth_token = self._ngrok_token
@@ -117,7 +117,7 @@ class LiquidServer:
         if self._ngrok_tunnel:
             try:
                 from pyngrok import ngrok
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, ngrok.disconnect, self._ngrok_tunnel.public_url)
             except Exception as e:
                 logger.debug("Ngrok disconnect error: %s", e)

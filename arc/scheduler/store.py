@@ -46,7 +46,7 @@ class SchedulerStore:
         self._db: sqlite3.Connection | None = None
 
     async def initialize(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._init_sync)
 
     def _init_sync(self) -> None:
@@ -85,7 +85,7 @@ class SchedulerStore:
 
     async def save(self, job: Job) -> None:
         """Insert or update a job."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._save_sync, job)
 
     def _save_sync(self, job: Job) -> None:
@@ -110,7 +110,7 @@ class SchedulerStore:
         db.commit()
 
     async def get_all(self, active_only: bool = False) -> list[Job]:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_all_sync, active_only)
 
     def _get_all_sync(self, active_only: bool) -> list[Job]:
@@ -124,7 +124,7 @@ class SchedulerStore:
     async def get_due_jobs(self, now: float | None = None) -> list[Job]:
         """Return active jobs whose next_run <= now."""
         t = int(now or time.time())
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_due_sync, t)
 
     def _get_due_sync(self, now: int) -> list[Job]:
@@ -140,7 +140,7 @@ class SchedulerStore:
     ) -> None:
         """Update next_run and last_run after a job fires. Deactivate if next_run=0."""
         t = last_run or int(time.time())
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._update_after_run_sync, job_id, next_run, t)
 
     def _update_after_run_sync(self, job_id: str, next_run: int, last_run: int) -> None:
@@ -153,7 +153,7 @@ class SchedulerStore:
         db.commit()
 
     async def delete(self, job_id: str) -> bool:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._delete_sync, job_id)
 
     def _delete_sync(self, job_id: str) -> bool:
@@ -163,7 +163,7 @@ class SchedulerStore:
         return cur.rowcount > 0
 
     async def get_by_name(self, name: str) -> Job | None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_by_name_sync, name)
 
     def _get_by_name_sync(self, name: str) -> Job | None:
@@ -173,7 +173,7 @@ class SchedulerStore:
 
     async def close(self) -> None:
         if self._db:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._db.close)
             self._db = None
 

@@ -112,7 +112,7 @@ class LongTermMemory:
 
     async def initialize(self) -> None:
         """Set up the database and tables. Safe to call multiple times."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._init_sync)
 
     def _init_sync(self) -> None:
@@ -183,7 +183,7 @@ class LongTermMemory:
 
     async def close(self) -> None:
         if self._db:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._db.close)
             self._db = None
 
@@ -196,7 +196,7 @@ class LongTermMemory:
         confidence: float = 1.0,
     ) -> CoreMemory:
         """Insert or update a core fact."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._upsert_core_sync, id, content, confidence
         )
@@ -222,7 +222,7 @@ class LongTermMemory:
 
     async def get_all_core(self) -> list[CoreMemory]:
         """Return all core memories sorted by confidence then recency."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_all_core_sync)
 
     def _get_all_core_sync(self) -> list[CoreMemory]:
@@ -243,7 +243,7 @@ class LongTermMemory:
 
     async def delete_core(self, id: str) -> bool:
         """Delete a core memory by id. Returns True if it existed."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._delete_core_sync, id)
 
     def _delete_core_sync(self, id: str) -> bool:
@@ -263,7 +263,7 @@ class LongTermMemory:
         importance: float = 0.5,
     ) -> int:
         """Store an episodic memory + its vector. Returns the new row id."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             self._store_episodic_sync,
@@ -312,7 +312,7 @@ class LongTermMemory:
         Results are re-ranked using:
             relevance = 0.7*similarity + 0.2*recency + 0.1*frequency
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._search_episodic_sync, query_embedding, k
         )
@@ -398,7 +398,7 @@ class LongTermMemory:
 
     async def delete_episodic(self, id: int) -> bool:
         """Delete an episodic memory and its vector."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._delete_episodic_sync, id)
 
     def _delete_episodic_sync(self, id: int) -> bool:
@@ -414,7 +414,7 @@ class LongTermMemory:
         offset: int = 0,
     ) -> list[EpisodicMemory]:
         """List episodic memories by recency."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._list_episodic_sync, limit, offset
         )
@@ -445,7 +445,7 @@ class LongTermMemory:
 
     async def episodic_count(self) -> int:
         """Return total number of episodic memories."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._episodic_count_sync)
 
     def _episodic_count_sync(self) -> int:

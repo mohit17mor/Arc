@@ -58,6 +58,7 @@ class CLIPlatform(Platform):
         self._escalation_bus: Any = None  # Set via set_escalation_bus()
         self._mcp_manager: Any = None  # Set via set_mcp_manager()
         self._turn_in_progress: bool = False  # True while agent is generating
+        self._workflow_skill: Any = None  # Set via set_workflow_skill()
 
         # Track state for display
         self._printed_thinking = False
@@ -108,6 +109,10 @@ class CLIPlatform(Platform):
     def set_mcp_manager(self, mcp_manager: Any) -> None:
         """Set reference to MCPManager for /mcp command."""
         self._mcp_manager = mcp_manager
+
+    def set_workflow_skill(self, skill: Any) -> None:
+        """Set reference to WorkflowSkill for /workflow command."""
+        self._workflow_skill = skill
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -167,6 +172,54 @@ class CLIPlatform(Platform):
             success = event.data.get("success", True)
             icon = "[green]✓[/green]" if success else "[red]✗[/red]"
             self._console.print(f"{icon} [dim]Worker '[bold]{task_name}[/bold]' done[/dim]")
+
+        # ── Workflow events ──
+
+        elif event.type == EventType.WORKFLOW_START:
+            name = event.data.get("workflow", "workflow")
+            total = event.data.get("total_steps", 0)
+            self._console.print(f"\n[bold cyan]📋 Workflow:[/bold cyan] [bold]{name}[/bold] ({total} steps)\n")
+
+        elif event.type == EventType.WORKFLOW_STEP_START:
+            step = event.data.get("step", "?")
+            total = event.data.get("total_steps", "?")
+            instruction = event.data.get("instruction", "")
+            self._console.print(f"[bold]▶ Step {step}/{total}:[/bold] {instruction}")
+
+        elif event.type == EventType.WORKFLOW_STEP_COMPLETE:
+            step = event.data.get("step", "?")
+            self._console.print(f"[green]✓[/green] Step {step} complete\n")
+
+        elif event.type == EventType.WORKFLOW_STEP_FAILED:
+            step = event.data.get("step", "?")
+            error = event.data.get("error", "unknown")
+            self._console.print(f"[red]✗[/red] Step {step} failed: {error}\n")
+
+        elif event.type == EventType.WORKFLOW_COMPLETE:
+            name = event.data.get("workflow", "workflow")
+            completed = event.data.get("completed_steps", 0)
+            total = event.data.get("total_steps", 0)
+            self._console.print(f"\n[bold green]✓ Workflow '{name}' complete ({completed}/{total} steps)[/bold green]\n")
+
+        elif event.type == EventType.WORKFLOW_PAUSED:
+            step = event.data.get("step", "?")
+            total = event.data.get("total_steps", "?")
+            instruction = event.data.get("instruction", "")
+            error = event.data.get("error", "")
+            completed = event.data.get("completed_count", 0)
+            remaining = event.data.get("remaining", [])
+
+            self._console.print(
+                Panel(
+                    f"[bold yellow]⚠ Workflow paused at step {step}/{total}[/bold yellow]\n\n"
+                    f"[bold]Failed:[/bold] {instruction}\n"
+                    f"[bold]Error:[/bold] {error}\n\n"
+                    f"Completed: {completed} steps\n"
+                    + (f"Remaining: {', '.join(remaining)}\n" if remaining else "")
+                    + "\n[dim]Options: retry with different instructions, 'skip', or 'stop'[/dim]",
+                    border_style="yellow",
+                )
+            )
     
     async def _handle_approval_request(self, event: Event) -> None:
         """Show approval prompt and resolve the request."""
@@ -210,7 +263,7 @@ class CLIPlatform(Platform):
         # terminal ownership.
         self._console.print("[bold]Allow? ([green]y[/green]=once  [green]a[/green]=always  [red]n[/red]=deny  [red]d[/red]=deny always)[/bold] ", end="")
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             raw = await loop.run_in_executor(None, input)
             response = raw.strip().lower() or "n"
             if response not in ("y", "a", "n", "d"):
@@ -263,7 +316,7 @@ class CLIPlatform(Platform):
         self._console.print("[dim]Type your answer and press Enter:[/dim] ", end="")
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             answer = await loop.run_in_executor(None, input)
             answer = answer.strip() or "(no answer)"
         except (KeyboardInterrupt, EOFError):
@@ -455,7 +508,7 @@ class CLIPlatform(Platform):
     async def _get_input(self) -> str | None:
         """Get input from user."""
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             user_input = await loop.run_in_executor(
                 None,
                 lambda: self._session.prompt(f"\n{self._user_name} > "),
@@ -482,6 +535,8 @@ class CLIPlatform(Platform):
                     "  [cyan]/memory forget <id>[/cyan] \u2014 Delete a core memory by id\n"
                     "  [cyan]/jobs[/cyan]     \u2014 List scheduled jobs\n"
                     "  [cyan]/jobs cancel <name>[/cyan] \u2014 Cancel a scheduled job\n"
+                    "  [cyan]/workflow[/cyan]  \u2014 List or run workflows\n"
+                    "  [cyan]/workflow <name>[/cyan] \u2014 Run a specific workflow\n"
                     "  [cyan]/mcp[/cyan]      \u2014 Show MCP server status\n"
                     "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
                     "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
@@ -648,6 +703,9 @@ class CLIPlatform(Platform):
         elif cmd == "/clear":
             self._console.print("[dim]Conversation cleared[/dim]")
 
+        elif cmd.startswith("/workflow"):
+            await self._handle_workflow_command(command.strip())
+
         elif cmd.startswith("/memory"):
             await self._handle_memory_command(command.strip())
 
@@ -715,6 +773,25 @@ class CLIPlatform(Platform):
                 self._console.print(Panel("\n\n".join(lines).rstrip(), border_style="cyan"))
             except Exception as e:
                 self._console.print(f"[red]Scheduler error: {e}[/red]")
+
+    async def _handle_workflow_command(self, command: str) -> None:
+        """Handle /workflow subcommands."""
+        if not self._workflow_skill:
+            self._console.print("[dim]Workflow engine not available[/dim]")
+            return
+
+        parts = command.split(maxsplit=2)
+        sub = parts[1] if len(parts) > 1 else ""
+
+        if not sub or sub.lower() == "list":
+            result = await self._workflow_skill.execute_tool("list_workflows", {})
+            self._console.print(Panel(result.output or "[dim]No workflows found[/dim]", border_style="blue"))
+        else:
+            wf_name = sub
+            context = parts[2] if len(parts) > 2 else ""
+            # Stream workflow output in real-time
+            async for chunk in self._workflow_skill.stream_workflow(wf_name, context):
+                self._console.print(chunk, end="")
 
     async def _handle_memory_command(self, command: str) -> None:
         """Handle /memory subcommands."""

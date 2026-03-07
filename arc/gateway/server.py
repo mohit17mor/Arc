@@ -74,6 +74,10 @@ class GatewayServer(Platform):
         self._scheduler_store: Any = None
         self._mcp_manager: Any = None
         self._session_memory: Any = None
+        self._workflow_skill: Any = None
+
+        # Kernel reference for event subscriptions
+        self._kernel: Any = None
 
         # Channels that plug into this gateway (Telegram, etc.)
         self._channels: list[Platform] = []
@@ -115,6 +119,12 @@ class GatewayServer(Platform):
 
     def set_session_memory(self, mem: Any) -> None:
         self._session_memory = mem
+
+    def set_workflow_skill(self, skill: Any) -> None:
+        self._workflow_skill = skill
+
+    def set_kernel(self, kernel: Any) -> None:
+        self._kernel = kernel
 
     def attach_channel(self, channel: Platform) -> None:
         """
@@ -287,6 +297,12 @@ class GatewayServer(Platform):
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
 
+        # Clean up any stale/closed connections before adding new one
+        stale = {c for c in self._clients if c.closed}
+        if stale:
+            self._clients -= stale
+            logger.debug(f"Cleaned {len(stale)} stale WebSocket connection(s)")
+
         self._clients.add(ws)
         logger.info(f"WebSocket client connected ({len(self._clients)} total)")
 
@@ -339,12 +355,17 @@ class GatewayServer(Platform):
             if not content:
                 return
 
-            # Handle slash commands
+            # Handle slash commands (quick — OK to await)
             if content.startswith("/"):
                 await self._handle_command(ws, content)
                 return
 
-            await self._handle_chat(ws, content)
+            # Run chat in background so WS message loop stays alive
+            # for heartbeats during long agent runs
+            asyncio.create_task(
+                self._handle_chat(ws, content),
+                name="chat-message",
+            )
 
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
@@ -441,6 +462,7 @@ class GatewayServer(Platform):
                 "  /cost     — Show token usage and cost\n"
                 "  /memory   — Show core facts (long-term memory)\n"
                 "  /jobs     — List scheduled jobs\n"
+                "  /workflow — List or run workflows\n"
                 "  /mcp      — Show MCP server status\n"
                 "  /clear    — Clear conversation history\n"
                 "  /status   — Connection and session info"
@@ -498,16 +520,18 @@ class GatewayServer(Platform):
                         await self._send_system(ws, f"Error: {e}")
                 elif sub == "episodic":
                     try:
-                        entries = await self._memory_manager.get_recent_episodic(limit=10)
+                        entries = await self._memory_manager.list_episodic(limit=10)
                         if not entries:
                             await self._send_system(ws, "No episodic memories yet")
                         else:
+                            import datetime
                             lines = ["Recent episodic memories:\n"]
                             for entry in entries:
-                                content = entry.get("content", str(entry))
+                                ts = datetime.datetime.fromtimestamp(entry.created_at).strftime("%Y-%m-%d %H:%M")
+                                content = entry.content
                                 if len(content) > 100:
                                     content = content[:97] + "..."
-                                lines.append(f"  • {content}")
+                                lines.append(f"  [{ts}] {content}")
                             await self._send_system(ws, "\n".join(lines))
                     except Exception as e:
                         await self._send_system(ws, f"Error reading episodic: {e}")
@@ -519,9 +543,8 @@ class GatewayServer(Platform):
                         else:
                             lines = ["Core facts (long-term memory):\n"]
                             for fact in facts:
-                                fid = fact.get("id", "?")
-                                content = fact.get("content", str(fact))
-                                lines.append(f"  [{fid}] {content}")
+                                conf = getattr(fact, "confidence", 1.0)
+                                lines.append(f"  [{fact.id}] (conf={conf:.2f}) {fact.content}")
                             lines.append(f"\n  ({len(facts)} facts total)")
                             lines.append("  Use /memory forget <id> to delete one")
                             await self._send_system(ws, "\n".join(lines))
@@ -549,13 +572,21 @@ class GatewayServer(Platform):
                         await self._send_system(ws, f"Error: {e}")
                 else:
                     try:
+                        from arc.scheduler.triggers import make_trigger
+                        import datetime
                         jobs = await self._scheduler_store.get_all()
                         if not jobs:
                             await self._send_system(ws, "No scheduled jobs")
                         else:
                             lines = ["Scheduled jobs:\n"]
                             for job in jobs:
-                                lines.append(f"  {job.name} — {job.trigger_type}")
+                                status = "active" if job.active else "inactive"
+                                trigger = make_trigger(job.trigger)
+                                next_dt = (
+                                    datetime.datetime.fromtimestamp(job.next_run).strftime("%Y-%m-%d %H:%M")
+                                    if job.next_run > 0 else "—"
+                                )
+                                lines.append(f"  {job.name} ({status}) — {trigger.description} — next: {next_dt}")
                             await self._send_system(ws, "\n".join(lines))
                     except Exception as e:
                         await self._send_system(ws, f"Error: {e}")
@@ -574,6 +605,25 @@ class GatewayServer(Platform):
             if self._session_memory:
                 self._session_memory.clear()
             await self._send_system(ws, "Conversation cleared")
+
+        elif cmd.startswith("/workflow"):
+            if not self._workflow_skill:
+                await self._send_system(ws, "Workflow engine not available")
+            else:
+                sub = parts[1] if len(parts) > 1 else ""
+                if not sub or sub == "list":
+                    # List workflows
+                    result = await self._workflow_skill.execute_tool("list_workflows", {})
+                    await self._send_system(ws, result.output or "No workflows found")
+                else:
+                    # Run workflow as background task so the WS message loop
+                    # stays alive for heartbeats (prevents mid-workflow disconnects)
+                    wf_name = sub
+                    context_str = parts[2] if len(parts) > 2 else ""
+                    asyncio.create_task(
+                        self._run_workflow_streaming(ws, wf_name, context_str),
+                        name=f"workflow-{wf_name}",
+                    )
 
         elif cmd == "/status":
             uptime = int(time.time() - self._start_time)
@@ -602,6 +652,76 @@ class GatewayServer(Platform):
         })
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history:]
+
+    async def _run_workflow_streaming(
+        self,
+        ws: web.WebSocketResponse,
+        wf_name: str,
+        context: str,
+    ) -> None:
+        """Run a workflow and send events + agent text to client in order.
+
+        Subscribes to kernel workflow events so they arrive at the client
+        in the correct sequence relative to the agent's streamed text.
+        Events are sent as ``workflow_event`` messages, agent text as
+        ``workflow_progress`` — all on the same WebSocket, in order.
+        """
+        from arc.core.events import Event, EventType
+
+        # Temporary event handler — sends workflow events to this specific client
+        async def _on_workflow_event(event: Event) -> None:
+            if ws.closed:
+                return
+            try:
+                await ws.send_json({
+                    "type": "workflow_event",
+                    "event": event.type,
+                    "data": event.data,
+                })
+            except Exception:
+                pass
+
+        # Subscribe to workflow events for the duration of this run
+        kernel = getattr(self, "_kernel", None)
+        subscribed = False
+        if kernel:
+            kernel.on(EventType.WORKFLOW_START, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_STEP_START, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_STEP_COMPLETE, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_STEP_FAILED, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_COMPLETE, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_PAUSED, _on_workflow_event)
+            subscribed = True
+
+        try:
+            async for chunk in self._workflow_skill.stream_workflow(wf_name, context):
+                if ws.closed:
+                    logger.info("WebSocket closed mid-workflow, stopping output")
+                    break
+                try:
+                    await ws.send_json({
+                        "type": "workflow_progress",
+                        "content": chunk,
+                    })
+                except (ConnectionResetError, Exception):
+                    logger.info("WebSocket send failed mid-workflow, stopping output")
+                    break
+        except Exception as e:
+            logger.error(f"Workflow streaming error: {e}", exc_info=True)
+            if not ws.closed:
+                try:
+                    await self._send_system(ws, f"Workflow error: {e}")
+                except Exception:
+                    pass
+        finally:
+            # Unsubscribe
+            if subscribed and kernel:
+                kernel.off(EventType.WORKFLOW_START, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_STEP_START, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_STEP_COMPLETE, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_STEP_FAILED, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_COMPLETE, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_PAUSED, _on_workflow_event)
 
     # ━━━ Fallback HTML ━━━
 

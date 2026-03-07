@@ -260,7 +260,7 @@ class BrowsingSkill(Skill):
         """
         try:
             ddgs = self._ddgs
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             raw = await loop.run_in_executor(
                 None,
                 lambda: list(ddgs.text(query, max_results=num_results)),

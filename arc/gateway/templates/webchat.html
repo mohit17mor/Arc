@@ -281,6 +281,7 @@
     { name: '/memory',         desc: 'Core facts (long-term memory)' },
     { name: '/memory episodic',desc: 'Recent episodic memories' },
     { name: '/jobs',           desc: 'List scheduled jobs' },
+    { name: '/workflow',       desc: 'List or run workflows' },
     { name: '/mcp',            desc: 'MCP server status' },
     { name: '/clear',          desc: 'Clear conversation' },
     { name: '/status',         desc: 'Gateway status' },
@@ -321,7 +322,15 @@
   }
 
   // ━━━ WebSocket connection ━━━
+  let hasLoadedHistory = false;  // only load history once per page load
+
   function connect() {
+    // Close existing connection if any (prevents duplicates)
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.onclose = null;  // prevent reconnect loop
+      ws.close();
+    }
+
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host + '/ws');
 
@@ -358,8 +367,9 @@
         break;
 
       case 'history':
-        // Replay past conversation on new connection
-        if (data.messages && data.messages.length > 0) {
+        // Only load history once per page load (not on reconnects)
+        if (!hasLoadedHistory && data.messages && data.messages.length > 0) {
+          hasLoadedHistory = true;
           data.messages.forEach(function(m) {
             if (m.source && m.source !== 'webchat') {
               addSync(m.source, m.user_input, m.response);
@@ -394,6 +404,15 @@
 
       case 'command_result':
         addAgent(data.content || '');
+        break;
+
+      case 'workflow_progress':
+        appendChunk(data.content || '');
+        scrollDown();
+        break;
+
+      case 'workflow_event':
+        handleWorkflowEvent(data.event, data.data);
         break;
 
       case 'event':
@@ -435,6 +454,28 @@
       const icon = eventData.success ? '✓' : '✗';
       addEvent(icon + ' Worker "' + name + '" done');
     }
+  }
+
+  // ━━━ Workflow event display ━━━
+  function handleWorkflowEvent(eventType, eventData) {
+    // Finalize any in-progress agent message before showing step marker
+    finalizeAgent();
+
+    if (eventType === 'workflow:start') {
+      addSystem('📋 Workflow: ' + (eventData.workflow || 'workflow') + ' (' + eventData.total_steps + ' steps)');
+    } else if (eventType === 'workflow:step_start') {
+      addSystem('▶ Step ' + eventData.step + '/' + eventData.total_steps + ': ' + eventData.instruction);
+    } else if (eventType === 'workflow:step_complete') {
+      addSystem('✓ Step ' + eventData.step + ' complete');
+    } else if (eventType === 'workflow:step_failed') {
+      addSystem('✗ Step ' + eventData.step + ' failed: ' + (eventData.error || 'unknown'));
+    } else if (eventType === 'workflow:complete') {
+      addSystem('✓ Workflow complete (' + eventData.completed_steps + '/' + eventData.total_steps + ' steps)');
+    } else if (eventType === 'workflow:paused') {
+      addSystem('⚠ Workflow paused at step ' + eventData.step + ': ' + (eventData.error || ''));
+      addSystem('Options: retry, skip, or stop');
+    }
+    scrollDown();
   }
 
   // ━━━ Message rendering ━━━

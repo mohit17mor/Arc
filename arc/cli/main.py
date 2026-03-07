@@ -126,6 +126,12 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     if rt.memory_manager is not None:
         cli.set_memory_manager(rt.memory_manager)
 
+    # Wire workflow skill for /workflow command
+    from arc.workflow.skill import WorkflowSkill as _WFSkillCLI
+    wf_skill_cli = rt.skill_manager.get_skill("workflow")
+    if wf_skill_cli and isinstance(wf_skill_cli, _WFSkillCLI):
+        cli.set_workflow_skill(wf_skill_cli)
+
     # Queue for scheduler/worker results → CLI injection
     from arc.notifications.base import Notification as _Notification
     pending_queue: asyncio.Queue[_Notification] = asyncio.Queue()
@@ -158,6 +164,14 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     rt.kernel.on(EventType.AGENT_ESCALATION, forward_to_cli)
     rt.kernel.on(EventType.AGENT_SPAWNED, forward_to_cli)
     rt.kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_cli)
+
+    # Workflow events
+    rt.kernel.on(EventType.WORKFLOW_START, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_STEP_START, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_STEP_COMPLETE, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_STEP_FAILED, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_COMPLETE, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_PAUSED, forward_to_cli)
 
     # Message handler
     async def handle_message(user_input: str):
@@ -496,6 +510,13 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
         gw.set_mcp_manager(rt.mcp_manager)
     gw.set_session_memory(rt.agent._memory)
 
+    # Wire workflow skill for /workflow command
+    from arc.workflow.skill import WorkflowSkill as _WFSkill
+    wf_skill = rt.skill_manager.get_skill("workflow")
+    if wf_skill and isinstance(wf_skill, _WFSkill):
+        gw.set_workflow_skill(wf_skill)
+    gw.set_kernel(rt.kernel)
+
     # Attach Telegram as a channel (if configured)
     if rt.config.telegram.platform_configured:
         from arc.platforms.telegram.app import TelegramPlatform
@@ -526,6 +547,10 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     rt.kernel.on(EventType.SKILL_TOOL_RESULT, forward_to_gateway)
     rt.kernel.on(EventType.AGENT_SPAWNED, forward_to_gateway)
     rt.kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_gateway)
+
+    # Workflow events are NOT broadcast here — the /workflow handler
+    # and the WorkflowSkill manage their own display to avoid
+    # duplicate/out-of-order messages with the agent text stream.
 
     # Message handler
     async def handle_message(user_input: str):

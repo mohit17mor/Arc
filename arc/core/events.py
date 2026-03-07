@@ -74,6 +74,15 @@ class EventType:
     AGENT_TASK_COMPLETE = "agent:task_complete"  # worker finished, result ready
     AGENT_ESCALATION = "agent:escalation"     # worker/expert needs user input via main
 
+    # Workflow execution
+    WORKFLOW_START = "workflow:start"          # workflow begun
+    WORKFLOW_STEP_START = "workflow:step_start"    # step N starting
+    WORKFLOW_STEP_COMPLETE = "workflow:step_complete"  # step N done
+    WORKFLOW_STEP_FAILED = "workflow:step_failed"  # step N failed
+    WORKFLOW_COMPLETE = "workflow:complete"    # workflow finished successfully
+    WORKFLOW_FAILED = "workflow:failed"        # workflow stopped due to failure
+    WORKFLOW_PAUSED = "workflow:paused"        # waiting for user input
+
     # Wildcard
     ALL = "*"
 

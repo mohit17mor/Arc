@@ -43,7 +43,7 @@ class EscalationRequest:
     from_agent: str         # name of the agent that raised the question
     question: str
     future: asyncio.Future = field(
-        default_factory=lambda: asyncio.get_event_loop().create_future()
+        default_factory=lambda: asyncio.get_running_loop().create_future()
     )
 
 
@@ -93,7 +93,7 @@ class EscalationBus:
         self._counter += 1
         escalation_id = f"esc_{self._counter}"
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
 
         req = EscalationRequest(
