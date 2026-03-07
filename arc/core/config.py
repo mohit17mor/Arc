@@ -148,6 +148,13 @@ class NgrokConfig(BaseModel):
         return bool(self.auth_token)
 
 
+class GatewayConfig(BaseModel):
+    """Gateway (WebSocket + WebChat) configuration."""
+
+    host: str = "127.0.0.1"
+    port: int = 18789
+
+
 class SchedulerConfig(BaseModel):
     """Scheduler configuration."""
 
@@ -212,6 +219,7 @@ class ArcConfig(BaseModel):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tavily: TavilyConfig = Field(default_factory=TavilyConfig)
     ngrok: NgrokConfig = Field(default_factory=NgrokConfig)
 
