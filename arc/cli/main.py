@@ -271,7 +271,14 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
         "1. READING (web_search + web_read): For finding information, reading articles, "
         "checking facts. Fast and cheap — use this by default.\n"
         "2. INTERACTING (browser_go + browser_act): For clicking buttons, filling forms, "
-        "navigating multi-step flows, shopping, booking, logging in. Slower but more capable.\n\n"
+        "navigating multi-step flows, shopping, booking, logging in. Slower but more capable.\n"
+        "3. PRODUCT COMPARISON (liquid_search): For finding and comparing purchasable products "
+        "across shopping sites. Returns a visual comparison page.\n\n"
+        "Tool selection guide:\n"
+        "- Booking flights, hotels, trains, events → browser_go + browser_act (interactive forms)\n"
+        "- Adding specific items to cart, checking out → browser_go + browser_act\n"
+        "- Comparing products, 'best X under Y' → liquid_search\n"
+        "- Reading an article or checking facts → web_search + web_read\n\n"
         "Use browser tools when the user needs you to DO something on a website, not just read it.\n"
         "CRITICAL: When filling forms, ALWAYS use the [id] numbers from the page snapshot to "
         "target fields (e.g., fill target='[3]'). Do NOT use text labels like 'Where to?' — "
@@ -827,8 +834,33 @@ async def _run_telegram(verbose: bool = False) -> None:
 
     soft_skill_text = discover_soft_skills()
 
+    browser_strategy = (
+        "\n\nBrowser Control Strategy:\n"
+        "You have TWO ways to access the web:\n"
+        "1. READING (web_search + web_read): For finding information, reading articles, "
+        "checking facts. Fast and cheap — use this by default.\n"
+        "2. INTERACTING (browser_go + browser_act): For clicking buttons, filling forms, "
+        "navigating multi-step flows, shopping, booking, logging in. Slower but more capable.\n"
+        "3. PRODUCT COMPARISON (liquid_search): For finding and comparing purchasable products "
+        "across shopping sites. Returns a visual comparison page.\n\n"
+        "Tool selection guide:\n"
+        "- Booking flights, hotels, trains, events → browser_go + browser_act (interactive forms)\n"
+        "- Adding specific items to cart, checking out → browser_go + browser_act\n"
+        "- Comparing products, 'best X under Y' → liquid_search\n"
+        "- Reading an article or checking facts → web_search + web_read\n\n"
+        "Use browser tools when the user needs you to DO something on a website, not just read it.\n"
+        "CRITICAL: When filling forms, ALWAYS use the [id] numbers from the page snapshot to "
+        "target fields (e.g., fill target='[3]'). Do NOT use text labels like 'Where to?' — "
+        "similar field names cause confusion. The snapshot gives each field a unique [id].\n"
+        "For combobox/dropdown fields (e.g., 'Round trip', 'Economy'), use 'fill' action with "
+        "the desired value — the engine handles clicking and picking automatically.\n"
+        "When using browser_act with forms, prefer fill_form (batch) over individual fill actions.\n"
+        "After each browser_act, you get a fresh page snapshot — check it before deciding next steps.\n"
+        "If the browser hits a CAPTCHA or login wall, it will ask the user for help automatically."
+    )
+
     system_prompt = (
-        identity["system_prompt"] + env_info + research_strategy + delegation_strategy + soft_skill_text
+        identity["system_prompt"] + env_info + research_strategy + delegation_strategy + browser_strategy + soft_skill_text
         + "\n\nYou are running as a Telegram bot. Keep responses concise — "
         "Telegram messages have a 4096 character limit. Use short paragraphs "
         "and avoid very long code blocks unless the user explicitly asks."

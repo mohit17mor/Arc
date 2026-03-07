@@ -48,15 +48,16 @@ class LiquidWebSkill(Skill):
                     name="liquid_search",
                     description=(
                         "Search for products across the web and create a beautiful visual comparison page. "
-                        "Use this tool whenever the user asks to find, search, compare, shop for, browse, or look up "
-                        "ANY kind of product — electronics, gadgets, cameras, headphones, phones, laptops, appliances, "
-                        "clothing, shoes, accessories, books, toys, furniture, or any purchasable item. "
+                        "Use this tool whenever the user asks to find, compare, shop for, or browse "
+                        "PURCHASABLE PRODUCTS — electronics, gadgets, cameras, headphones, phones, laptops, "
+                        "appliances, clothing, shoes, accessories, books, toys, or furniture. "
                         "Also use this when the user says things like 'best X under Y price', 'find me a ...', "
-                        "'compare ...', 'search for ...', 'show me options for ...', or 'what are good ...'. "
+                        "'compare ...', 'show me options for ...', or 'what are good ...'. "
                         "The tool scrapes multiple shopping sites in parallel (Amazon, Flipkart, etc.), "
                         "extracts product data (name, price, rating, image), deduplicates, and renders "
-                        "an interactive 3D carousel UI accessible via a public URL (works on mobile, Telegram, any browser). "
-                        "Do NOT use browser_go or web_search for product queries — use this tool instead."
+                        "an interactive 3D carousel UI accessible via a public URL. "
+                        "Do NOT use this for booking/reservation tasks (flights, hotels, trains, events, appointments) "
+                        "or any multi-step interactive flows — use browser_go + browser_act for those instead."
                     ),
                     parameters={
                         "type": "object",

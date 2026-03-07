@@ -39,8 +39,10 @@ _BROWSER_GO_SPEC = ToolSpec(
     description=(
         "Navigate to a URL in the browser and return a structured snapshot of "
         "the page. Use this to open websites for INTERACTION — clicking buttons, "
-        "filling forms, navigating multi-step flows. "
+        "filling forms, navigating multi-step flows, booking flights/hotels/trains, "
+        "adding items to cart, checking out, or any task that requires clicking through pages. "
         "For simply READING page content, prefer web_read instead (faster). "
+        "For comparing PRODUCTS across sites, prefer liquid_search instead. "
         "The snapshot shows all interactive elements (forms, buttons, links) "
         "with numbered IDs you can reference in browser_act."
     ),
