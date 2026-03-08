@@ -80,6 +80,20 @@ _PRESETS: dict[str, dict[str, Any]] = {
         "needs_key": False,
         "label": "Custom OpenAI-compatible API",
     },
+    "codex": {
+        "class": "responses",
+        "base_url": "",
+        "default_model": "",
+        "needs_key": True,
+        "label": "Codex (OpenAI Responses API)",
+    },
+    "responses": {
+        "class": "responses",
+        "base_url": "",
+        "default_model": "",
+        "needs_key": False,
+        "label": "Custom Responses API endpoint",
+    },
 }
 
 
@@ -137,6 +151,17 @@ def create_llm(
             base_url=base_url or preset["base_url"],
             context_window=context_window,
             max_output_tokens=max_output_tokens,
+        )
+
+    if preset and preset["class"] == "responses":
+        return _create_responses(
+            provider_name=provider,
+            model=model or preset["default_model"],
+            base_url=base_url or preset["base_url"],
+            api_key=api_key,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            extra_headers=extra.get("extra_headers"),
         )
 
     # Everything else → OpenAI-compatible
@@ -199,6 +224,43 @@ def _create_openai_compat(
         context_window=context_window,
         max_output_tokens=max_output_tokens,
         provider_name=provider_name,
+    )
+
+
+def _create_responses(
+    provider_name: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    context_window: int,
+    max_output_tokens: int,
+    extra_headers: dict[str, str] | None = None,
+) -> LLMProvider:
+    from arc.llm.responses import ResponsesAPIProvider
+
+    if not base_url:
+        raise ValueError(
+            f"Provider '{provider_name}': base_url is required. "
+            f"Set it in config.toml or pass via ARC_LLM_BASE_URL."
+        )
+
+    if not model:
+        raise ValueError(
+            f"Provider '{provider_name}': model is required."
+        )
+
+    logger.info(
+        f"Creating Responses API provider: "
+        f"{provider_name}/{model} at {base_url}"
+    )
+    return ResponsesAPIProvider(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
+        provider_name=provider_name,
+        extra_headers=extra_headers,
     )
 
 
