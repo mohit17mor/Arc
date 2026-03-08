@@ -594,5 +594,107 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
         await rt.shutdown()
 
 
+@app.command()
+def listen(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Gateway host"),
+    port: int = typer.Option(18789, "--port", "-p", help="Gateway port"),
+) -> None:
+    """Start voice input — talk to Arc hands-free.
+
+    Requires 'arc gateway' to be running in another terminal.
+    Connects as a WebSocket client — your speech appears in WebChat.
+
+    Install voice dependencies first:
+        pip install sounddevice faster-whisper openwakeword
+
+    Say the wake word (default: "Hey Jarvis") to activate,
+    then speak your request. Arc listens, transcribes, and responds.
+    """
+    asyncio.run(_run_listen(host, port, verbose))
+
+
+async def _run_listen(
+    host: str,
+    port: int,
+    verbose: bool = False,
+) -> None:
+    """Run the voice daemon."""
+    from arc.middleware.logging import setup_logging
+
+    arc_home = get_arc_home()
+    setup_logging(
+        log_dir=arc_home / "logs",
+        console_level=logging.DEBUG if verbose else logging.WARNING,
+    )
+
+    # Check for voice dependencies before doing anything
+    missing: list[str] = []
+    try:
+        import sounddevice  # noqa: F401
+    except ImportError:
+        missing.append("sounddevice")
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError:
+        missing.append("faster-whisper")
+    try:
+        import openwakeword  # noqa: F401
+    except ImportError:
+        missing.append("openwakeword")
+
+    if missing:
+        console.print(
+            f"[red]Missing voice dependencies:[/red] {', '.join(missing)}\n\n"
+            "[dim]Install them with:\n"
+            "  pip install sounddevice faster-whisper openwakeword\n\n"
+            "On Linux you also need:\n"
+            "  sudo apt install libportaudio2[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # Load config for voice settings
+    from arc.core.config import ArcConfig
+
+    config = ArcConfig.load()
+    gateway_url = f"ws://{host}:{port}/ws"
+
+    from arc.voice.daemon import VoiceDaemon
+
+    daemon = VoiceDaemon(
+        gateway_url=gateway_url,
+        whisper_model=config.voice.whisper_model,
+        wake_model=config.voice.wake_model,
+        wake_threshold=config.voice.wake_threshold,
+        silence_duration=config.voice.silence_duration,
+        listen_timeout=config.voice.listen_timeout,
+    )
+
+    wake_display = config.voice.wake_model.replace("_", " ").title()
+    console.print(
+        Panel(
+            f"[bold green]Arc Voice starting[/bold green]\n\n"
+            f"Gateway: [bold]{gateway_url}[/bold]\n"
+            f"Whisper model: [bold]{config.voice.whisper_model}[/bold]\n"
+            f"Wake word: [bold]{wake_display}[/bold]\n"
+            f"Silence timeout: {config.voice.silence_duration}s\n"
+            f"Listen window: {config.voice.listen_timeout}s\n\n"
+            f"Say [bold cyan]{wake_display}[/bold cyan] to start talking.\n"
+            "[dim]Press Ctrl+C to stop[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    try:
+        await daemon.run()
+    except ConnectionError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await daemon.stop()
+
+
 if __name__ == "__main__":
     app()

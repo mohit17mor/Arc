@@ -1,0 +1,242 @@
+"""
+Voice Daemon — connects the VoiceListener to the Arc Gateway.
+
+This is the process that runs when the user types ``arc listen``.
+It:
+    1. Connects to the Gateway via WebSocket (same protocol as WebChat)
+    2. Initializes the speech provider and voice listener
+    3. Runs the listener's state machine
+    4. Transcribes speech and forwards text to the gateway
+    5. Shows desktop notifications when the agent responds
+    6. Plays a confirmation chime on wake word detection
+
+The daemon is a thin orchestrator — all audio logic lives in
+VoiceListener, all STT logic lives in SpeechProvider.  This file
+only handles the WebSocket bridge and user feedback.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+import numpy as np
+
+from arc.voice.listener import VoiceEvent, VoiceListener, VoiceState
+from arc.voice.transcriber import SpeechProvider, WhisperLocalProvider
+
+logger = logging.getLogger(__name__)
+
+
+class VoiceDaemon:
+    """
+    Connects voice input to the Arc Gateway.
+
+    Requires the gateway to be running (``arc gateway``).
+    The daemon acts as a WebSocket client — same protocol as WebChat.
+    Messages sent from voice appear in WebChat and Telegram with a
+    ``source: "voice"`` tag.
+
+    Usage::
+
+        daemon = VoiceDaemon(
+            gateway_url="ws://127.0.0.1:18789/ws",
+            whisper_model="base.en",
+        )
+        await daemon.run()   # blocks until stopped
+    """
+
+    def __init__(
+        self,
+        gateway_url: str = "ws://127.0.0.1:18789/ws",
+        whisper_model: str = "base.en",
+        wake_model: str = "hey_jarvis",
+        wake_threshold: float = 0.5,
+        silence_duration: float = 1.5,
+        listen_timeout: float = 30.0,
+    ) -> None:
+        self._gateway_url = gateway_url
+        self._transcriber: SpeechProvider = WhisperLocalProvider(
+            model_name=whisper_model,
+        )
+        self._listener = VoiceListener(
+            wake_model=wake_model,
+            wake_threshold=wake_threshold,
+            silence_duration=silence_duration,
+            listen_timeout=listen_timeout,
+        )
+        self._ws: Any = None  # aiohttp.ClientWebSocketResponse
+        self._session: Any = None  # aiohttp.ClientSession
+        self._running = False
+
+    # ━━━ Lifecycle ━━━
+
+    async def run(self) -> None:
+        """
+        Main entry point — initialize everything, then listen.
+
+        Blocks until stop() is called or the gateway disconnects.
+        Requires ``arc gateway`` to be running.
+        """
+        import aiohttp
+
+        logger.info("Voice daemon starting")
+
+        # 1. Initialize transcriber and wake word detector
+        await self._transcriber.initialize()
+        await self._listener.initialize()
+
+        # 2. Connect to Gateway WebSocket
+        self._session = aiohttp.ClientSession()
+        try:
+            self._ws = await self._session.ws_connect(self._gateway_url)
+        except Exception as e:
+            await self._session.close()
+            raise ConnectionError(
+                f"Cannot connect to Arc Gateway at {self._gateway_url}. "
+                f"Is 'arc gateway' running?"
+            ) from e
+
+        logger.info(f"Connected to gateway at {self._gateway_url}")
+        self._running = True
+
+        # 3. Start gateway response listener in background
+        response_task = asyncio.create_task(
+            self._response_loop(), name="voice-response"
+        )
+
+        # 4. Main loop — process voice events
+        try:
+            async for event in self._listener.run():
+                if not self._running:
+                    break
+                await self._handle_event(event)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._running = False
+            response_task.cancel()
+            try:
+                await response_task
+            except asyncio.CancelledError:
+                pass
+            await self._listener.stop()
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+            if self._session and not self._session.closed:
+                await self._session.close()
+            logger.info("Voice daemon stopped")
+
+    async def stop(self) -> None:
+        """Signal the daemon to shut down."""
+        self._running = False
+        await self._listener.stop()
+
+    # ━━━ Event handling ━━━
+
+    async def _handle_event(self, event: VoiceEvent) -> None:
+        """Process a single event from the voice listener."""
+
+        if event.type == "wake_word":
+            logger.info("Wake word detected")
+            self._play_chime()
+
+        elif event.type == "speech_ready":
+            audio: np.ndarray = event.data["audio"]
+            result = await self._transcriber.transcribe(audio)
+
+            if not result.text:
+                logger.debug("Empty transcription — ignoring")
+                await self._listener.notify_response_done()
+                return
+
+            logger.info(
+                f"Transcribed ({result.duration_ms}ms, "
+                f"conf={result.confidence:.2f}): {result.text}"
+            )
+
+            # Send to gateway — same format as WebChat
+            if self._ws and not self._ws.closed:
+                await self._ws.send_json({
+                    "type": "message",
+                    "content": result.text,
+                })
+            else:
+                logger.warning("Gateway disconnected — cannot send")
+                self._running = False
+
+        elif event.type == "state_change":
+            logger.debug(f"State → {event.state.value}")
+
+    # ━━━ Gateway response listener ━━━
+
+    async def _response_loop(self) -> None:
+        """
+        Listen for gateway responses and transition the listener.
+
+        When the agent finishes responding (type=done), we:
+        - Show a desktop notification with the response
+        - Tell the listener to move to LISTENING state
+        """
+        import aiohttp
+
+        try:
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    msg_type = data.get("type", "")
+
+                    if msg_type == "done":
+                        full_content = data.get("full_content", "")
+                        self._notify(full_content)
+                        await self._listener.notify_response_done()
+
+                    elif msg_type == "error":
+                        error_msg = data.get("message", "Unknown error")
+                        logger.warning(f"Gateway error: {error_msg}")
+                        self._notify(f"Error: {error_msg}")
+                        await self._listener.notify_response_done()
+
+                elif msg.type in (
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    logger.warning("Gateway WebSocket closed")
+                    self._running = False
+                    break
+
+        except asyncio.CancelledError:
+            pass
+
+    # ━━━ User feedback ━━━
+
+    @staticmethod
+    def _play_chime() -> None:
+        """Play a short confirmation tone when the wake word is detected."""
+        try:
+            import sounddevice as sd
+
+            duration = 0.12
+            t = np.linspace(0, duration, int(16000 * duration), False)
+            tone = (0.3 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+            sd.play(tone, samplerate=16000, blocking=False)
+        except Exception:
+            pass  # non-critical
+
+    @staticmethod
+    def _notify(text: str) -> None:
+        """Show a desktop notification with the agent's response."""
+        try:
+            from plyer import notification
+
+            notification.notify(
+                title="Arc",
+                message=(text[:300] + "…") if len(text) > 300 else text,
+                timeout=10,
+            )
+        except ImportError:
+            pass  # plyer not installed — skip silently
+        except Exception as e:
+            logger.debug(f"Notification failed: {e}")

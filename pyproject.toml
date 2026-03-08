@@ -37,7 +37,14 @@ dependencies = [
 anthropic = ["anthropic>=0.30"]
 openai = ["openai>=1.0"]
 telegram = ["python-telegram-bot>=21.0"]
-all = ["arc-agent[anthropic,openai,telegram]"]
+voice = [
+    "sounddevice>=0.4",
+    "faster-whisper>=1.0",
+    "openwakeword>=0.6",
+    "onnxruntime>=1.14",
+    "plyer>=2.1",
+]
+all = ["arc-agent[anthropic,openai,telegram,voice]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

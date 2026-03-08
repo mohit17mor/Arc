@@ -148,6 +148,16 @@ class NgrokConfig(BaseModel):
         return bool(self.auth_token)
 
 
+class VoiceConfig(BaseModel):
+    """Voice input (STT) configuration."""
+
+    wake_model: str = "hey_jarvis"
+    wake_threshold: float = 0.5
+    whisper_model: str = "base.en"
+    silence_duration: float = 1.5  # seconds of silence = end of speech
+    listen_timeout: float = 30.0  # seconds before returning to sleep
+
+
 class GatewayConfig(BaseModel):
     """Gateway (WebSocket + WebChat) configuration."""
 
@@ -220,6 +230,7 @@ class ArcConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     tavily: TavilyConfig = Field(default_factory=TavilyConfig)
     ngrok: NgrokConfig = Field(default_factory=NgrokConfig)
 
