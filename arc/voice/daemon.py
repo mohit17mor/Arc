@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -56,6 +56,7 @@ class VoiceDaemon:
         wake_threshold: float = 0.5,
         silence_duration: float = 1.5,
         listen_timeout: float = 30.0,
+        status_callback: Callable[[VoiceState, str], None] | None = None,
     ) -> None:
         self._gateway_url = gateway_url
         self._transcriber: SpeechProvider = WhisperLocalProvider(
@@ -67,9 +68,12 @@ class VoiceDaemon:
             silence_duration=silence_duration,
             listen_timeout=listen_timeout,
         )
+        self._status_callback = status_callback
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._session: Any = None  # aiohttp.ClientSession
         self._running = False
+        self._current_state: VoiceState = VoiceState.SLEEPING
+        self._sleep_watch_task: asyncio.Task[None] | None = None
 
     # ━━━ Lifecycle ━━━
 
@@ -87,6 +91,7 @@ class VoiceDaemon:
         # 1. Initialize transcriber and wake word detector
         await self._transcriber.initialize()
         await self._listener.initialize()
+        self._emit_status("sleep", VoiceState.SLEEPING)
 
         # 2. Connect to Gateway WebSocket
         self._session = aiohttp.ClientSession()
@@ -123,6 +128,7 @@ class VoiceDaemon:
             except asyncio.CancelledError:
                 pass
             await self._listener.stop()
+            self._cancel_sleep_watch()
             if self._ws and not self._ws.closed:
                 await self._ws.close()
             if self._session and not self._session.closed:
@@ -133,6 +139,8 @@ class VoiceDaemon:
         """Signal the daemon to shut down."""
         self._running = False
         await self._listener.stop()
+        self._cancel_sleep_watch()
+        self._emit_status("sleep", VoiceState.SLEEPING)
 
     # ━━━ Event handling ━━━
 
@@ -142,14 +150,18 @@ class VoiceDaemon:
         if event.type == "wake_word":
             logger.info("Wake word detected")
             self._play_chime()
+            self._emit_status("wake", VoiceState.ACTIVE)
 
         elif event.type == "speech_ready":
+            self._emit_status("processing", VoiceState.PROCESSING)
             audio: np.ndarray = event.data["audio"]
             result = await self._transcriber.transcribe(audio)
 
             if not result.text:
                 logger.debug("Empty transcription — ignoring")
                 await self._listener.notify_response_done()
+                self._emit_status("listen", VoiceState.LISTENING)
+                self._start_sleep_watch()
                 return
 
             logger.info(
@@ -169,6 +181,9 @@ class VoiceDaemon:
 
         elif event.type == "state_change":
             logger.debug(f"State → {event.state.value}")
+            self._emit_status("state", event.state)
+            if event.state == VoiceState.SLEEPING:
+                self._cancel_sleep_watch()
 
     # ━━━ Gateway response listener ━━━
 
@@ -192,12 +207,16 @@ class VoiceDaemon:
                         full_content = data.get("full_content", "")
                         self._notify(full_content)
                         await self._listener.notify_response_done()
+                        self._emit_status("listen", VoiceState.LISTENING)
+                        self._start_sleep_watch()
 
                     elif msg_type == "error":
                         error_msg = data.get("message", "Unknown error")
                         logger.warning(f"Gateway error: {error_msg}")
                         self._notify(f"Error: {error_msg}")
                         await self._listener.notify_response_done()
+                        self._emit_status("listen", VoiceState.LISTENING)
+                        self._start_sleep_watch()
 
                 elif msg.type in (
                     aiohttp.WSMsgType.CLOSED,
@@ -205,6 +224,7 @@ class VoiceDaemon:
                 ):
                     logger.warning("Gateway WebSocket closed")
                     self._running = False
+                    self._emit_status("sleep", VoiceState.SLEEPING)
                     break
 
         except asyncio.CancelledError:
@@ -217,11 +237,18 @@ class VoiceDaemon:
         """Play a short confirmation tone when the wake word is detected."""
         try:
             import sounddevice as sd
-
-            duration = 0.12
-            t = np.linspace(0, duration, int(16000 * duration), False)
-            tone = (0.3 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
-            sd.play(tone, samplerate=16000, blocking=False)
+            sample_rate = 16000
+            duration = 0.35
+            t = np.linspace(0, duration, int(sample_rate * duration), False)
+            base = np.sin(2 * np.pi * 660 * t)
+            overtone = np.sin(2 * np.pi * 990 * t)
+            envelope = np.exp(-3.5 * t)
+            attack_len = int(0.02 * sample_rate)
+            if attack_len > 0:
+                attack = np.linspace(0.0, 1.0, attack_len)
+                envelope[:attack_len] *= attack
+            tone = 0.4 * (0.7 * base + 0.3 * overtone) * envelope
+            sd.play(tone.astype(np.float32), samplerate=sample_rate, blocking=False)
         except Exception:
             pass  # non-critical
 
@@ -240,3 +267,41 @@ class VoiceDaemon:
             pass  # plyer not installed — skip silently
         except Exception as e:
             logger.debug(f"Notification failed: {e}")
+
+    # ━━━ Status signalling ━━━
+
+    def _emit_status(self, event: str, state: VoiceState) -> None:
+        self._current_state = state
+        if self._status_callback:
+            try:
+                self._status_callback(state, event)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(f"Status callback error: {exc}")
+
+    def _start_sleep_watch(self) -> None:
+        if not self._running:
+            return
+        self._cancel_sleep_watch()
+
+        async def _sleep_monitor() -> None:
+            try:
+                while self._running:
+                    if self._listener.state == VoiceState.SLEEPING:
+                        self._emit_status("sleep", VoiceState.SLEEPING)
+                        return
+                    await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                pass
+
+        self._sleep_watch_task = asyncio.create_task(
+            _sleep_monitor(), name="voice-sleep-monitor"
+        )
+
+    def _cancel_sleep_watch(self) -> None:
+        if self._sleep_watch_task and not self._sleep_watch_task.done():
+            self._sleep_watch_task.cancel()
+        self._sleep_watch_task = None
+
+    @property
+    def current_state(self) -> VoiceState:
+        return self._current_state

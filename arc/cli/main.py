@@ -9,10 +9,13 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import typer
-from rich.console import Console
 from pathlib import Path
+from typing import Any
+
+from rich.console import Console
 from rich.panel import Panel
 
 app = typer.Typer(
@@ -660,7 +663,80 @@ async def _run_listen(
     gateway_url = f"ws://{host}:{port}/ws"
 
     from arc.voice.daemon import VoiceDaemon
+    from arc.voice.listener import VoiceState
+    from rich.align import Align
+    from rich.console import Group
+    from rich.live import Live
+    from rich.text import Text
 
+    state_info: dict[str, Any] = {
+        "state": VoiceState.SLEEPING,
+        "event": "sleep",
+    }
+    update_event = asyncio.Event()
+    stop_indicator = asyncio.Event()
+
+    def status_callback(state: VoiceState, event: str) -> None:
+        state_info["state"] = state
+        state_info["event"] = event
+        update_event.set()
+
+    def _render_bar(phase: int) -> Panel:
+        state = state_info["state"]
+        event = state_info["event"]
+        console_width = max(10, console.size.width - 4)
+        bar_chars = "▁▂▃▄▅▆▇█"
+        animate_states = {VoiceState.ACTIVE, VoiceState.PROCESSING}
+        labels = {
+            VoiceState.SLEEPING: ("Sleeping", "grey35"),
+            VoiceState.ACTIVE: ("Listening…", "cyan"),
+            VoiceState.PROCESSING: ("Processing…", "yellow"),
+            VoiceState.LISTENING: ("Awaiting follow-up", "green"),
+        }
+        label, colour = labels.get(state, ("Listening…", "cyan"))
+        if state in animate_states:
+            char = bar_chars[phase % len(bar_chars)]
+            bar_body = char * console_width
+        elif state == VoiceState.SLEEPING:
+            bar_body = "░" * console_width
+        else:
+            bar_body = "█" * console_width
+        bar = Text(bar_body, style=f"bold {colour}")
+        status_line = Text(label.upper(), style=f"bold {colour}")
+        event_line = Text(f"event: {event}", style="dim")
+        content = Group(bar, status_line, event_line)
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="Voice Status",
+            border_style=colour,
+            padding=(0, 1),
+            expand=True,
+        )
+
+    async def indicator_loop() -> None:
+        phase = 0
+        anim_steps = 8
+        update_event.set()
+        with Live(
+            _render_bar(phase),
+            console=console,
+            refresh_per_second=12,
+            transient=False,
+        ) as live:
+            while not stop_indicator.is_set():
+                try:
+                    await asyncio.wait_for(update_event.wait(), timeout=0.25)
+                    update_event.clear()
+                except asyncio.TimeoutError:
+                    pass
+                if stop_indicator.is_set():
+                    break
+                if state_info["state"] in {VoiceState.ACTIVE, VoiceState.PROCESSING}:
+                    phase = (phase + 1) % anim_steps
+                else:
+                    phase = 0
+                live.update(_render_bar(phase))
+            live.update(_render_bar(0))
     daemon = VoiceDaemon(
         gateway_url=gateway_url,
         whisper_model=config.voice.whisper_model,
@@ -668,6 +744,7 @@ async def _run_listen(
         wake_threshold=config.voice.wake_threshold,
         silence_duration=config.voice.silence_duration,
         listen_timeout=config.voice.listen_timeout,
+        status_callback=status_callback,
     )
 
     wake_display = config.voice.wake_model.replace("_", " ").title()
@@ -685,6 +762,8 @@ async def _run_listen(
         )
     )
 
+    indicator_task = asyncio.create_task(indicator_loop())
+
     try:
         await daemon.run()
     except ConnectionError as e:
@@ -693,6 +772,10 @@ async def _run_listen(
     except KeyboardInterrupt:
         pass
     finally:
+        stop_indicator.set()
+        update_event.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await indicator_task
         await daemon.stop()
 
 

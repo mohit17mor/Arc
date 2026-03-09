@@ -40,8 +40,8 @@ class TestDaemonConstruction:
 
 class TestEventHandling:
 
-    def _make_daemon(self) -> VoiceDaemon:
-        daemon = VoiceDaemon()
+    def _make_daemon(self, status_callback=None) -> VoiceDaemon:
+        daemon = VoiceDaemon(status_callback=status_callback)
         daemon._ws = AsyncMock()
         daemon._ws.closed = False
         return daemon
@@ -80,6 +80,7 @@ class TestEventHandling:
             "type": "message",
             "content": "hello world",
         })
+        assert daemon.current_state == VoiceState.PROCESSING
 
     @pytest.mark.asyncio
     async def test_empty_transcription_skipped(self):
@@ -107,6 +108,7 @@ class TestEventHandling:
 
         # Should tell listener to resume
         daemon._listener.notify_response_done.assert_called_once()
+        assert daemon.current_state == VoiceState.LISTENING
 
     @pytest.mark.asyncio
     async def test_disconnected_ws_stops_daemon(self):
@@ -136,6 +138,38 @@ class TestEventHandling:
         event = VoiceEvent(type="state_change", state=VoiceState.SLEEPING)
         # Should not raise
         await daemon._handle_event(event)
+
+
+class TestStatusCallback:
+
+    @pytest.mark.asyncio
+    async def test_status_callback_receives_events(self):
+        events: list[tuple[VoiceState, str]] = []
+
+        def cb(state: VoiceState, event: str) -> None:
+            events.append((state, event))
+
+        daemon = VoiceDaemon(status_callback=cb)
+        daemon._ws = AsyncMock()
+        daemon._ws.closed = False
+        daemon._transcriber = AsyncMock()
+        daemon._transcriber.transcribe.return_value = TranscriptionResult(
+            text="",
+            confidence=0.0,
+            language="en",
+            duration_ms=100,
+        )
+        daemon._listener = AsyncMock()
+
+        await daemon._handle_event(VoiceEvent(type="wake_word", state=VoiceState.ACTIVE))
+        audio = np.zeros(16000, dtype=np.float32)
+        await daemon._handle_event(
+            VoiceEvent(type="speech_ready", state=VoiceState.PROCESSING, data={"audio": audio})
+        )
+
+        assert events[0] == (VoiceState.ACTIVE, "wake")
+        assert (VoiceState.PROCESSING, "processing") in events
+        assert events[-1] == (VoiceState.LISTENING, "listen")
 
 
 # ── Gateway message format ───────────────────────────────────────
