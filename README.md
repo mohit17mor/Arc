@@ -73,6 +73,83 @@ Spawn background worker agents for long tasks. Keep chatting while research happ
 ### 🔔 Get Notified
 Results delivered in-chat, to a log file, or via Telegram.
 
+### 🎤 Voice Input — Talk Hands-Free
+Say a wake word and Arc listens. No terminal or browser tab needs to be focused.
+
+```
+You:  "Hey Jarvis"
+🔔    *chime*
+You:  "Search for flights from Delhi to Mumbai next week"
+Arc:  *runs the query, sends you a desktop notification with results*
+You:  "Sort by cheapest"    ← no wake word needed, conversation is still active
+Arc:  *responds*
+      ... 30 seconds of silence ...
+Arc:  *goes back to sleep*
+```
+
+**How it works:**
+- **Wake word** — `openwakeword` detects "Hey Jarvis" (configurable) at ~2% CPU idle
+- **Speech-to-text** — `faster-whisper` (offline, local, ~150MB model) transcribes after wake word
+- **Gateway client** — sends transcribed text to `arc gateway` via WebSocket (same protocol as WebChat)
+- **Conversation flow** — 4-state machine: SLEEPING → ACTIVE → PROCESSING (mic off) → LISTENING (30s follow-up window)
+- **Cross-platform** — conversations appear live in WebChat and Telegram
+- **Mic goes deaf** during processing — your meetings, music, and background chatter are never captured
+
+**Setup:**
+
+```bash
+pip install arc-agent[voice]     # or: pip install sounddevice faster-whisper openwakeword
+
+# Terminal 1:
+arc gateway
+
+# Terminal 2:
+arc listen
+```
+
+**Configuration** (`~/.arc/config.toml`):
+
+```toml
+[voice]
+wake_model = "hey_jarvis"     # also: alexa, hey_mycroft, hey_rhasspy
+whisper_model = "base.en"     # tiny.en (faster) or small.en (more accurate)
+silence_duration = 1.5        # seconds of silence = end of speech
+listen_timeout = 30.0         # seconds before going back to sleep
+```
+
+### 📋 Workflows — Deterministic Step-by-Step Automation
+Define repeatable multi-step tasks in YAML. Unlike ad-hoc tool calls, workflows execute in a **fixed order** with retry, failure handling, and progress events.
+
+```yaml
+# ~/.arc/workflows/jira-rca.yaml
+name: jira-rca
+description: Root cause analysis for a Jira ticket
+trigger: "rca|root cause"
+steps:
+  - do: Fetch the Jira ticket details
+    tool: mcp_call
+    args: {server: jira, tool: get_issue, arguments: {key: "${ticket}"}}
+  - do: Search the codebase for the relevant error
+    retry: 2
+  - do: Analyze the root cause and write a summary
+    on_fail: continue
+  - do: Post the RCA summary as a comment on the ticket
+```
+
+**Features:**
+- **Simple steps** — just plain English: `steps: ["search the web", "summarize"]`
+- **Extended steps** — `retry`, `on_fail: continue|stop`, `ask_if_unclear`, explicit `tool`/`shell` calls
+- **Context passing** — each step sees results from previous steps
+- **Progress events** — `workflow:start → step_start → step_complete → complete` via the kernel event bus
+- **10-minute timeout** per step to catch stuck calls
+
+**Usage:**
+```
+/workflow list              # see available workflows
+/workflow jira-rca          # run a workflow
+```
+Or the agent can trigger them: *"run the jira-rca workflow for PROJ-1234"*
+
 ### 🛍️ Liquid Web — Product Search & Comparison
 Ask Arc to find products and it renders a **live 3D carousel** you can browse in your browser:
 
@@ -147,7 +224,15 @@ auth_token = "..."
                               │ Tier 2 — On Demand       │
                               │ browser · scheduler ·    │
                               │ liquid web · MCP gateway │
+                              │ workflows                │
                               └──────────────────────────┘
+
+    ┌───────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐
+    │    CLI    │  │  WebChat │  │  Telegram  │  │   Voice    │
+    │ arc chat  │  │ Gateway  │  │  arc tg    │  │ arc listen │
+    └─────┬─────┘  └────┬─────┘  └─────┬──────┘  └─────┬──────┘
+          └──────────────┴─────────────┴────────────────┘
+                          All share the same agent
 ```
 
 **Micro-kernel design** — every subsystem is independent, wired through an event bus. Swap Ollama for Claude or GPT by changing one config line.
@@ -244,7 +329,11 @@ chat_id = ""    # optional
 arc init                  # first-time setup
 arc chat                  # start chatting
 arc chat -m <model>       # use a specific model
+arc gateway               # run the WebSocket + WebChat server
+arc listen                # voice input (requires arc gateway)
+arc telegram              # run as a Telegram bot
 arc workers --follow      # live-tail background activity
+arc logs                  # view today's logs
 ```
 
 Inside chat:
@@ -253,6 +342,7 @@ Inside chat:
 /mcp             MCP server status
 /memory          core facts · /memory episodic · /memory forget <id>
 /jobs            scheduled jobs · /jobs cancel <name>
+/workflow        list or run workflows · /workflow <name>
 /cost            token usage this session
 /clear           reset conversation
 ```
@@ -351,7 +441,7 @@ Arc:  → mcp_list_tools({})           — sees: filesystem, github, memory
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # 640 tests
+pytest                    # 777 tests
 pytest --cov=arc          # with coverage
 ```
 
