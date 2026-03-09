@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,7 @@ class GatewayServer(Platform):
         self._site: web.TCPSite | None = None
         self._handler: MessageHandler | None = None
         self._clients: set[web.WebSocketResponse] = set()
+        self._ws_sources: dict[web.WebSocketResponse, str] = {}
         self._running = False
         self._stop_event = asyncio.Event()
 
@@ -305,6 +307,7 @@ class GatewayServer(Platform):
 
         self._clients.add(ws)
         logger.info(f"WebSocket client connected ({len(self._clients)} total)")
+        self._ws_sources[ws] = "webchat"
 
         # Send welcome
         await ws.send_json({
@@ -332,6 +335,7 @@ class GatewayServer(Platform):
             logger.warning(f"WebSocket handler error: {e}")
         finally:
             self._clients.discard(ws)
+            self._ws_sources.pop(ws, None)
             logger.info(f"WebSocket client disconnected ({len(self._clients)} total)")
 
         return ws
@@ -349,6 +353,9 @@ class GatewayServer(Platform):
             data = {"type": "message", "content": raw}
 
         msg_type = data.get("type", "message")
+        source = data.get("source") or self._ws_sources.get(ws, "webchat")
+        if data.get("source"):
+            self._ws_sources[ws] = source
 
         if msg_type == "message":
             content = data.get("content", "").strip()
@@ -363,7 +370,7 @@ class GatewayServer(Platform):
             # Run chat in background so WS message loop stays alive
             # for heartbeats during long agent runs
             asyncio.create_task(
-                self._handle_chat(ws, content),
+                self._handle_chat(ws, content, source),
                 name="chat-message",
             )
 
@@ -381,6 +388,7 @@ class GatewayServer(Platform):
         self,
         ws: web.WebSocketResponse,
         user_input: str,
+        source: str,
     ) -> None:
         """Stream an agent response back to the WebSocket client."""
         if not self._handler:
@@ -388,6 +396,15 @@ class GatewayServer(Platform):
             return
 
         self._total_messages += 1
+
+        message_id = uuid.uuid4().hex
+
+        await self._broadcast_user_message(
+            source=source,
+            user_input=user_input,
+            message_id=message_id,
+            exclude_ws=ws,
+        )
 
         # Signal that we're thinking
         await ws.send_json({"type": "thinking"})
@@ -419,16 +436,63 @@ class GatewayServer(Platform):
         self._record_history("webchat", user_input, full_response)
 
         # Broadcast to other connected clients (sync)
-        for other_ws in self._clients:
-            if other_ws is not ws and not other_ws.closed:
-                try:
-                    await other_ws.send_json({
-                        "type": "sync",
-                        "user_input": user_input,
-                        "response": full_response,
-                    })
-                except Exception:
-                    pass  # Client may have disconnected
+        await self._broadcast_response(
+            source=source,
+            user_input=user_input,
+            response=full_response,
+            message_id=message_id,
+            exclude_ws=ws,
+        )
+
+    async def _broadcast_payload(
+        self,
+        payload: dict[str, Any],
+        exclude_ws: web.WebSocketResponse | None = None,
+    ) -> None:
+        for other_ws in list(self._clients):
+            if other_ws is exclude_ws:
+                continue
+            if other_ws.closed:
+                self._clients.discard(other_ws)
+                self._ws_sources.pop(other_ws, None)
+                continue
+            try:
+                await other_ws.send_json(payload)
+            except Exception:
+                self._clients.discard(other_ws)
+                self._ws_sources.pop(other_ws, None)
+
+    async def _broadcast_user_message(
+        self,
+        source: str,
+        user_input: str,
+        message_id: str,
+        exclude_ws: web.WebSocketResponse | None = None,
+    ) -> None:
+        payload = {
+            "type": "sync_user",
+            "source": source,
+            "user_input": user_input,
+            "message_id": message_id,
+        }
+        await self._broadcast_payload(payload, exclude_ws)
+
+    async def _broadcast_response(
+        self,
+        source: str,
+        user_input: str,
+        response: str,
+        message_id: str,
+        exclude_ws: web.WebSocketResponse | None = None,
+    ) -> None:
+        payload = {
+            "type": "sync",
+            "source": source,
+            "user_input": user_input,
+            "response": response,
+            "message_id": message_id,
+        }
+        await self._broadcast_payload(payload, exclude_ws)
 
     # ━━━ Event forwarding ━━━
 

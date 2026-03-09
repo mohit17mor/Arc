@@ -174,6 +174,7 @@ class VoiceDaemon:
                 await self._ws.send_json({
                     "type": "message",
                     "content": result.text,
+                    "source": "voice",
                 })
             else:
                 logger.warning("Gateway disconnected — cannot send")

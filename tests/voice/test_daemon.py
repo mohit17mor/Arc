@@ -79,6 +79,7 @@ class TestEventHandling:
         daemon._ws.send_json.assert_called_once_with({
             "type": "message",
             "content": "hello world",
+            "source": "voice",
         })
         assert daemon.current_state == VoiceState.PROCESSING
 

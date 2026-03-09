@@ -272,6 +272,7 @@
   let thinkingEl = null;
   let reconnectDelay = 1000;
   let cmdActiveIdx = -1;        // keyboard selection index in command menu
+  const syncState = new Map();
 
   // ━━━ Slash command definitions ━━━
   const COMMANDS = [
@@ -372,7 +373,7 @@
           hasLoadedHistory = true;
           data.messages.forEach(function(m) {
             if (m.source && m.source !== 'webchat') {
-              addSync(m.source, m.user_input, m.response);
+              handleSyncComplete(m.source, m.user_input, m.response, null);
             } else {
               addUser(m.user_input);
               addAgent(m.response);
@@ -419,10 +420,21 @@
         handleEvent(data.event, data.data);
         break;
 
+      case 'sync_user':
+        handleSyncUser(
+          data.source || 'webchat',
+          data.user_input || '',
+          data.message_id || null,
+        );
+        break;
+
       case 'sync':
-        // Another client or channel sent a message — show it
-        var src = data.source || 'webchat';
-        addSync(src, data.user_input, data.response);
+        handleSyncComplete(
+          data.source || 'webchat',
+          data.user_input || '',
+          data.response || '',
+          data.message_id || null,
+        );
         break;
 
       case 'pong':
@@ -494,14 +506,41 @@
   function addSystem(text) { addMsg('system', text); }
   function addEvent(text) { addMsg('event', text); }
 
-  function addSync(source, userText, response) {
-    // Show a label like "via Telegram" then the user message + agent response
+  function appendSyncLabel(source) {
     var label = document.createElement('div');
     label.className = 'sync-label';
     label.textContent = 'via ' + source;
     messagesEl.appendChild(label);
-    addMsg('user', userText);
-    addMsg('agent', response);
+    return label;
+  }
+
+  function handleSyncUser(source, userText, messageId) {
+    appendSyncLabel(source);
+    if (userText) {
+      addMsg('user', userText);
+    }
+    if (messageId) {
+      syncState.set(messageId, { source: source, userShown: Boolean(userText) });
+    }
+  }
+
+  function handleSyncComplete(source, userText, response, messageId) {
+    var state = messageId ? syncState.get(messageId) : null;
+    if (!state) {
+      appendSyncLabel(source);
+      if (userText) {
+        addMsg('user', userText);
+      }
+    } else {
+      if (!state.userShown && userText) {
+        addMsg('user', userText);
+        state.userShown = true;
+      }
+      syncState.delete(messageId);
+    }
+    if (response) {
+      addMsg('agent', response);
+    }
   }
 
   function showThinking() {
