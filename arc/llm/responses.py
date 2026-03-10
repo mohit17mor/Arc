@@ -148,7 +148,8 @@ class ResponsesAPIProvider(LLMProvider):
                         f"API error ({response.status_code}): {error_msg}",
                         provider=self._provider_name,
                         model=self._model,
-                        retryable=response.status_code >= 500,
+                        retryable=response.status_code in (429, 500, 502, 503, 504)
+                                  or response.status_code >= 500,
                     )
 
                 # Accumulate function calls by output_index
@@ -219,7 +220,7 @@ class ResponsesAPIProvider(LLMProvider):
                             f"Response failed: {err.get('message', 'unknown error')}",
                             provider=self._provider_name,
                             model=self._model,
-                            retryable=False,
+                            retryable=True,
                         )
 
                 # Stream ended without response.completed — emit what we have

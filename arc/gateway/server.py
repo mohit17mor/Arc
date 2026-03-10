@@ -420,13 +420,20 @@ class GatewayServer(Platform):
                 })
         except Exception as e:
             logger.error(f"Agent error: {e}")
-            await ws.send_json({
-                "type": "error",
-                "message": f"Agent error: {str(e)}",
-            })
-            return
+            error_text = f"\n\nSorry, something went wrong: {e}"
+            full_response += error_text
+            # Send the error as a chunk so the user sees it inline
+            try:
+                await ws.send_json({
+                    "type": "chunk",
+                    "content": error_text,
+                })
+            except Exception:
+                pass  # WebSocket may have closed
 
-        # Signal completion
+        # Always signal completion — even after errors.
+        # This ensures WebChat exits "thinking" state and the exchange
+        # is recorded in history so the conversation stays coherent.
         await ws.send_json({
             "type": "done",
             "full_content": full_response,

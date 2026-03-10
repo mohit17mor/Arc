@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 if TYPE_CHECKING:
     from arc.memory.manager import MemoryManager
 
+from arc.core.errors import LLMError
 from arc.core.events import Event, EventType
 from arc.core.kernel import Kernel
 from arc.core.types import (
@@ -37,6 +38,10 @@ from arc.skills.manager import SkillManager
 from arc.skills.router import SkillRouter
 
 logger = logging.getLogger(__name__)
+
+# LLM retry configuration
+_MAX_LLM_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds, doubles each retry
 
 
 @dataclass
@@ -170,24 +175,69 @@ class AgentLoop:
                 input_tokens = 0
                 output_tokens = 0
                 
-                async for chunk in self._llm.generate(
-                    messages=context.messages,
-                    tools=tool_specs if tool_specs else None,
-                    temperature=self._config.temperature,
-                ):
-                    # Stream text to caller
-                    if chunk.text:
-                        collected_text += chunk.text
-                        yield chunk.text
-                    
-                    # Collect tool calls
-                    if chunk.tool_calls:
-                        collected_tool_calls.extend(chunk.tool_calls)
-                    
-                    if chunk.stop_reason:
-                        stop_reason = chunk.stop_reason
-                        input_tokens = chunk.input_tokens
-                        output_tokens = chunk.output_tokens
+                # ── LLM call with retry ──────────────────────────────────
+                llm_error: Exception | None = None
+                for _attempt in range(_MAX_LLM_RETRIES):
+                    try:
+                        async for chunk in self._llm.generate(
+                            messages=context.messages,
+                            tools=tool_specs if tool_specs else None,
+                            temperature=self._config.temperature,
+                        ):
+                            # Stream text to caller
+                            if chunk.text:
+                                collected_text += chunk.text
+                                yield chunk.text
+                            
+                            # Collect tool calls
+                            if chunk.tool_calls:
+                                collected_tool_calls.extend(chunk.tool_calls)
+                            
+                            if chunk.stop_reason:
+                                stop_reason = chunk.stop_reason
+                                input_tokens = chunk.input_tokens
+                                output_tokens = chunk.output_tokens
+
+                        llm_error = None
+                        break  # success — exit retry loop
+
+                    except LLMError as e:
+                        llm_error = e
+                        retryable = getattr(e, "retryable", False)
+                        if not retryable or _attempt >= _MAX_LLM_RETRIES - 1:
+                            break  # non-retryable or last attempt
+                        delay = _RETRY_BASE_DELAY * (2 ** _attempt)
+                        logger.warning(
+                            f"LLM error (attempt {_attempt + 1}/{_MAX_LLM_RETRIES},"
+                            f" retrying in {delay}s): {e}"
+                        )
+                        await asyncio.sleep(delay)
+                        # Reset for retry — text already streamed can't be un-sent,
+                        # but tool calls from a partial response must be cleared
+                        collected_tool_calls.clear()
+                        stop_reason = None
+
+                    except Exception as e:
+                        llm_error = e
+                        break  # unknown error — don't retry
+
+                # ── Handle LLM failure gracefully ────────────────────────
+                if llm_error is not None:
+                    error_msg = (
+                        f"\n\nI encountered an error communicating with the LLM: "
+                        f"{llm_error}\n\nPlease try again."
+                    )
+                    yield error_msg
+                    # Store the partial exchange so conversation state stays clean
+                    self._memory.add_assistant_message(
+                        (collected_text + error_msg) if collected_text else error_msg
+                    )
+                    self._state.status = AgentStatus.COMPLETE
+                    await self._emit(
+                        EventType.AGENT_ERROR,
+                        {"error": str(llm_error), "recovered": True},
+                    )
+                    return
                 
                 # Emit LLM response event
                 await self._emit(
@@ -259,7 +309,18 @@ class AgentLoop:
                         )
                         self._memory.add_tool_result(result, tool_call.name)
                     else:
-                        result = await self._execute_tool_with_approval(tool_call)
+                        try:
+                            result = await self._execute_tool_with_approval(tool_call)
+                        except Exception as e:
+                            logger.warning(
+                                f"Tool execution crashed for {tool_call.name}: {e}"
+                            )
+                            result = ToolResult(
+                                tool_call_id=tool_call.id,
+                                success=False,
+                                output="",
+                                error=f"Tool execution crashed: {e}",
+                            )
                         self._memory.add_tool_result(result, tool_call.name)
                 
                 # 5. OBSERVE — loop continues with tool results in context
@@ -284,7 +345,11 @@ class AgentLoop:
         except Exception as e:
             self._state.status = AgentStatus.ERROR
             await self._emit(EventType.AGENT_ERROR, {"error": str(e)})
-            raise
+            # Store error in memory so conversation state stays consistent
+            error_text = f"\n\nSorry, I encountered an unexpected error: {e}"
+            yield error_text
+            self._memory.add_assistant_message(error_text)
+            self._state.status = AgentStatus.COMPLETE
     
     def _fire_memory_tasks(self, user_input: str, assistant_text: str) -> None:
         """Schedule background memory storage tasks (fire-and-forget)."""
