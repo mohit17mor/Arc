@@ -44,7 +44,10 @@ voice = [
     "onnxruntime>=1.14",
     "plyer>=2.1",
 ]
-all = ["arc-agent[anthropic,openai,telegram,voice]"]
+overlay = [
+    "PyQt6>=6.5",
+]
+all = ["arc-agent[anthropic,openai,telegram,voice,overlay]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

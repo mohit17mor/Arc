@@ -602,6 +602,7 @@ def listen(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
     host: str = typer.Option("127.0.0.1", "--host", help="Gateway host"),
     port: int = typer.Option(18789, "--port", "-p", help="Gateway port"),
+    no_overlay: bool = typer.Option(False, "--no-overlay", help="Disable screen overlay, use terminal bar"),
 ) -> None:
     """Start voice input — talk to Arc hands-free.
 
@@ -611,26 +612,12 @@ def listen(
     Install voice dependencies first:
         pip install sounddevice faster-whisper openwakeword
 
+    For the ambient screen glow (optional):
+        pip install PyQt6
+
     Say the wake word (default: "Hey Jarvis") to activate,
     then speak your request. Arc listens, transcribes, and responds.
     """
-    asyncio.run(_run_listen(host, port, verbose))
-
-
-async def _run_listen(
-    host: str,
-    port: int,
-    verbose: bool = False,
-) -> None:
-    """Run the voice daemon."""
-    from arc.middleware.logging import setup_logging
-
-    arc_home = get_arc_home()
-    setup_logging(
-        log_dir=arc_home / "logs",
-        console_level=logging.DEBUG if verbose else logging.WARNING,
-    )
-
     # Check for voice dependencies before doing anything
     missing: list[str] = []
     try:
@@ -655,6 +642,164 @@ async def _run_listen(
             "  sudo apt install libportaudio2[/dim]"
         )
         raise typer.Exit(1)
+
+    from arc.voice.overlay import is_available as _overlay_available
+
+    use_overlay = not no_overlay and _overlay_available()
+
+    if use_overlay:
+        _run_listen_with_overlay(host, port, verbose)
+    else:
+        if not no_overlay and not _overlay_available():
+            console.print(
+                "[dim]PyQt6 not installed — using terminal indicator. "
+                "Install with: pip install PyQt6[/dim]\n"
+            )
+        asyncio.run(_run_listen_terminal(host, port, verbose))
+
+
+def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
+    """Run voice daemon with PyQt6 ambient edge glow overlay.
+
+    Qt owns the main thread; asyncio daemon runs in a QThread.
+    """
+    import sys
+    import threading
+
+    from PyQt6.QtCore import QThread, QTimer
+    from PyQt6.QtWidgets import QApplication
+
+    from arc.voice.overlay import create_overlay
+    from arc.voice.listener import VoiceState
+    from arc.middleware.logging import setup_logging
+    from arc.core.config import ArcConfig
+
+    arc_home = get_arc_home()
+    setup_logging(
+        log_dir=arc_home / "logs",
+        console_level=logging.DEBUG if verbose else logging.WARNING,
+    )
+    config = ArcConfig.load()
+    gateway_url = f"ws://{host}:{port}/ws"
+
+    # Qt app — must be created on main thread before any widgets
+    qt_app = QApplication(sys.argv)
+    qt_app.setQuitOnLastWindowClosed(False)  # no visible windows to close
+
+    result = create_overlay()
+    if result is None:
+        # Shouldn't happen (we checked is_available), but fallback
+        asyncio.run(_run_listen_terminal(host, port, verbose))
+        return
+
+    glow_bar, bridge = result
+
+    # Map VoiceState → overlay state string
+    _state_map = {
+        VoiceState.SLEEPING: "sleeping",
+        VoiceState.ACTIVE: "active",
+        VoiceState.PROCESSING: "processing",
+        VoiceState.LISTENING: "listening",
+    }
+
+    def status_callback(state: VoiceState, event: str) -> None:
+        """Called from asyncio thread — emits Qt signal (thread-safe)."""
+        overlay_state = _state_map.get(state, "sleeping")
+        bridge.state_changed.emit(overlay_state)
+
+    # Print startup info to terminal (before Qt takes over)
+    wake_display = config.voice.wake_model.replace("_", " ").title()
+    console.print(
+        Panel(
+            f"[bold green]Arc Voice starting (overlay mode)[/bold green]\n\n"
+            f"Gateway: [bold]{gateway_url}[/bold]\n"
+            f"Whisper model: [bold]{config.voice.whisper_model}[/bold]\n"
+            f"Wake word: [bold]{wake_display}[/bold]\n\n"
+            f"Say [bold cyan]{wake_display}[/bold cyan] to start talking.\n"
+            "[dim]The screen edge will glow when Arc is listening.\n"
+            "Press Ctrl+C to stop.[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    # Run the daemon in a background thread with its own event loop
+    daemon_error: list[str] = []
+    daemon_loop: asyncio.AbstractEventLoop | None = None
+
+    def _daemon_thread() -> None:
+        nonlocal daemon_loop
+        from arc.voice.daemon import VoiceDaemon
+
+        daemon = VoiceDaemon(
+            gateway_url=gateway_url,
+            whisper_model=config.voice.whisper_model,
+            wake_model=config.voice.wake_model,
+            wake_threshold=config.voice.wake_threshold,
+            silence_duration=config.voice.silence_duration,
+            listen_timeout=config.voice.listen_timeout,
+            status_callback=status_callback,
+        )
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        daemon_loop = loop
+        try:
+            loop.run_until_complete(daemon.run())
+        except ConnectionError as e:
+            daemon_error.append(str(e))
+        except Exception as e:
+            daemon_error.append(str(e))
+        finally:
+            try:
+                loop.run_until_complete(daemon.stop())
+            except Exception:
+                pass
+            loop.close()
+            daemon_loop = None
+            # Tell Qt to quit from the daemon thread
+            QTimer.singleShot(0, qt_app.quit)
+
+    thread = threading.Thread(target=_daemon_thread, name="voice-daemon", daemon=True)
+    thread.start()
+
+    # Handle Ctrl+C: stop the daemon's event loop, then quit Qt
+    import signal
+
+    def _sigint_handler(*_: Any) -> None:
+        if daemon_loop is not None and daemon_loop.is_running():
+            daemon_loop.call_soon_threadsafe(daemon_loop.stop)
+        QTimer.singleShot(0, qt_app.quit)
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    # Qt event loop on main thread — blocks until qt_app.quit()
+    qt_app.exec()
+
+    # Give the daemon thread a moment to finish cleanly
+    thread.join(timeout=3.0)
+    if thread.is_alive():
+        # Force-stop the loop if still running
+        if daemon_loop is not None and daemon_loop.is_running():
+            daemon_loop.call_soon_threadsafe(daemon_loop.stop)
+        thread.join(timeout=2.0)
+
+    if daemon_error:
+        console.print(f"[red]{daemon_error[0]}[/red]")
+
+
+async def _run_listen_terminal(
+    host: str,
+    port: int,
+    verbose: bool = False,
+) -> None:
+    """Run the voice daemon with terminal-based Rich indicator (fallback)."""
+    from arc.middleware.logging import setup_logging
+
+    arc_home = get_arc_home()
+    setup_logging(
+        log_dir=arc_home / "logs",
+        console_level=logging.DEBUG if verbose else logging.WARNING,
+    )
 
     # Load config for voice settings
     from arc.core.config import ArcConfig
@@ -769,14 +914,15 @@ async def _run_listen(
     except ConnectionError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         stop_indicator.set()
         update_event.set()
         with contextlib.suppress(asyncio.CancelledError):
             await indicator_task
-        await daemon.stop()
+        with contextlib.suppress(Exception):
+            await daemon.stop()
 
 
 if __name__ == "__main__":

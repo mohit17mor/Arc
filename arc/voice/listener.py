@@ -209,7 +209,13 @@ class VoiceListener:
     async def stop(self) -> None:
         """Stop the listener and release the microphone."""
         self._running = False
+        self._stop_mic()
         self._cancel_listen_timeout()
+        # Push a dummy chunk to unblock the audio queue wait
+        try:
+            self._audio_queue.put_nowait(np.zeros(1, dtype=np.float32))
+        except Exception:
+            pass
 
     # ━━━ Wake word detection ━━━
 
