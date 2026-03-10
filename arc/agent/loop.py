@@ -202,6 +202,29 @@ class AgentLoop:
                 
                 # 3. Check if done (no tool calls)
                 if stop_reason == StopReason.COMPLETE or not collected_tool_calls:
+                    # ── Verification: did the LLM promise an action but not call a tool? ──
+                    # Some LLMs say "I'll search for that" or "Let me look that up"
+                    # in text but finish without emitting a tool_call.  Detect this
+                    # pattern and nudge the LLM to actually follow through.
+                    if (
+                        collected_text
+                        and not collected_tool_calls
+                        and tool_specs
+                        and self._iteration < self._config.max_iterations
+                        and self._text_promises_action(collected_text)
+                    ):
+                        logger.debug(
+                            "LLM promised action in text but didn't call a tool — nudging"
+                        )
+                        self._memory.add_assistant_message(collected_text)
+                        self._memory.add_user_message(
+                            "You said you would take an action, but you didn't call "
+                            "any tool. Please actually call the appropriate tool now "
+                            "instead of just describing what you would do."
+                        )
+                        # Continue the loop — next iteration will re-compose and call LLM
+                        continue
+
                     self._memory.add_assistant_message(collected_text)
                     self._state.status = AgentStatus.COMPLETE
 
@@ -391,3 +414,60 @@ class AgentLoop:
         self._memory.clear()
         self._state = AgentState(agent_id="agent")
         self._iteration = 0
+
+    # ━━━ Action verification ━━━
+
+    # Phrases that indicate the LLM intends to take an action but may
+    # have finished without actually emitting a tool call.
+    _ACTION_PHRASES: tuple[str, ...] = (
+        "let me ",
+        "i'll ",
+        "i will ",
+        "let me search",
+        "let me look",
+        "let me check",
+        "let me find",
+        "let me read",
+        "let me run",
+        "let me open",
+        "let me browse",
+        "let me navigate",
+        "i'll search",
+        "i'll look",
+        "i'll check",
+        "i'll find",
+        "i'll read",
+        "i'll run",
+        "i'll open",
+        "i'll browse",
+        "i'll navigate",
+        "i'll use the",
+        "i'll call",
+        "i will search",
+        "i will look",
+        "i will check",
+        "i will use",
+        "searching for",
+        "looking up",
+        "checking ",
+        "running the",
+        "calling the",
+        "using the tool",
+        "activate the",
+        "use_skill",
+    )
+
+    @classmethod
+    def _text_promises_action(cls, text: str) -> bool:
+        """
+        Detect if the LLM's text response promises a tool action.
+
+        Returns True if the text contains phrases like "Let me search",
+        "I'll look that up", etc. — indicating the LLM intended to call
+        a tool but completed without actually doing so.
+
+        Only checks the first ~500 chars — action promises are always
+        at the beginning of the response, not buried in a long answer.
+        """
+        prefix = text[:500].lower()
+        return any(phrase in prefix for phrase in cls._ACTION_PHRASES)

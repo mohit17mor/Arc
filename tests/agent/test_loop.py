@@ -184,3 +184,129 @@ async def test_conversation_continuity(agent, mock_llm):
     
     # Should have: system, user1, assistant1, user2
     assert len(messages) >= 4
+
+
+# ── Action verification tests ───────────────────────────────────
+
+
+class TestActionVerification:
+    """Tests for the LLM action promise detection and nudging."""
+
+    def test_detects_action_promise(self):
+        assert AgentLoop._text_promises_action("Let me search for that")
+        assert AgentLoop._text_promises_action("I'll look that up for you")
+        assert AgentLoop._text_promises_action("I will check the files now")
+        assert AgentLoop._text_promises_action("Searching for flights...")
+        assert AgentLoop._text_promises_action("Let me browse that website")
+        assert AgentLoop._text_promises_action("I'll use the web_search tool")
+
+    def test_no_false_positives(self):
+        assert not AgentLoop._text_promises_action("Here are the results:")
+        assert not AgentLoop._text_promises_action("The answer is 42.")
+        assert not AgentLoop._text_promises_action("Based on my knowledge, Python is great.")
+        assert not AgentLoop._text_promises_action(
+            "I don't have access to real-time data."
+        )
+        assert not AgentLoop._text_promises_action("")
+
+    def test_only_checks_prefix(self):
+        """Action phrases buried deep in a long response are ignored."""
+        long_text = ("x " * 300) + "let me search for that"
+        assert not AgentLoop._text_promises_action(long_text)
+
+    def test_case_insensitive(self):
+        assert AgentLoop._text_promises_action("Let Me Search for that")
+        assert AgentLoop._text_promises_action("I'LL LOOK THAT UP")
+
+    @pytest.mark.asyncio
+    async def test_nudge_triggers_on_broken_promise(
+        self, kernel, skill_manager, security
+    ):
+        """When LLM promises action but doesn't call a tool, it gets nudged."""
+        mock_llm = MockLLMProvider()
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=skill_manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=5),
+        )
+
+        # First call: LLM says "let me search" but returns COMPLETE (no tool call)
+        # Second call (after nudge): LLM calls the tool
+        # Third call: LLM gives final answer
+        mock_llm.set_response("Let me search for that right away.")
+        mock_llm.set_tool_call("greet", {"name": "World"})
+        mock_llm.set_response("Done! I greeted World.")
+
+        chunks = []
+        async for chunk in agent.run("Search for something"):
+            chunks.append(chunk)
+
+        response = "".join(chunks)
+        assert "Done" in response
+
+        # Verify the nudge was injected — at least 3 LLM calls
+        assert mock_llm.call_count >= 3
+
+        # Check that the nudge message was in the conversation
+        msgs = agent.memory.get_messages(include_system=False)
+        nudge_found = any(
+            "didn't call any tool" in (m.content or "")
+            for m in msgs
+            if m.role == "user"
+        )
+        assert nudge_found
+
+    @pytest.mark.asyncio
+    async def test_no_nudge_when_no_promise(self, kernel, skill_manager, security):
+        """Normal text responses without action promises are not nudged."""
+        mock_llm = MockLLMProvider()
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=skill_manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=5),
+        )
+
+        mock_llm.set_response("The answer is 42.")
+
+        async for _ in agent.run("What is the answer?"):
+            pass
+
+        # Only 1 LLM call — no nudge needed
+        assert mock_llm.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_nudge_only_once(self, kernel, skill_manager, security):
+        """If the LLM keeps promising without acting, don't loop forever."""
+        mock_llm = MockLLMProvider()
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=skill_manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=4),
+        )
+
+        # LLM keeps saying "let me do X" without ever calling a tool
+        mock_llm.set_responses([
+            "Let me search for that.",
+            "I'll look that up now.",
+            "Let me check the web.",
+            "I'll search right away.",  # max_iterations reached → synthesise
+        ])
+
+        chunks = []
+        async for chunk in agent.run("Search for flights"):
+            chunks.append(chunk)
+
+        # Should not hang — respects max_iterations
+        assert mock_llm.call_count <= 5  # 4 + possible synthesis
