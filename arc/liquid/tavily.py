@@ -36,7 +36,7 @@ async def tavily_search(
     country: str | None = None,
     topic: str = "general",
     search_depth: str = "basic",
-    max_results: int = 10,
+    max_results: int = 15,
     time_range: str | None = None,
     min_score: float = 0.8,
 ) -> list[SearchResult]:

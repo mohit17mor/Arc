@@ -928,10 +928,20 @@ class ActionExecutor:
         autocomplete suggestion if one appears.
         """
         try:
-            # Clear any existing value
-            await input_locator.fill("", timeout=2000)
+            # Clear any existing value.
+            # .fill("") doesn't trigger JS events on SPAs (Google Flights, etc.)
+            # so we also do Ctrl+A → Backspace which works universally.
+            try:
+                await input_locator.fill("", timeout=2000)
+            except Exception:
+                pass  # might fail if contenteditable — that's fine
+            await input_locator.click(timeout=2000)
+            await page.keyboard.press("Control+a")
+            await page.wait_for_timeout(50)
+            await page.keyboard.press("Backspace")
+            await page.wait_for_timeout(150)
         except Exception:
-            pass  # might fail if contenteditable — that's fine
+            pass  # best-effort clear
 
         try:
             await input_locator.press_sequentially(value, delay=50)
@@ -964,6 +974,15 @@ class ActionExecutor:
         Last resort: type via keyboard into whatever has focus, then try to
         pick a suggestion.
         """
+        # Clear any existing value in the focused field first
+        try:
+            await page.keyboard.press("Control+a")
+            await page.wait_for_timeout(50)
+            await page.keyboard.press("Backspace")
+            await page.wait_for_timeout(150)
+        except Exception:
+            pass  # best-effort clear
+
         try:
             await page.keyboard.type(value, delay=50)
         except Exception as e:

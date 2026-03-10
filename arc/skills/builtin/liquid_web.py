@@ -187,7 +187,7 @@ class LiquidWebSkill(Skill):
             exclude_domains=exclude_domains,
             country=country,
             search_depth=search_depth,
-            max_results=10,
+            max_results=15,
         )
 
         if not search_results:

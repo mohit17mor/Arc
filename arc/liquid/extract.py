@@ -248,7 +248,7 @@ async def extract_generic(page: Page, url: str) -> list[ProductData]:
                 '[data-component-type="s-search-result"]'
             );
             if (amazonCards.length > 0) {
-                for (const card of [...amazonCards].slice(0, 15)) {
+                for (const card of [...amazonCards].slice(0, 50)) {
                     const p = {};
                     const img = card.querySelector('.s-image, img[data-image-latency]');
                     if (img) {
@@ -285,7 +285,7 @@ async def extract_generic(page: Page, url: str) -> list[ProductData]:
             ];
             const allCards = document.querySelectorAll(selectors.join(', '));
             const seen = new Set();
-            for (const card of [...allCards].slice(0, 20)) {
+            for (const card of [...allCards].slice(0, 50)) {
                 const p = {};
                 // Get image
                 const img = card.querySelector('img[src*="http"]');
@@ -369,7 +369,7 @@ async def extract_amazon(page: Page, url: str) -> list[ProductData]:
     raw_products = await page.evaluate(r"""() => {
         const cards = document.querySelectorAll('[data-component-type="s-search-result"]');
         const results = [];
-        for (const card of [...cards].slice(0, 15)) {
+        for (const card of [...cards].slice(0, 50)) {
             const p = {};
             p.asin = card.getAttribute('data-asin') || '';
 
@@ -469,7 +469,7 @@ async def extract_flipkart(page: Page, url: str) -> list[ProductData]:
         const cards = document.querySelectorAll('[data-id], a[href*="/p/"]');
         const seen = new Set();
 
-        for (const card of [...cards].slice(0, 20)) {
+        for (const card of [...cards].slice(0, 50)) {
             const link = card.tagName === 'A' ? card : card.querySelector('a[href*="/p/"]');
             if (!link) continue;
             const href = link.href;
@@ -503,7 +503,7 @@ async def extract_flipkart(page: Page, url: str) -> list[ProductData]:
 
             if (p.name && p.name.length > 5) results.push(p);
         }
-        return results.slice(0, 15);
+        return results.slice(0, 50);
     }""")
 
     products = []
