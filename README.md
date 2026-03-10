@@ -1,8 +1,20 @@
-# Arc
+<h1 align="center">Arc</h1>
+<h3 align="center">The AI agent that actually does things.</h3>
 
-**Your AI agent that actually does things.**
+<p align="center">
+  <img src="public/assets/arc.png" width="320" alt="Arc Mascot" />
+</p>
 
-Arc is a Python framework for building a personal AI agent that runs on your machine. It browses the web, fills forms, manages files, runs commands, and remembers you across sessions — all locally, all free.
+<p align="center">
+  <img src="https://img.shields.io/badge/language-Python-blue?style=flat-square" alt="Python" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT" />
+  <img src="https://img.shields.io/badge/tests-819%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" />
+</p>
+
+---
+
+Arc is a Python framework for building a personal AI agent that runs on your machine. It browses the web, fills forms, manages files, runs commands, and remembers you across sessions.
 
 ```
 You:  "Find me a one-way flight from Delhi to Mumbai on April 10"
