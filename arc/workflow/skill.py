@@ -64,47 +64,27 @@ class WorkflowSkill(Skill):
             name="workflow",
             version="1.0.0",
             description=(
-                "Run deterministic step-by-step workflows for repeatable tasks. "
-                "Workflows are defined in YAML files and execute reliably every time."
+                "List available workflows. Workflows are run via the /workflow "
+                "command — tell the user to use /workflow <name> to start one."
             ),
             capabilities=frozenset([Capability.FILE_READ]),
             tools=[
                 ToolSpec(
-                    name="run_workflow",
+                    name="list_workflows",
                     description=(
-                        "Execute a predefined workflow by name. Workflows run step by step "
-                        "with deterministic ordering — much more reliable than ad-hoc tool calls "
-                        "for complex multi-step tasks.\n"
+                        "List all available workflows with their descriptions. "
+                        "Workflows are run via the /workflow command, not via this tool. "
+                        "If the user wants to run a workflow, tell them to use: "
+                        "/workflow <name>\n"
                         f"Available workflows: {workflow_names}"
                     ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Name of the workflow to run",
-                            },
-                            "context": {
-                                "type": "string",
-                                "description": (
-                                    "The user's original message / any relevant context "
-                                    "to pass to the workflow (e.g., ticket ID, service name)"
-                                ),
-                            },
-                        },
-                        "required": ["name"],
-                    },
-                ),
-                ToolSpec(
-                    name="list_workflows",
-                    description="List all available workflows with their descriptions and triggers",
                     parameters={
                         "type": "object",
                         "properties": {},
                     },
                 ),
             ],
-            always_available=False,  # on-demand via skill router
+            always_available=False,
         )
 
     async def activate(self) -> None:
@@ -129,8 +109,6 @@ class WorkflowSkill(Skill):
         await self._ensure_activated()
         if tool_name == "list_workflows":
             return await self._list_workflows()
-        elif tool_name == "run_workflow":
-            return await self._run_workflow(arguments)
         else:
             return ToolResult(
                 success=False,
@@ -189,26 +167,50 @@ class WorkflowSkill(Skill):
                 error=f"Workflow '{name}' not found. Available: {available}",
             )
 
-        # Execute
-        output_parts = []
-        try:
-            async for chunk in self._engine.run(workflow, user_message=context):
-                output_parts.append(chunk)
-        except Exception as e:
-            logger.error(f"Workflow '{name}' error: {e}", exc_info=True)
-            return ToolResult(
-                success=False,
-                output="".join(output_parts),
-                error=f"Workflow error: {e}",
-            )
+        # ── All workflows run as background tasks when triggered by the agent ──
+        # This ensures:
+        #   1. Explicit wait_for_input steps work (user can respond)
+        #   2. Implicit pauses work (LLM decides to ask a question)
+        #   3. Long workflows don't block the agent loop
+        #   4. Output streams to the user in real-time via kernel events
+        # This matches the /workflow command behavior exactly.
+        import asyncio
 
-        full_output = "".join(output_parts)
-        success = "✓ Workflow" in full_output and "complete" in full_output
-
-        return ToolResult(
-            success=success,
-            output=full_output,
+        asyncio.create_task(
+            self._run_interactive_workflow(workflow, context),
+            name=f"workflow-{name}",
         )
+        return ToolResult(
+            success=True,
+            output=(
+                f"Workflow '{name}' has been started. "
+                f"Progress will appear in the chat as it runs.\n\n"
+                f"If the workflow needs input, it will ask — "
+                f"the user's next message will be routed to it automatically.\n\n"
+                f"Tell the user the workflow has started and to watch for updates."
+            ),
+        )
+
+    async def _run_interactive_workflow(
+        self, workflow: Workflow, context: str,
+    ) -> None:
+        """
+        Run an interactive workflow as a background task.
+
+        Output flows through kernel events (workflow:step_start,
+        workflow:step_complete, workflow:waiting_input, etc.) which
+        platforms display in real-time.  This method just drives the
+        engine's async generator to completion.
+        """
+        try:
+            async for _chunk in self._engine.run(workflow, user_message=context):
+                pass  # text output goes via kernel events to platforms
+            logger.info(f"Interactive workflow '{workflow.name}' completed")
+        except Exception as e:
+            logger.error(
+                f"Interactive workflow '{workflow.name}' failed: {e}",
+                exc_info=True,
+            )
 
     def get_workflow(self, name: str) -> Workflow | None:
         """Get a workflow by name."""

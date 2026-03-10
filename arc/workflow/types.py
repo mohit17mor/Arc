@@ -98,6 +98,11 @@ class Workflow:
     source_path: str = ""
     """File path this workflow was loaded from."""
 
+    @property
+    def has_interactive_steps(self) -> bool:
+        """True if any step has wait_for_input=True."""
+        return any(s.wait_for_input for s in self.steps)
+
 
 @dataclass
 class StepResult:
