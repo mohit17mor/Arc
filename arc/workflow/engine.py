@@ -230,7 +230,21 @@ class WorkflowEngine:
                     needs_input = True
 
                 if needs_input and i < total - 1:  # no point pausing on last step
-                    question = result.output
+                    # Determine the question to show the user
+                    question = result.output.strip()
+                    if not question or not question.endswith("?"):
+                        # LLM didn't ask a clear question — use the step instruction
+                        question = (
+                            f"Workflow is waiting for your input.\n"
+                            f"Step: {step.instruction}\n\n"
+                            f"{result.output.strip()}" if result.output.strip()
+                            else f"Workflow is waiting for your input.\n"
+                            f"Step: {step.instruction}"
+                        )
+
+                    # Yield a visible prompt so the user sees it in the chat stream
+                    yield f"\n\n⏳ **Waiting for your input:**\n{question}\n"
+
                     user_answer = await self._wait_for_user_input(
                         workflow.name, step_num, total, question,
                     )
@@ -376,6 +390,15 @@ class WorkflowEngine:
             prompt += (
                 "\nIMPORTANT: If you are unsure about any detail needed "
                 "for this step, ASK the user rather than guessing.\n"
+            )
+
+        if step.wait_for_input:
+            prompt += (
+                "\nIMPORTANT: This step requires user input. "
+                "You MUST end your response with a CLEAR QUESTION "
+                "asking the user for the specific information you need. "
+                "Do NOT proceed without their answer. "
+                "Phrase it as a direct question ending with a question mark.\n"
             )
 
         if attempt > 0:
