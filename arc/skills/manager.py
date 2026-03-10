@@ -3,11 +3,18 @@ Skill Manager — registration, lifecycle, and tool routing.
 
 The manager is the single point of access for all skills.
 It handles lazy activation and routes tool calls to the right skill.
+
+Large tool results (> OUTPUT_SPILLOVER_THRESHOLD chars) are automatically
+saved to disk and replaced with a summary + file path.  The LLM can
+then use read_file to access specific parts if needed.  This prevents
+a single tool call from blowing up the context window.
 """
 
 from __future__ import annotations
 
+import datetime
 import logging
+from pathlib import Path
 from typing import Any
 
 from arc.core.errors import SkillError
@@ -18,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 # Minimum description length before a warning is emitted at registration time.
 _MIN_DESC_LEN = 15
+
+# Tool output larger than this (in characters) is saved to a file and
+# replaced with a summary + path.  ~8K chars ≈ ~2K tokens.
+OUTPUT_SPILLOVER_THRESHOLD = 8_000
+
+# How many characters of the beginning to keep inline as a preview.
+OUTPUT_PREVIEW_SIZE = 2_000
+
+# Directory where large tool outputs are saved.
+_ARTIFACTS_DIR = Path.home() / ".arc" / "artifacts" / "tool_results"
 
 
 class SkillManager:
@@ -135,13 +152,81 @@ class SkillManager:
 
         try:
             skill = await self._ensure_activated(skill_name)
-            return await skill.execute_tool(tool_name, arguments)
+            result = await skill.execute_tool(tool_name, arguments)
         except Exception as e:
             return ToolResult(
                 tool_call_id="",
                 success=False,
                 output="",
                 error=f"Tool execution failed: {e}",
+            )
+
+        # ── Large output spillover ───────────────────────────────────
+        # If the tool returned a lot of data, save it to a file and
+        # replace the output with a summary + path.  The LLM can use
+        # read_file to access specific parts if it needs more detail.
+        if result.output and len(result.output) > OUTPUT_SPILLOVER_THRESHOLD:
+            result = self._spillover_to_file(result, tool_name)
+
+        return result
+
+    @staticmethod
+    def _spillover_to_file(result: ToolResult, tool_name: str) -> ToolResult:
+        """
+        Save large tool output to a file and replace with summary + path.
+
+        The full output is preserved on disk.  The LLM sees a short preview
+        + the file path, and can use read_file if it needs more detail.
+        """
+        try:
+            _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            safe_name = tool_name.replace("/", "_").replace("\\", "_")
+            filename = f"{safe_name}_{timestamp}.txt"
+            filepath = _ARTIFACTS_DIR / filename
+
+            filepath.write_text(result.output, encoding="utf-8")
+
+            total_chars = len(result.output)
+            total_lines = result.output.count("\n") + 1
+            preview = result.output[:OUTPUT_PREVIEW_SIZE]
+
+            summary = (
+                f"[Output too large for context — saved to file]\n"
+                f"File: {filepath}\n"
+                f"Size: {total_chars:,} characters, {total_lines:,} lines\n\n"
+                f"--- Preview (first {OUTPUT_PREVIEW_SIZE} chars) ---\n"
+                f"{preview}\n"
+                f"--- End of preview ---\n\n"
+                f"Use read_file to access specific sections if needed."
+            )
+
+            logger.info(
+                f"Tool '{tool_name}' output spilled to {filepath} "
+                f"({total_chars:,} chars)"
+            )
+
+            return ToolResult(
+                tool_call_id=result.tool_call_id,
+                success=result.success,
+                output=summary,
+                error=result.error,
+                artifacts=[str(filepath)] + result.artifacts,
+                duration_ms=result.duration_ms,
+            )
+
+        except Exception as e:
+            # If file write fails, fall back to truncation
+            logger.warning(f"Spillover file write failed: {e}")
+            truncated = result.output[:OUTPUT_SPILLOVER_THRESHOLD]
+            return ToolResult(
+                tool_call_id=result.tool_call_id,
+                success=result.success,
+                output=truncated + "\n\n[... output truncated — file save failed]",
+                error=result.error,
+                artifacts=result.artifacts,
+                duration_ms=result.duration_ms,
             )
 
     def get_all_tool_specs(self) -> list[ToolSpec]:
