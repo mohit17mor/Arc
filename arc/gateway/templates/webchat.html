@@ -439,6 +439,13 @@
 
       case 'pong':
         break;
+
+      case 'notification':
+        hideThinking();
+        var jobName = data.job_name || 'Background task';
+        var content = data.content || '';
+        addSystem('🔔 ' + jobName + ' completed:\n' + content);
+        break;
     }
     scrollDown();
   }
@@ -486,6 +493,9 @@
     } else if (eventType === 'workflow:paused') {
       addSystem('⚠ Workflow paused at step ' + eventData.step + ': ' + (eventData.error || ''));
       addSystem('Options: retry, skip, or stop');
+    } else if (eventType === 'workflow:waiting_input') {
+      addSystem('⏳ Workflow waiting for your input (step ' + eventData.step + '/' + eventData.total_steps + ')');
+      addSystem('💬 ' + (eventData.question || 'Please provide input to continue'));
     }
     scrollDown();
   }

@@ -481,6 +481,20 @@ class CLIPlatform(Platform):
                     # (watcher pauses during a turn; this catches the race window)
                     user_input = self._inject_pending_results(user_input)
 
+                    # ── Workflow input intercept ──
+                    # If a workflow is paused waiting for user input, route
+                    # the message there instead of starting a new agent turn.
+                    if (
+                        self._workflow_skill is not None
+                        and hasattr(self._workflow_skill, "is_waiting_for_input")
+                        and self._workflow_skill.is_waiting_for_input
+                    ):
+                        self._workflow_skill.provide_input(user_input)
+                        self._console.print(
+                            "[dim]Input received — workflow resuming...[/dim]"
+                        )
+                        continue
+
                     # Process with agent — hold watcher off during generation
                     self._turn_in_progress = True
                     try:

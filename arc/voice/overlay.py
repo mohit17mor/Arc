@@ -106,23 +106,51 @@ if _HAS_QT:
         Uses QPainter to render the gradient directly — this ensures
         real pixels are composited on Windows.  CSS stylesheets with
         WA_TranslucentBackground are invisible on some Windows configs.
+
+        macOS-specific: uses a higher window level via native API to
+        ensure the bar floats above all other windows including
+        full-screen apps.
         """
 
         def __init__(self, screen: QScreen | None = None) -> None:
             super().__init__()
 
-            # Window flags: frameless, always on top, no taskbar
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.Tool
-            )
+            import platform as _plat
+            is_mac = _plat.system() == "Darwin"
+
+            # Window flags — platform-specific for best behavior
+            if is_mac:
+                # On macOS, Tool windows can hide behind other apps.
+                # SplashScreen + StaysOnTop works more reliably.
+                self.setWindowFlags(
+                    Qt.WindowType.FramelessWindowHint
+                    | Qt.WindowType.WindowStaysOnTopHint
+                    | Qt.WindowType.SplashScreen
+                )
+                # Make it non-focusable so it doesn't steal keyboard
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+                self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+            else:
+                self.setWindowFlags(
+                    Qt.WindowType.FramelessWindowHint
+                    | Qt.WindowType.WindowStaysOnTopHint
+                    | Qt.WindowType.Tool
+                )
 
             # Size and position — full width, top edge of screen
             target_screen = screen or QApplication.primaryScreen()
             avail = target_screen.availableGeometry()
-            self.setGeometry(avail.x(), avail.y(),
-                             avail.width(), _BAR_HEIGHT)
+            if is_mac:
+                # On macOS, place just below the menu bar (avail.y() accounts for it)
+                self.setGeometry(avail.x(), avail.y(),
+                                 avail.width(), _BAR_HEIGHT)
+            else:
+                self.setGeometry(avail.x(), avail.y(),
+                                 avail.width(), _BAR_HEIGHT)
+
+            # On macOS, raise window level via native Cocoa API
+            if is_mac:
+                self._raise_macos_window_level()
 
             # Gradient colors for painting
             self._color1 = QColor("#00d4ff")
@@ -181,6 +209,47 @@ if _HAS_QT:
             painter.fillRect(self.rect(), gradient)
             painter.end()
 
+        # ── macOS native window level ─────────────────────────
+
+        def _raise_macos_window_level(self) -> None:
+            """Set a high window level on macOS via Cocoa API.
+
+            NSStatusWindowLevel (25) ensures the bar floats above
+            normal windows, panels, and floating windows.
+
+            QWidget.winId() on macOS returns a QNSView (NSView*).
+            We need to get the parent NSWindow via [view window],
+            then call [window setLevel:25].
+            """
+            try:
+                from ctypes import c_void_p, cdll, c_int
+
+                objc = cdll.LoadLibrary("/usr/lib/libobjc.A.dylib")
+
+                objc.sel_registerName.restype = c_void_p
+                objc.objc_msgSend.restype = c_void_p
+
+                # Get the NSView from Qt's winId
+                ns_view = int(self.winId())
+
+                # [view window] → NSWindow
+                sel_window = objc.sel_registerName(b"window")
+                objc.objc_msgSend.argtypes = [c_void_p, c_void_p]
+                ns_window = objc.objc_msgSend(ns_view, sel_window)
+
+                if not ns_window:
+                    logger.debug("macOS: could not get NSWindow from QNSView")
+                    return
+
+                # [window setLevel:25]  (NSStatusWindowLevel)
+                sel_setLevel = objc.sel_registerName(b"setLevel:")
+                objc.objc_msgSend.argtypes = [c_void_p, c_void_p, c_int]
+                objc.objc_msgSend(ns_window, sel_setLevel, 25)
+
+                logger.debug("macOS: set window level to NSStatusWindowLevel (25)")
+            except Exception as e:
+                logger.debug(f"macOS window level setup failed (non-fatal): {e}")
+
         # ── Click-through ─────────────────────────────────────
 
         def mousePressEvent(self, event: Any) -> None:
@@ -232,6 +301,7 @@ if _HAS_QT:
             self.setWindowOpacity(1.0)
             self._opacity = 1.0
             self.show()
+            self.raise_()  # ensure on top (especially macOS)
             self.update()  # trigger repaint with new colors
 
             # Pulse animation

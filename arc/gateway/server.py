@@ -782,6 +782,7 @@ class GatewayServer(Platform):
             kernel.on(EventType.WORKFLOW_STEP_FAILED, _on_workflow_event)
             kernel.on(EventType.WORKFLOW_COMPLETE, _on_workflow_event)
             kernel.on(EventType.WORKFLOW_PAUSED, _on_workflow_event)
+            kernel.on(EventType.WORKFLOW_WAITING_INPUT, _on_workflow_event)
             subscribed = True
 
         try:
@@ -813,6 +814,7 @@ class GatewayServer(Platform):
                 kernel.off(EventType.WORKFLOW_STEP_FAILED, _on_workflow_event)
                 kernel.off(EventType.WORKFLOW_COMPLETE, _on_workflow_event)
                 kernel.off(EventType.WORKFLOW_PAUSED, _on_workflow_event)
+                kernel.off(EventType.WORKFLOW_WAITING_INPUT, _on_workflow_event)
 
     # ━━━ Fallback HTML ━━━
 

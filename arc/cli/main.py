@@ -175,6 +175,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     rt.kernel.on(EventType.WORKFLOW_STEP_FAILED, forward_to_cli)
     rt.kernel.on(EventType.WORKFLOW_COMPLETE, forward_to_cli)
     rt.kernel.on(EventType.WORKFLOW_PAUSED, forward_to_cli)
+    rt.kernel.on(EventType.WORKFLOW_WAITING_INPUT, forward_to_cli)
 
     # Message handler
     async def handle_message(user_input: str):
@@ -573,6 +574,15 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     async def handle_message(user_input: str):
         rt.cost_tracker.start_turn()
 
+        # ── Workflow input intercept ──
+        # If a workflow is paused waiting for user input, route
+        # the message to the workflow instead of the agent.
+        wf_skill = rt.skill_manager.get_skill("workflow")
+        if wf_skill and hasattr(wf_skill, "is_waiting_for_input") and wf_skill.is_waiting_for_input:
+            wf_skill.provide_input(user_input)
+            yield f"[Input received — workflow resuming]\n"
+            return
+
         # Inject any pending job/worker results into the prompt
         pending_results: list[str] = []
         while not gw_pending_queue.empty():
@@ -762,6 +772,7 @@ def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
     # Run the daemon in a background thread with its own event loop
     daemon_error: list[str] = []
     daemon_loop: asyncio.AbstractEventLoop | None = None
+    daemon_ref: list[Any] = []  # holds daemon instance for shutdown
 
     def _daemon_thread() -> None:
         nonlocal daemon_loop
@@ -776,6 +787,7 @@ def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
             listen_timeout=config.voice.listen_timeout,
             status_callback=status_callback,
         )
+        daemon_ref.append(daemon)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -785,13 +797,28 @@ def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
         except ConnectionError as e:
             daemon_error.append(str(e))
         except Exception as e:
-            daemon_error.append(str(e))
+            if not isinstance(e, SystemExit):
+                daemon_error.append(str(e))
         finally:
+            # Graceful cleanup — run stop() to close WebSocket, aiohttp, mic
             try:
-                loop.run_until_complete(daemon.stop())
+                if not loop.is_closed():
+                    loop.run_until_complete(daemon.stop())
             except Exception:
                 pass
-            loop.close()
+            # Cancel any remaining tasks
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending and not loop.is_closed():
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                pass
+            if not loop.is_closed():
+                loop.close()
             daemon_loop = None
             # Tell Qt to quit from the daemon thread
             QTimer.singleShot(0, qt_app.quit)
@@ -799,13 +826,18 @@ def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
     thread = threading.Thread(target=_daemon_thread, name="voice-daemon", daemon=True)
     thread.start()
 
-    # Handle Ctrl+C: stop the daemon's event loop, then quit Qt
+    # Handle Ctrl+C: signal daemon to stop gracefully, then quit Qt
     import signal
 
     def _sigint_handler(*_: Any) -> None:
-        if daemon_loop is not None and daemon_loop.is_running():
-            daemon_loop.call_soon_threadsafe(daemon_loop.stop)
-        QTimer.singleShot(0, qt_app.quit)
+        # Schedule daemon.stop() on the event loop (graceful shutdown)
+        # instead of loop.stop() (brutal — leaves resources unclosed)
+        if daemon_loop is not None and daemon_loop.is_running() and daemon_ref:
+            daemon_loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(daemon_ref[0].stop())
+            )
+        # Give the daemon a moment to clean up, then force Qt quit
+        QTimer.singleShot(500, qt_app.quit)
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
