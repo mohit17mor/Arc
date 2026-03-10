@@ -89,6 +89,53 @@ class WorkflowEngine:
     def __init__(self, agent: "AgentLoop", kernel: "Kernel") -> None:
         self._agent = agent
         self._kernel = kernel
+        self._input_future: asyncio.Future[str] | None = None
+
+    def provide_input(self, user_input: str) -> bool:
+        """
+        Resume a paused workflow with user-provided input.
+
+        Called by the platform (CLI, Gateway, WebChat) when the user
+        responds to a workflow's question.  Returns True if a workflow
+        was actually waiting.
+        """
+        if self._input_future is not None and not self._input_future.done():
+            self._input_future.set_result(user_input)
+            return True
+        return False
+
+    @property
+    def is_waiting_for_input(self) -> bool:
+        """True if the workflow is paused waiting for user input."""
+        return self._input_future is not None and not self._input_future.done()
+
+    async def _wait_for_user_input(
+        self, workflow_name: str, step_num: int, total_steps: int,
+        question: str,
+    ) -> str:
+        """
+        Pause workflow execution and wait for the user to provide input.
+
+        Emits a ``workflow:waiting_input`` event so platforms can display
+        the question.  No timeout — waits indefinitely until
+        ``provide_input()`` is called.
+        """
+        loop = asyncio.get_running_loop()
+        self._input_future = loop.create_future()
+
+        await self._emit(EventType.WORKFLOW_WAITING_INPUT, {
+            "workflow": workflow_name,
+            "step": step_num,
+            "total_steps": total_steps,
+            "question": question,
+        })
+
+        logger.info(f"Workflow '{workflow_name}' waiting for user input at step {step_num}")
+
+        try:
+            return await self._input_future
+        finally:
+            self._input_future = None
 
     async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit a workflow event through the kernel bus."""
@@ -168,6 +215,28 @@ class WorkflowEngine:
                     "instruction": step.instruction,
                     "attempts": result.attempts,
                 })
+
+                # ── Human-in-the-loop: pause for user input if needed ──
+                # Two triggers:
+                #   1. Explicit: step has wait_for_input=True in YAML
+                #   2. Implicit: agent's response is a question (ask_if_unclear)
+                needs_input = step.wait_for_input
+                if (
+                    not needs_input
+                    and step.ask_if_unclear
+                    and i < total - 1  # not the last step
+                    and _response_is_question(result.output)
+                ):
+                    needs_input = True
+
+                if needs_input and i < total - 1:  # no point pausing on last step
+                    question = result.output
+                    user_answer = await self._wait_for_user_input(
+                        workflow.name, step_num, total, question,
+                    )
+                    context_parts.append(
+                        f"User response to step {step_num}: {user_answer}"
+                    )
 
             elif result.status == StepStatus.FAILED:
                 await self._emit(EventType.WORKFLOW_STEP_FAILED, {
@@ -325,3 +394,56 @@ class WorkflowEngine:
             )
 
         return prompt
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+# Phrases that strongly indicate the agent is asking the user a question
+# (vs. a rhetorical question in a summary).
+_QUESTION_INDICATORS = (
+    "which ",
+    "what ",
+    "could you ",
+    "can you ",
+    "do you ",
+    "would you ",
+    "should i ",
+    "shall i ",
+    "please provide",
+    "please specify",
+    "please confirm",
+    "please let me know",
+    "i need to know",
+    "i need you to",
+    "help me understand",
+    "before i proceed",
+    "before i can",
+    "before continuing",
+    "to proceed",
+    "to continue",
+)
+
+
+def _response_is_question(text: str) -> bool:
+    """
+    Detect if the agent's step output is asking the user a question.
+
+    Looks for two signals:
+    1. The response ends with a question mark (after stripping whitespace)
+    2. The response contains question-indicator phrases
+
+    Both must be true to avoid false positives on rhetorical questions
+    embedded in longer summaries.  Only checks the last ~500 chars since
+    the question is always at the end.
+    """
+    if not text:
+        return False
+
+    stripped = text.rstrip()
+    if not stripped.endswith("?"):
+        return False
+
+    # Check the tail for question-indicator phrases
+    tail = stripped[-500:].lower()
+    return any(indicator in tail for indicator in _QUESTION_INDICATORS)

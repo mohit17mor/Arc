@@ -118,8 +118,11 @@ listen_timeout = 30.0         # seconds before going back to sleep
 ```
 
 ### 📋 Workflows — Deterministic Step-by-Step Automation
-Define repeatable multi-step tasks in YAML. Unlike ad-hoc tool calls, workflows execute in a **fixed order** with retry, failure handling, and progress events.
+Define repeatable multi-step tasks in YAML. Unlike ad-hoc tool calls, workflows execute in a **fixed order** with retry, failure handling, human-in-the-loop pauses, and progress events.
 
+Drop `.yaml` files in `~/.arc/workflows/` — they're discovered automatically on next activation.
+
+**Quick example:**
 ```yaml
 # ~/.arc/workflows/jira-rca.yaml
 name: jira-rca
@@ -136,12 +139,57 @@ steps:
   - do: Post the RCA summary as a comment on the ticket
 ```
 
+**Step formats:**
+
+```yaml
+# Simple — just plain English
+steps:
+  - search the web for NVIDIA news
+  - summarize the results
+
+# Extended — with control options
+steps:
+  - do: Search for relevant data
+    retry: 2                    # retry up to 2 times on failure
+    on_fail: continue           # continue|stop (default: stop)
+    ask_if_unclear: true        # agent asks user instead of guessing (default: true)
+    wait_for_input: true        # pause workflow and wait for user response
+
+# Explicit — bypass agent, call tool directly
+steps:
+  - do: Get the Jira ticket
+    tool: mcp_call
+    args: {server: jira, tool: get_issue, arguments: {key: "PROJ-123"}}
+
+# Shell command
+steps:
+  - do: Check running pods
+    shell: kubectl get pods -n payments
+```
+
+**Human-in-the-loop — workflows that wait for you:**
+
+Workflows can pause and wait for user input in two ways:
+
+1. **Explicit** — mark a step with `wait_for_input: true`:
+```yaml
+steps:
+  - do: Ask the user which environment to deploy to
+    wait_for_input: true
+  - do: Deploy to the selected environment
+```
+
+2. **Implicit** — the agent decides on its own. If a step has `ask_if_unclear: true` (the default) and the agent's response is a question ("Which environment should I deploy to?"), the workflow **automatically pauses** and waits for your answer. No YAML change needed — the agent asks naturally and the workflow holds until you respond.
+
+In both cases:
+- The workflow waits **indefinitely** — no timeout. Take hours if you need to.
+- Your answer is injected as context for the next step.
+- Works across all platforms — answer from CLI, WebChat, or voice.
+
 **Features:**
-- **Simple steps** — just plain English: `steps: ["search the web", "summarize"]`
-- **Extended steps** — `retry`, `on_fail: continue|stop`, `ask_if_unclear`, explicit `tool`/`shell` calls
 - **Context passing** — each step sees results from previous steps
-- **Progress events** — `workflow:start → step_start → step_complete → complete` via the kernel event bus
-- **10-minute timeout** per step to catch stuck calls
+- **Progress events** — `workflow:start → step_start → step_complete → waiting_input → complete` via the kernel event bus
+- **10-minute timeout** per step to catch stuck calls (does not apply to user input waits)
 
 **Usage:**
 ```

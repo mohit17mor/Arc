@@ -62,6 +62,11 @@ class WorkflowStep:
     ask_if_unclear: bool = True
     """If True, the agent should ask the user when it lacks info."""
 
+    wait_for_input: bool = False
+    """If True, the workflow pauses after this step and waits for user input
+    before proceeding.  The user's response is injected as context for the
+    next step.  No timeout — waits indefinitely."""
+
     # Optional explicit tool call (bypasses agent)
     tool: str | None = None
     args: dict[str, Any] | None = None

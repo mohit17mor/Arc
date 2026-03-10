@@ -82,6 +82,7 @@ class EventType:
     WORKFLOW_COMPLETE = "workflow:complete"    # workflow finished successfully
     WORKFLOW_FAILED = "workflow:failed"        # workflow stopped due to failure
     WORKFLOW_PAUSED = "workflow:paused"        # waiting for user input
+    WORKFLOW_WAITING_INPUT = "workflow:waiting_input"  # step needs user response to continue
 
     # Wildcard
     ALL = "*"

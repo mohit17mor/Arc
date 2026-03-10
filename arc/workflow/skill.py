@@ -240,3 +240,21 @@ class WorkflowSkill(Skill):
     def workflow_names(self) -> list[str]:
         """Names of all loaded workflows."""
         return [w.name for w in self._workflows]
+
+    def provide_input(self, user_input: str) -> bool:
+        """
+        Resume a paused workflow with user input.
+
+        Called by platforms (CLI, Gateway) when the user responds to a
+        workflow's question.  Returns True if a workflow was waiting.
+        """
+        if self._engine is not None:
+            return self._engine.provide_input(user_input)
+        return False
+
+    @property
+    def is_waiting_for_input(self) -> bool:
+        """True if a workflow is currently waiting for user input."""
+        if self._engine is not None:
+            return self._engine.is_waiting_for_input
+        return False

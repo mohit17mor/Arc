@@ -133,6 +133,7 @@ def _parse_step(raw: Any, index: int) -> WorkflowStep:
             retry=int(raw.get("retry", 0)),
             on_fail=on_fail,
             ask_if_unclear=raw.get("ask_if_unclear", True),
+            wait_for_input=raw.get("wait_for_input", False),
             tool=raw.get("tool"),
             args=raw.get("args"),
             shell=raw.get("shell"),

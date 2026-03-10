@@ -480,6 +480,237 @@ async def test_engine_explicit_shell_in_prompt():
     assert "kubectl get pods" in prompts_received[0]
 
 
+# ━━━ Human-in-the-loop tests ━━━
+
+
+from arc.workflow.engine import _response_is_question
+
+
+class TestQuestionDetection:
+    """Tests for implicit question detection in step output."""
+
+    def test_direct_question(self):
+        assert _response_is_question("Which date range should I search?")
+
+    def test_question_with_context(self):
+        text = (
+            "I found the relevant code. However, there are multiple modules "
+            "that could be affected. Could you specify which module to focus on?"
+        )
+        assert _response_is_question(text)
+
+    def test_not_a_question(self):
+        assert not _response_is_question("I found 5 results and summarized them.")
+
+    def test_rhetorical_not_detected(self):
+        # Ends with ? but no question indicator phrase
+        assert not _response_is_question("Great result, right?")
+
+    def test_empty_string(self):
+        assert not _response_is_question("")
+
+    def test_please_provide(self):
+        assert _response_is_question(
+            "I need more details. Please provide the ticket ID?"
+        )
+
+    def test_before_i_proceed(self):
+        assert _response_is_question(
+            "The search returned many results. Before I proceed, "
+            "which category are you interested in?"
+        )
+
+    def test_question_only_in_tail(self):
+        """Long text with question at end is detected."""
+        long_prefix = "Here is some analysis. " * 50
+        text = long_prefix + "Would you like me to continue with the next step?"
+        assert _response_is_question(text)
+
+
+class TestWaitForInputFlag:
+    """Tests for the wait_for_input WorkflowStep field."""
+
+    def test_default_is_false(self):
+        step = WorkflowStep(instruction="do something")
+        assert step.wait_for_input is False
+
+    def test_set_to_true(self):
+        step = WorkflowStep(instruction="ask user", wait_for_input=True)
+        assert step.wait_for_input is True
+
+    def test_parsed_from_yaml(self, tmp_path):
+        yaml_content = """
+name: test-input
+steps:
+  - do: Ask the user which environment to deploy to
+    wait_for_input: true
+  - do: Deploy to the selected environment
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        wf = load_workflow_file(yaml_file)
+        assert wf.steps[0].wait_for_input is True
+        assert wf.steps[1].wait_for_input is False
+
+
+class TestWorkflowPauseResume:
+    """Tests for the pause/resume mechanism in WorkflowEngine."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_wait_for_input_pauses(self):
+        """Step with wait_for_input=True causes engine to pause."""
+        kernel = _make_mock_kernel()
+
+        responses = [
+            "Which environment? staging or production?",
+            "Deploying to staging now. Done.",
+        ]
+        agent = _make_mock_agent(responses)
+
+        wf = Workflow(
+            name="deploy",
+            steps=[
+                WorkflowStep(
+                    instruction="Ask which environment",
+                    index=0,
+                    wait_for_input=True,
+                ),
+                WorkflowStep(instruction="Deploy", index=1),
+            ],
+        )
+
+        engine = WorkflowEngine(agent, kernel)
+        collected: list[str] = []
+
+        async def run_workflow():
+            async for chunk in engine.run(wf):
+                collected.append(chunk)
+
+        # Start the workflow — it will pause after step 1
+        task = asyncio.create_task(run_workflow())
+
+        # Wait a bit for step 1 to complete and pause
+        await asyncio.sleep(0.1)
+        assert engine.is_waiting_for_input
+
+        # Provide user input — workflow resumes
+        engine.provide_input("staging")
+        await asyncio.sleep(0.1)
+
+        # Wait for workflow to finish
+        await asyncio.wait_for(task, timeout=5.0)
+
+        full_output = "".join(collected)
+        assert "staging" in full_output.lower() or "Deploying" in full_output
+
+        # Verify waiting_input event was emitted
+        emitted_types = [
+            c.args[0].type for c in kernel.emit.call_args_list
+        ]
+        assert "workflow:waiting_input" in emitted_types
+
+    @pytest.mark.asyncio
+    async def test_implicit_question_pauses(self):
+        """Agent asking a question implicitly pauses the workflow."""
+        kernel = _make_mock_kernel()
+
+        responses = [
+            "I found multiple options. Which date range should I search?",
+            "Searching last 7 days. Found results.",
+        ]
+        agent = _make_mock_agent(responses)
+
+        wf = Workflow(
+            name="search",
+            steps=[
+                WorkflowStep(
+                    instruction="Search for relevant data",
+                    index=0,
+                    ask_if_unclear=True,
+                ),
+                WorkflowStep(instruction="Summarize results", index=1),
+            ],
+        )
+
+        engine = WorkflowEngine(agent, kernel)
+        collected: list[str] = []
+
+        async def run_workflow():
+            async for chunk in engine.run(wf):
+                collected.append(chunk)
+
+        task = asyncio.create_task(run_workflow())
+        await asyncio.sleep(0.1)
+
+        assert engine.is_waiting_for_input
+
+        engine.provide_input("last 7 days")
+        await asyncio.wait_for(task, timeout=5.0)
+
+        full_output = "".join(collected)
+        assert "Found results" in full_output or "results" in full_output.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_pause_on_non_question(self):
+        """Normal step completion doesn't pause."""
+        kernel = _make_mock_kernel()
+        agent = _make_mock_agent(["Done with step 1.", "Done with step 2."])
+
+        wf = Workflow(
+            name="simple",
+            steps=[
+                WorkflowStep(instruction="step one", index=0),
+                WorkflowStep(instruction="step two", index=1),
+            ],
+        )
+
+        engine = WorkflowEngine(agent, kernel)
+        chunks = []
+        async for chunk in engine.run(wf):
+            chunks.append(chunk)
+
+        # Should complete without pausing
+        assert not engine.is_waiting_for_input
+        emitted_types = [c.args[0].type for c in kernel.emit.call_args_list]
+        assert "workflow:waiting_input" not in emitted_types
+        assert "workflow:complete" in emitted_types
+
+    @pytest.mark.asyncio
+    async def test_provide_input_returns_false_when_not_waiting(self):
+        """provide_input returns False when no workflow is waiting."""
+        kernel = _make_mock_kernel()
+        agent = MagicMock()
+        engine = WorkflowEngine(agent, kernel)
+        assert engine.provide_input("something") is False
+
+    @pytest.mark.asyncio
+    async def test_no_pause_on_last_step(self):
+        """Even with wait_for_input=True, last step doesn't pause."""
+        kernel = _make_mock_kernel()
+        agent = _make_mock_agent(["Final answer."])
+
+        wf = Workflow(
+            name="single",
+            steps=[
+                WorkflowStep(
+                    instruction="do it",
+                    index=0,
+                    wait_for_input=True,  # should be ignored on last step
+                ),
+            ],
+        )
+
+        engine = WorkflowEngine(agent, kernel)
+        chunks = []
+        async for chunk in engine.run(wf):
+            chunks.append(chunk)
+
+        assert not engine.is_waiting_for_input
+        emitted_types = [c.args[0].type for c in kernel.emit.call_args_list]
+        assert "workflow:waiting_input" not in emitted_types
+        assert "workflow:complete" in emitted_types
+
+
 async def test_engine_user_message_as_context():
     """Original user message is passed as context to step 1."""
     prompts_received = []
