@@ -555,10 +555,45 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     # and the WorkflowSkill manage their own display to avoid
     # duplicate/out-of-order messages with the agent text stream.
 
+    # ── Notification channel for Gateway ──
+    # Workers and scheduled jobs deliver results through this channel.
+    # The notification appears in WebChat AND is queued for the agent
+    # to summarise on the next user turn.
+    from arc.notifications.base import Notification as _GWNotification
+    from arc.notifications.channels.gateway import GatewayChannel
+
+    gw_pending_queue: asyncio.Queue[_GWNotification] = asyncio.Queue()
+    gw_channel = GatewayChannel(
+        broadcast_fn=gw.broadcast_notification,
+        queue=gw_pending_queue,
+    )
+    rt.notification_router.register(gw_channel)
+
     # Message handler
     async def handle_message(user_input: str):
         rt.cost_tracker.start_turn()
-        async for chunk in rt.agent.run(user_input):
+
+        # Inject any pending job/worker results into the prompt
+        pending_results: list[str] = []
+        while not gw_pending_queue.empty():
+            try:
+                notif = gw_pending_queue.get_nowait()
+                pending_results.append(
+                    f"[Background task '{notif.job_name}' completed]\n{notif.content}"
+                )
+            except asyncio.QueueEmpty:
+                break
+
+        actual_input = user_input
+        if pending_results:
+            injected = "\n\n".join(pending_results)
+            actual_input = (
+                f"The following background task(s) completed since the last message. "
+                f"Summarise the results for the user, then address their new message "
+                f"(if any).\n\n{injected}\n\nUser message: {user_input}"
+            )
+
+        async for chunk in rt.agent.run(actual_input):
             yield chunk
         gw.set_cost_tracker(rt.cost_tracker.summary())
 
@@ -586,6 +621,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
 
     try:
         await rt.start()
+        gw_channel.set_active(True)
         await gw.run(handle_message)
     except KeyboardInterrupt:
         pass
@@ -593,6 +629,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
         logging.getLogger("arc").exception(f"Error in Gateway: {e}")
         raise
     finally:
+        gw_channel.set_active(False)
         await gw.stop()
         await rt.shutdown()
 

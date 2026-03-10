@@ -511,6 +511,26 @@ class GatewayServer(Platform):
                 except Exception:
                     self._clients.discard(ws)
 
+    async def broadcast_notification(self, notification: Any) -> None:
+        """
+        Broadcast a job/worker completion notification to all WebSocket clients.
+
+        Called by GatewayChannel when a scheduled job or worker finishes.
+        Appears as a system message in WebChat.
+        """
+        message = {
+            "type": "notification",
+            "job_name": notification.job_name,
+            "content": notification.content,
+            "fired_at": notification.fired_at,
+        }
+        for ws in list(self._clients):
+            if not ws.closed:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    self._clients.discard(ws)
+
     # ━━━ Slash commands ━━━
 
     async def _handle_command(self, ws: web.WebSocketResponse, command: str) -> None:
