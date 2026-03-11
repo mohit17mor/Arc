@@ -6,6 +6,10 @@
 <title>Arc — Dashboard</title>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
 <style>
+[x-cloak]{display:none!important}
+/* Page containers — flex layout preserved across x-show toggling */
+.pg{display:none;flex-direction:column;flex:1;overflow:hidden}
+.pg.show{display:flex}
 :root {
   --bg:#0a0a0f;--surface:#12121a;--s2:#1a1a26;--border:#2a2a3a;
   --text:#e4e4ef;--dim:#7a7a90;--accent:#6366f1;--ah:#818cf8;
@@ -206,7 +210,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <div class="mn">
 
 <!-- ═══ HOME ═══ -->
-<div x-show="pg==='home'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='home'}">
   <div class="tp"><h1>Dashboard</h1></div>
   <div class="ct">
     <div class="gr">
@@ -230,7 +234,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ CHAT ═══ -->
-<div x-show="pg==='chat'" class="cw">
+<div :class="{show:pg==='chat'}" class="pg">
   <div class="tp"><h1>Chat</h1></div>
   <div class="ms" id="messages"></div>
   <div class="ia"><div class="ir">
@@ -241,7 +245,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ TASKS ═══ -->
-<div x-show="pg==='tasks'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='tasks'}">
   <div class="tp"><h1>Task Board</h1></div>
   <div class="ctl">
     <button class="btn btn-p" @click="sCT=true">+ New Task</button>
@@ -318,7 +322,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ AGENTS ═══ -->
-<div x-show="pg==='agents'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='agents'}">
   <div class="tp"><h1>Agents</h1></div>
   <div class="ctl">
     <button class="btn btn-p" @click="sCA=true">+ New Agent</button>
@@ -360,7 +364,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ SCHEDULER ═══ -->
-<div x-show="pg==='sched'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='sched'}">
   <div class="tp"><h1>Scheduler</h1></div>
   <div class="ctl"><button class="btn" @click="lJ()">↻ Refresh</button>
     <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="jb.length+' job(s)'"></span></div>
@@ -382,7 +386,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ SKILLS & MCP ═══ -->
-<div x-show="pg==='skills'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='skills'}">
   <div class="tp"><h1>Skills & MCP Servers</h1></div>
   <div class="ctl"><button class="btn" @click="lS();lM()">↻ Refresh</button></div>
   <div class="ct">
@@ -410,7 +414,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 </div>
 
 <!-- ═══ LOGS ═══ -->
-<div x-show="pg==='logs'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+<div class="pg" :class="{show:pg==='logs'}">
   <div class="tp"><h1>System Logs</h1></div>
   <div class="ctl">
     <select class="btn" x-model="logFilter" @change="lLg()">
@@ -438,7 +442,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     <button class="btn" @click="lLg()">↻ Refresh</button>
     <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="lg.length+' events'"></span>
   </div>
-  <div class="ct" id="log-scroll" style="font-family:'SF Mono',Monaco,Consolas,'Courier New',monospace;font-size:12px;padding:12px 28px;line-height:1.7">
+  <div id="log-scroll" style="flex:1;overflow-y:auto;padding:12px 28px;font-family:'SF Mono',Monaco,Consolas,'Courier New',monospace;font-size:12px;line-height:1.7">
     <template x-if="lg.length===0">
       <div class="empty"><h3>No events yet</h3><p>Activity will appear here as the system runs.</p></div>
     </template>
