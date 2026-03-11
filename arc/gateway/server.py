@@ -95,6 +95,10 @@ class GatewayServer(Platform):
         self._history: list[dict[str, str]] = []
         self._max_history: int = 50  # keep last 50 exchanges
 
+        # Event ring buffer — recent system events for the Logs tab
+        self._event_log: list[dict[str, Any]] = []
+        self._max_events: int = 500
+
     @property
     def name(self) -> str:
         return "gateway"
@@ -141,6 +145,20 @@ class GatewayServer(Platform):
 
     def set_agent_defs(self, agents: dict) -> None:
         self._agent_defs = agents
+
+    def record_event(self, event_type: str, source: str, data: dict) -> None:
+        """Record an event in the ring buffer for the Logs dashboard."""
+        entry = {
+            "timestamp": time.time(),
+            "type": event_type,
+            "source": source,
+            "data": {k: v for k, v in (data or {}).items()
+                     if isinstance(v, (str, int, float, bool, type(None)))
+                     or (isinstance(v, (list, dict)) and len(str(v)) < 500)},
+        }
+        self._event_log.append(entry)
+        if len(self._event_log) > self._max_events:
+            self._event_log = self._event_log[-self._max_events:]
 
     def attach_channel(self, channel: Platform) -> None:
         """
@@ -199,6 +217,7 @@ class GatewayServer(Platform):
         app.router.add_post("/api/scheduler/{job_id}/cancel", self._api_cancel_job)
         app.router.add_get("/api/skills", self._api_list_skills)
         app.router.add_get("/api/mcp", self._api_list_mcp)
+        app.router.add_get("/api/logs", self._api_get_logs)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -1109,3 +1128,14 @@ class GatewayServer(Platform):
                 "hint": info.get("hint", ""),
             })
         return web.json_response(servers)
+
+    # ━━━ REST API: Logs ━━━
+
+    async def _api_get_logs(self, request: web.Request) -> web.Response:
+        """Return recent system events from the ring buffer."""
+        source = request.query.get("source", "")
+        limit = min(int(request.query.get("limit", "200")), 500)
+        events = self._event_log
+        if source:
+            events = [e for e in events if source in e.get("source", "")]
+        return web.json_response(events[-limit:])

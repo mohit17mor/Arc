@@ -560,6 +560,12 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     rt.kernel.on(EventType.AGENT_SPAWNED, forward_to_gateway)
     rt.kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_gateway)
 
+    # Record ALL events into the gateway's ring buffer for the Logs tab
+    async def record_event_for_logs(event: Event) -> None:
+        gw.record_event(event.type, event.source, event.data)
+
+    rt.kernel.on("*", record_event_for_logs)
+
     # Workflow events are NOT broadcast here — the /workflow handler
     # and the WorkflowSkill manage their own display to avoid
     # duplicate/out-of-order messages with the agent text stream.

@@ -198,6 +198,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     <a :class="{active:pg==='agents'}" @click="go('agents')"><span class="ic">🤖</span> Agents</a>
     <a :class="{active:pg==='sched'}" @click="go('sched')"><span class="ic">⏰</span> Scheduler</a>
     <a :class="{active:pg==='skills'}" @click="go('skills')"><span class="ic">🧩</span> Skills & MCP</a>
+    <a :class="{active:pg==='logs'}" @click="go('logs')"><span class="ic">📜</span> Logs</a>
   </div>
   <div class="sb-ft"><span class="sb-dt" :class="{on:wsc}"></span><span x-text="wsc?'Connected':'Disconnected'"></span></div>
 </nav>
@@ -408,22 +409,68 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   </div>
 </div>
 
+<!-- ═══ LOGS ═══ -->
+<div x-show="pg==='logs'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>System Logs</h1></div>
+  <div class="ctl">
+    <select class="btn" x-model="logFilter" @change="lLg()">
+      <option value="">All sources</option>
+      <option value="main">Main agent</option>
+      <option value="task:">Task agents</option>
+      <option value="worker:">Workers</option>
+      <option value="scheduler">Scheduler</option>
+      <option value="kernel">System</option>
+      <option value="task_processor">Task processor</option>
+    </select>
+    <select class="btn" x-model="logTypeFilter" @change="lLg()">
+      <option value="">All events</option>
+      <option value="tool_call">Tool calls</option>
+      <option value="tool_result">Tool results</option>
+      <option value="thinking">Thinking</option>
+      <option value="error">Errors</option>
+      <option value="complete">Completions</option>
+      <option value="spawned">Agent spawned</option>
+      <option value="task:">Task events</option>
+    </select>
+    <label style="font-size:13px;color:var(--dim);display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" x-model="logLive" style="accent-color:var(--accent)"> Live
+    </label>
+    <button class="btn" @click="lLg()">↻ Refresh</button>
+    <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="lg.length+' events'"></span>
+  </div>
+  <div class="ct" id="log-scroll" style="font-family:'SF Mono',Monaco,Consolas,'Courier New',monospace;font-size:12px;padding:12px 28px;line-height:1.7">
+    <template x-if="lg.length===0">
+      <div class="empty"><h3>No events yet</h3><p>Activity will appear here as the system runs.</p></div>
+    </template>
+    <template x-for="(ev,i) in lg" :key="i">
+      <div style="padding:2px 0;border-bottom:1px solid rgba(42,42,58,.5);display:flex;gap:10px;align-items:baseline">
+        <span style="color:var(--dim);min-width:65px;flex-shrink:0" x-text="fTs(ev.timestamp)"></span>
+        <span style="min-width:110px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :style="sCl(ev.source)" x-text="fSrc(ev.source)"></span>
+        <span style="min-width:130px;flex-shrink:0;font-weight:600" :style="eCl(ev.type)" x-text="ev.type"></span>
+        <span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="eDt(ev)"></span>
+      </div>
+    </template>
+  </div>
+</div>
+
 </div>
 
 <script>
 function app(){return{
   pg:'home',wsc:false,ws:null,toasts:[],
-  hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],
+  hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],
   sT:null,rT:'',sCT:false,sCA:false,fE:'',
+  logFilter:'',logTypeFilter:'',logLive:true,
   nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'},
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
   cMsg:null,thEl:null,hHist:false,
 
-  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH()},10000)},
+  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000)},
   go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents')this.lA();
     if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM()}
+    if(p==='logs')this.lLg();
     if(p==='chat')this.$nextTick(()=>{const e=document.getElementById('msg-input');if(e)e.focus()})},
   toast(m){const t={id:Date.now(),msg:m,show:true};this.toasts.push(t);setTimeout(()=>{t.show=false;setTimeout(()=>this.toasts=this.toasts.filter(x=>x.id!==t.id),400)},4000)},
 
@@ -444,7 +491,9 @@ function app(){return{
       case'done':this._ht();this.cMsg=null;break;
       case'error':this._ht();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
       case'command_result':if(m)this._am(m,'agent',d.content||'');break;
-      case'event':if(m)this._he(m,d.event,d.data);break;
+      case'event':if(m)this._he(m,d.event,d.data);
+        if(this.logLive&&this.pg==='logs'){this.lg.push({timestamp:Date.now()/1000,type:d.event,source:d.data?.source||'system',data:d.data||{}});
+          if(this.lg.length>500)this.lg=this.lg.slice(-500);this.$nextTick(()=>{const el=document.getElementById('log-scroll');if(el)el.scrollTop=el.scrollHeight})}break;
       case'notification':this._ht();if(m)this._am(m,'system','🔔 '+(d.job_name||'Task')+': '+d.content);this.toast('🔔 '+(d.job_name||'Task completed'));break;
       case'sync':if(m)this._as(m,d.source||'',d.user_input||'',d.response||'');break;
       case'sync_user':if(m&&d.user_input){const l=document.createElement('div');l.className='sl';l.textContent='via '+d.source;m.appendChild(l);this._am(m,'user',d.user_input)}break;
@@ -471,6 +520,33 @@ function app(){return{
   async lJ(){this.jb=await fetch('/api/scheduler').then(r=>r.json()).catch(()=>[])},
   async lS(){this.sk=await fetch('/api/skills').then(r=>r.json()).catch(()=>[])},
   async lM(){this.mp=await fetch('/api/mcp').then(r=>r.json()).catch(()=>[])},
+  async lLg(){
+    let q='?limit=300';
+    if(this.logFilter)q+='&source='+encodeURIComponent(this.logFilter);
+    let all=await fetch('/api/logs'+q).then(r=>r.json()).catch(()=>[]);
+    if(this.logTypeFilter)all=all.filter(e=>(e.type||'').includes(this.logTypeFilter));
+    this.lg=all;
+    if(this.logLive)this.$nextTick(()=>{const el=document.getElementById('log-scroll');if(el)el.scrollTop=el.scrollHeight});
+  },
+
+  // Log helpers
+  fTs(ts){if(!ts)return'';const d=new Date(ts*1000);return d.toLocaleTimeString()},
+  fSrc(s){if(!s)return'—';if(s.startsWith('task:'))return s.slice(0,25);if(s.startsWith('worker:'))return s.slice(0,25);return s},
+  sCl(s){if(s==='main')return'color:var(--accent)';if(s?.startsWith('task:'))return'color:var(--cyan)';
+    if(s?.startsWith('worker'))return'color:var(--yellow)';if(s?.startsWith('scheduler'))return'color:var(--orange)';
+    if(s==='task_processor')return'color:var(--cyan)';return'color:var(--dim)'},
+  eCl(t){if(t?.includes('error')||t?.includes('failed'))return'color:var(--red)';
+    if(t?.includes('complete')||t?.includes('done'))return'color:var(--green)';
+    if(t?.includes('tool_call'))return'color:var(--yellow)';if(t?.includes('thinking'))return'color:var(--dim)';
+    if(t?.includes('spawned')||t?.includes('start'))return'color:var(--cyan)';return'color:var(--text)'},
+  eDt(ev){const d=ev.data||{};
+    if(ev.type==='skill:tool_call')return(d.tool||'')+'('+Object.entries(d.arguments||{}).slice(0,2).map(([k,v])=>k+'='+JSON.stringify(v).slice(0,30)).join(', ')+')';
+    if(ev.type==='skill:tool_result')return(d.success?'✓ ':'✗ ')+(d.output_preview||'').replace(/\n/g,' ').slice(0,80);
+    if(ev.type?.includes('thinking'))return'iteration '+(d.iteration||'?');
+    if(ev.type?.includes('spawned'))return d.task_name||d.task_id||'';
+    if(ev.type?.includes('task_complete')||ev.type?.includes('complete'))return(d.success!==false?'✓':'✗')+' '+(d.task_name||d.task_title||'');
+    if(ev.type?.includes('task:'))return d.task_title||d.task_id||JSON.stringify(d).slice(0,80);
+    const s=JSON.stringify(d);return s.length>2?s.slice(0,100):''},
 
   // Tasks
   tF(c){if(c==='needs_action')return this.tk.filter(t=>t.status==='awaiting_human'||t.status==='blocked'||t.status==='revision_needed');
