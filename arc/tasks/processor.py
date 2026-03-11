@@ -279,8 +279,8 @@ class TaskProcessor:
             security=SecurityEngine.make_permissive(self._kernel),
             system_prompt=system_prompt,
             config=AgentConfig(
-                max_iterations=25,
-                temperature=0.5,
+                max_iterations=50,
+                temperature=0.7,
                 excluded_skills=excluded,
             ),
             memory_manager=None,
@@ -292,7 +292,7 @@ class TaskProcessor:
             agent=agent,
             prompt=prompt,
             name=f"task-{task.id}-{agent_def.name}",
-            timeout_seconds=300.0,
+            timeout_seconds=3600.0,  # 1 hour — task agents run unattended
         )
 
     def _compute_excluded(self, agent_def: AgentDef) -> frozenset[str]:

@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 _MIN_DESC_LEN = 15
 
 # Tool output larger than this (in characters) is saved to a file and
-# replaced with a summary + path.  ~8K chars ≈ ~2K tokens.
-OUTPUT_SPILLOVER_THRESHOLD = 8_000
+# replaced with a summary + path.  ~50K chars ≈ ~12K tokens.
+# Generous threshold so code files (typically 5-20K chars) pass through
+# intact.  Only truly huge outputs (logs, generated data) get spilled.
+OUTPUT_SPILLOVER_THRESHOLD = 50_000
 
 # How many characters of the beginning to keep inline as a preview.
 OUTPUT_PREVIEW_SIZE = 2_000

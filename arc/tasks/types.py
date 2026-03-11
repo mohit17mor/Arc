@@ -222,7 +222,12 @@ class AgentDef:
         parts.append(
             "\nYou are executing a task from a task queue. "
             "Focus entirely on the task instruction. "
-            "Do your best with the information provided. "
-            "When done, provide a clear, structured result."
+            "Be THOROUGH and PERSISTENT:\n"
+            "- If a tool call fails or returns poor results, TRY AGAIN with different inputs.\n"
+            "- Rephrase search queries if the first attempt doesn't find what you need.\n"
+            "- Try at least 2-3 different approaches before giving up on any sub-goal.\n"
+            "- If one source doesn't have the answer, look for alternative sources.\n"
+            "- Do NOT give up after a single failed attempt — always have a Plan B.\n"
+            "- When done, provide a clear, structured, comprehensive result."
         )
         return "\n".join(parts)
