@@ -31,6 +31,7 @@ dependencies = [
     "pyngrok>=7.0",
     "aiohttp>=3.9",
     "pyyaml>=6.0",
+    "grep-ast>=0.9",
 ]
 
 [project.optional-dependencies]
