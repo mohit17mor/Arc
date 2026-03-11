@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arc — Dashboard</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+:root {
+  --bg:#0a0a0f;--surface:#12121a;--s2:#1a1a26;--border:#2a2a3a;
+  --text:#e4e4ef;--dim:#7a7a90;--accent:#6366f1;--ah:#818cf8;
+  --abg:rgba(99,102,241,.1);--green:#22c55e;--yellow:#eab308;
+  --red:#ef4444;--cyan:#06b6d4;--orange:#f97316;--r:10px;--rs:6px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden}
+
+/* Sidebar */
+.sb{width:220px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.sb-logo{padding:20px;font-size:20px;font-weight:700;letter-spacing:-.5px;border-bottom:1px solid var(--border)}
+.sb-logo span{color:var(--accent)}
+.sb-nav{flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.sb-nav a{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:var(--rs);
+  color:var(--dim);text-decoration:none;font-size:14px;transition:all .15s;cursor:pointer}
+.sb-nav a:hover{background:var(--s2);color:var(--text)}
+.sb-nav a.active{background:var(--abg);color:var(--accent);font-weight:600}
+.sb-nav .ic{width:18px;text-align:center;font-size:15px}
+.sb-ft{padding:14px 18px;border-top:1px solid var(--border);font-size:11px;color:var(--dim);display:flex;align-items:center;gap:6px}
+.sb-dt{width:7px;height:7px;border-radius:50%;background:var(--red);transition:background .3s}
+.sb-dt.on{background:var(--green)}
+
+/* Main */
+.mn{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.tp{padding:16px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-shrink:0}
+.tp h1{font-size:18px;font-weight:600}
+.ct{flex:1;overflow-y:auto;padding:28px}
+.ctl{padding:16px 28px 0;display:flex;gap:12px;align-items:center;flex-shrink:0}
+
+/* Buttons */
+.btn{padding:8px 16px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);
+  color:var(--text);font-size:13px;cursor:pointer;transition:all .15s;font-family:inherit}
+.btn:hover{border-color:var(--accent)}.btn-p{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn-p:hover{background:var(--ah)}.btn-sm{padding:5px 10px;font-size:12px}
+.btn-g{background:var(--green);border-color:var(--green);color:#000}
+.btn-r{background:var(--red);border-color:var(--red);color:#fff}
+
+/* Cards / Grid */
+.gr{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.cd{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px}
+.cd-l{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.cd-v{font-size:26px;font-weight:700}
+.sec{font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin:28px 0 10px}
+
+/* Status badges */
+.sg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+.sc{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);padding:12px;text-align:center}
+.sc .n{font-size:22px;font-weight:700}.sc .l{font-size:10px;color:var(--dim);text-transform:uppercase;margin-top:2px}
+.sc.queued .n{color:var(--yellow)}.sc.in_progress .n{color:var(--cyan)}.sc.in_review .n{color:var(--accent)}
+.sc.done .n{color:var(--green)}.sc.failed .n{color:var(--orange)}.sc.blocked .n,.sc.awaiting_human .n{color:var(--red)}
+
+/* Agent rows */
+.ar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--rs);margin-bottom:5px}
+.ar-d{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.ar-n{font-weight:600;font-size:14px}.ar-r{color:var(--dim);font-size:13px;margin-left:auto}
+.ch{font-size:11px;color:var(--dim);background:var(--s2);padding:2px 8px;border-radius:4px}
+.ch.m{color:var(--cyan);background:rgba(6,182,212,.1)}
+
+/* Kanban */
+.bd{flex:1;overflow-x:auto;padding:0 28px 28px;display:flex;gap:14px}
+.co{min-width:240px;max-width:280px;flex:1;display:flex;flex-direction:column}
+.co-h{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);padding:8px 4px;
+  display:flex;align-items:center;gap:6px;font-weight:600;flex-shrink:0}
+.co-h .ct2{background:var(--s2);padding:1px 7px;border-radius:10px;font-size:10px}
+.co-c{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+.co-c::-webkit-scrollbar{width:4px}.co-c::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.tc{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);padding:10px;cursor:pointer;transition:all .15s}
+.tc:hover{border-color:var(--accent);transform:translateY(-1px)}
+.tc .ti{font-size:13px;font-weight:600;margin-bottom:5px;line-height:1.3}
+.tc .me{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
+.tc .at{background:var(--abg);color:var(--accent);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
+.tc .bo{color:var(--yellow)}.tc.need{border-left:3px solid var(--red)}
+
+/* Panel slide-out */
+.pov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;justify-content:flex-end}
+.pa{width:520px;max-width:100vw;background:var(--surface);border-left:1px solid var(--border);
+  display:flex;flex-direction:column;height:100%;overflow:hidden}
+.pa-h{padding:20px;border-bottom:1px solid var(--border);display:flex;align-items:start;justify-content:space-between;gap:12px;flex-shrink:0}
+.pa-h h2{font-size:16px;font-weight:600;line-height:1.3}
+.pa-x{background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer;padding:4px;line-height:1}
+.pa-x:hover{color:var(--text)}
+.pa-b{flex:1;overflow-y:auto;padding:20px}
+.pf{margin-bottom:14px}.pf-l{font-size:11px;text-transform:uppercase;color:var(--dim);letter-spacing:.5px;margin-bottom:3px}
+.pf-v{font-size:14px}
+.si{display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600}
+.si.queued{background:rgba(234,179,8,.15);color:var(--yellow)}
+.si.in_progress{background:rgba(6,182,212,.15);color:var(--cyan)}
+.si.in_review{background:var(--abg);color:var(--accent)}
+.si.revision_needed{background:rgba(234,179,8,.15);color:var(--yellow)}
+.si.awaiting_human,.si.blocked{background:rgba(239,68,68,.15);color:var(--red)}
+.si.done{background:rgba(34,197,94,.15);color:var(--green)}
+.si.failed{background:rgba(249,115,22,.15);color:var(--orange)}
+.si.cancelled{background:var(--s2);color:var(--dim)}
+.cm{margin-bottom:10px}.cm-h{font-size:11px;color:var(--dim);margin-bottom:3px}
+.cm-h .cn{color:var(--cyan);font-weight:600}.cm-h .cn.human{color:var(--green)}.cm-h .cn.system{color:var(--dim)}
+.cm-b{font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  background:var(--s2);border-radius:var(--rs);padding:8px}
+.rp{padding:14px 20px;border-top:1px solid var(--border);flex-shrink:0}
+.rp textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--rs);
+  padding:8px;color:var(--text);font-size:13px;font-family:inherit;resize:vertical;min-height:50px;outline:none}
+.rp textarea:focus{border-color:var(--accent)}.rp-a{display:flex;gap:8px;margin-top:8px}
+
+/* Modal */
+.mov{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center}
+.mo{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:24px;width:500px;max-width:90vw;max-height:85vh;overflow-y:auto}
+.mo h2{font-size:18px;margin-bottom:18px}
+.fg{margin-bottom:14px}
+.fg label{display:block;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.fg input,.fg textarea,.fg select{width:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--rs);padding:9px;color:var(--text);font-size:14px;font-family:inherit;outline:none}
+.fg input:focus,.fg textarea:focus,.fg select:focus{border-color:var(--accent)}
+.fg select option{background:var(--surface)}.fg .ht{font-size:11px;color:var(--dim);margin-top:3px}
+.fr{display:flex;gap:12px}.fr .fg{flex:1}
+.fa{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+
+/* Chat */
+.cw{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.ms{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+.ms::-webkit-scrollbar{width:5px}.ms::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.mg{max-width:78%;padding:10px 14px;border-radius:var(--r);line-height:1.55;font-size:14px;
+  word-wrap:break-word;white-space:pre-wrap;animation:fi .15s ease-out}
+@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.mg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.mg.agent{align-self:flex-start;background:var(--s2);border:1px solid var(--border);border-bottom-left-radius:4px}
+.mg.system{align-self:center;background:transparent;color:var(--dim);font-size:12px;padding:4px 8px}
+.mg.event{align-self:flex-start;background:transparent;color:var(--yellow);font-size:12px;padding:2px 8px;max-width:90%}
+.sl{font-size:11px;color:var(--accent);margin-bottom:2px;opacity:.8}
+.thk{align-self:flex-start;color:var(--dim);font-size:13px;padding:6px 12px}
+.thk::after{content:'';animation:dot 1.2s steps(4,end) infinite}
+@keyframes dot{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+.ia{padding:12px 20px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
+.ir{display:flex;gap:10px;max-width:900px;margin:0 auto}
+.ir textarea{flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--r);color:var(--text);font-size:14px;font-family:inherit;resize:none;outline:none;
+  min-height:42px;max-height:150px;transition:border-color .2s}
+.ir textarea:focus{border-color:var(--accent)}.ir textarea::placeholder{color:var(--dim)}
+.ir button{padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);
+  font-size:14px;font-weight:600;cursor:pointer;transition:background .2s;white-space:nowrap}
+.ir button:hover{background:var(--ah)}.ir button:disabled{opacity:.5;cursor:not-allowed}
+
+/* Agent cards */
+.agg{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.agc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px;transition:border-color .15s}
+.agc:hover{border-color:var(--accent)}
+.agc-h{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.agc-a{width:38px;height:38px;border-radius:50%;background:var(--abg);display:flex;align-items:center;
+  justify-content:center;font-size:17px;color:var(--accent);font-weight:700;flex-shrink:0}
+.agc-n{font-size:15px;font-weight:700}.agc-r{font-size:13px;color:var(--dim)}
+.agc-d{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.agc-x{display:flex;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid var(--border)}
+
+/* Tables */
+.tb2{width:100%;border-collapse:collapse}
+.tb2 th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--dim);letter-spacing:.5px;padding:8px 12px;border-bottom:1px solid var(--border)}
+.tb2 td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:top}
+.tb2 tr:hover td{background:var(--s2)}
+.tl{font-size:12px;color:var(--dim);line-height:1.6}.tn{color:var(--cyan);font-weight:600}
+.mr{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--rs);margin-bottom:6px}
+.ms2{width:8px;height:8px;border-radius:50%}.ms2.on{background:var(--green)}.ms2.off{background:var(--dim)}
+
+/* Toast */
+.tw{position:fixed;top:16px;right:16px;z-index:300;display:flex;flex-direction:column;gap:8px}
+.to{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);
+  padding:12px 16px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.4);animation:sIn .25s ease-out;
+  max-width:360px;border-left:3px solid var(--green)}
+@keyframes sIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.empty{text-align:center;padding:50px 20px;color:var(--dim)}
+.empty h3{font-size:16px;color:var(--text);margin-bottom:6px}.empty p{font-size:14px;margin-bottom:16px}
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+<!-- Toasts -->
+<div class="tw"><template x-for="t in toasts" :key="t.id">
+  <div class="to" x-text="t.msg" x-show="t.show" x-transition:leave.duration.300ms></div>
+</template></div>
+
+<!-- Sidebar -->
+<nav class="sb">
+  <div class="sb-logo">⚡ <span>Arc</span></div>
+  <div class="sb-nav">
+    <a :class="{active:pg==='home'}" @click="go('home')"><span class="ic">📊</span> Dashboard</a>
+    <a :class="{active:pg==='chat'}" @click="go('chat')"><span class="ic">💬</span> Chat</a>
+    <a :class="{active:pg==='tasks'}" @click="go('tasks')"><span class="ic">📋</span> Task Board</a>
+    <a :class="{active:pg==='agents'}" @click="go('agents')"><span class="ic">🤖</span> Agents</a>
+    <a :class="{active:pg==='sched'}" @click="go('sched')"><span class="ic">⏰</span> Scheduler</a>
+    <a :class="{active:pg==='skills'}" @click="go('skills')"><span class="ic">🧩</span> Skills & MCP</a>
+  </div>
+  <div class="sb-ft"><span class="sb-dt" :class="{on:wsc}"></span><span x-text="wsc?'Connected':'Disconnected'"></span></div>
+</nav>
+
+<div class="mn">
+
+<!-- ═══ HOME ═══ -->
+<div x-show="pg==='home'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>Dashboard</h1></div>
+  <div class="ct">
+    <div class="gr">
+      <div class="cd"><div class="cd-l">Total Tasks</div><div class="cd-v" x-text="hm.tasks?.total??'—'"></div></div>
+      <div class="cd"><div class="cd-l">Agents</div><div class="cd-v" x-text="hm.agents_count??'—'"></div></div>
+      <div class="cd"><div class="cd-l">Messages</div><div class="cd-v" x-text="hm.total_messages??'—'"></div></div>
+      <div class="cd"><div class="cd-l">Uptime</div><div class="cd-v" x-text="fUp(hm.uptime_s)"></div></div>
+    </div>
+    <div class="sec">Tasks by Status</div>
+    <div class="sg"><template x-for="s in aSt" :key="s">
+      <div class="sc" :class="s"><div class="n" x-text="(hm.tasks?.by_status?.[s])??0"></div><div class="l" x-text="s.replace('_',' ')"></div></div>
+    </template></div>
+    <div class="sec">Agents</div>
+    <template x-if="ag.length===0"><div style="color:var(--dim);font-size:14px">No agents. <a @click="go('agents')" style="color:var(--accent);cursor:pointer">Create one →</a></div></template>
+    <template x-for="a in ag" :key="a.name">
+      <div class="ar"><div class="ar-d"></div><span class="ar-n" x-text="a.name"></span>
+        <span class="ch m" x-text="a.has_llm_override?(a.llm_provider+'/'+a.llm_model):'default'"></span>
+        <span class="ar-r" x-text="a.role"></span></div>
+    </template>
+  </div>
+</div>
+
+<!-- ═══ CHAT ═══ -->
+<div x-show="pg==='chat'" class="cw">
+  <div class="tp"><h1>Chat</h1></div>
+  <div class="ms" id="messages"></div>
+  <div class="ia"><div class="ir">
+    <textarea id="msg-input" placeholder="Message Arc…" rows="1"
+      @keydown.enter.prevent="if(!$event.shiftKey)sendChat()"></textarea>
+    <button @click="sendChat()">Send</button>
+  </div></div>
+</div>
+
+<!-- ═══ TASKS ═══ -->
+<div x-show="pg==='tasks'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>Task Board</h1></div>
+  <div class="ctl">
+    <button class="btn btn-p" @click="sCT=true">+ New Task</button>
+    <button class="btn" @click="lT()">↻ Refresh</button>
+    <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="tk.length+' task(s)'"></span>
+  </div>
+  <div class="bd" style="margin-top:12px">
+    <template x-for="col in tC" :key="col.key">
+      <div class="co"><div class="co-h"><span x-text="col.label"></span><span class="ct2" x-text="tF(col.key).length"></span></div>
+        <div class="co-c"><template x-for="t in tF(col.key)" :key="t.id">
+          <div class="tc" :class="{'need':t.status==='awaiting_human'||t.status==='blocked'}" @click="oT(t.id)">
+            <div class="ti" x-text="t.title"></div>
+            <div class="me"><span class="at" x-text="cA(t)"></span>
+              <span x-show="t.bounce_count>0" class="bo" x-text="'↩'+t.bounce_count"></span>
+              <span style="margin-left:auto" x-text="'P'+t.priority"></span></div>
+          </div>
+        </template></div>
+      </div>
+    </template>
+  </div>
+
+  <!-- Detail panel -->
+  <template x-if="sT">
+    <div class="pov" @click.self="sT=null">
+      <div class="pa">
+        <div class="pa-h"><h2 x-text="sT.title"></h2><button class="pa-x" @click="sT=null">✕</button></div>
+        <div class="pa-b">
+          <div class="pf"><div class="pf-l">Status</div><span class="si" :class="sT.status" x-text="sT.status.replace('_',' ')"></span></div>
+          <div class="pf"><div class="pf-l">ID</div><div class="pf-v" style="font-family:monospace;font-size:13px" x-text="sT.id"></div></div>
+          <div class="pf"><div class="pf-l">Instruction</div><div class="pf-v" style="white-space:pre-wrap" x-text="sT.instruction"></div></div>
+          <div class="pf"><div class="pf-l">Workflow</div><div class="pf-v" style="white-space:pre-wrap" x-text="wD(sT)"></div></div>
+          <div class="pf" x-show="sT.result"><div class="pf-l">Result</div>
+            <div class="pf-v" style="white-space:pre-wrap;background:var(--s2);padding:10px;border-radius:6px;font-size:13px;max-height:200px;overflow-y:auto" x-text="sT.result"></div></div>
+          <div class="pf-l" style="margin-top:16px">Comments</div>
+          <template x-if="!sT.comments||sT.comments.length===0"><div style="font-size:13px;color:var(--dim);padding:6px 0">No comments.</div></template>
+          <template x-for="c in (sT.comments||[])" :key="c.id">
+            <div class="cm"><div class="cm-h"><span class="cn" :class="{human:c.agent_name==='human',system:c.agent_name==='system'}" x-text="c.agent_name"></span></div>
+              <div class="cm-b" x-text="c.content"></div></div>
+          </template>
+        </div>
+        <template x-if="sT.status==='awaiting_human'||sT.status==='blocked'">
+          <div class="rp"><textarea x-model="rT" placeholder="Your response..."></textarea>
+            <div class="rp-a">
+              <template x-if="sT.status==='awaiting_human'"><button class="btn btn-g btn-sm" @click="tRp('approve')">✓ Approve</button></template>
+              <template x-if="sT.status==='awaiting_human'"><button class="btn btn-sm" style="border-color:var(--yellow);color:var(--yellow)" @click="tRp('revise')">↩ Revise</button></template>
+              <template x-if="sT.status==='blocked'"><button class="btn btn-p btn-sm" @click="tRp('approve')">Send Answer</button></template>
+            </div></div>
+        </template>
+        <template x-if="!['done','failed','cancelled'].includes(sT.status)">
+          <div style="padding:0 20px 14px"><button class="btn btn-r btn-sm" style="width:100%" @click="xT()">Cancel Task</button></div>
+        </template>
+      </div>
+    </div>
+  </template>
+
+  <!-- Create task modal -->
+  <template x-if="sCT">
+    <div class="mov" @click.self="sCT=false">
+      <div class="mo"><h2>New Task</h2>
+        <div class="fg"><label>Title</label><input x-model="nt.title" placeholder="Short task description"></div>
+        <div class="fg"><label>Instruction</label><textarea x-model="nt.instruction" rows="4" placeholder="Full instructions..."></textarea></div>
+        <div class="fg"><label>Assign to Agent</label><select x-model="nt.agent"><option value="">Select...</option>
+          <template x-for="a in ag" :key="a.name"><option :value="a.name" x-text="a.name+' — '+a.role"></option></template></select></div>
+        <div class="fr">
+          <div class="fg"><label>Priority</label><select x-model="nt.priority"><option value="1">1 (Highest)</option><option value="2">2</option><option value="3">3</option><option value="5">5</option></select></div>
+          <div class="fg"><label>Max Bounces</label><select x-model="nt.max_bounces"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="5">5</option></select></div>
+        </div>
+        <div class="fg" x-show="fE" style="color:var(--red);font-size:13px" x-text="fE"></div>
+        <div class="fa"><button class="btn" @click="sCT=false">Cancel</button>
+          <button class="btn btn-p" @click="crT()" :disabled="!nt.title||!nt.agent">Create</button></div>
+      </div>
+    </div>
+  </template>
+</div>
+
+<!-- ═══ AGENTS ═══ -->
+<div x-show="pg==='agents'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>Agents</h1></div>
+  <div class="ctl">
+    <button class="btn btn-p" @click="sCA=true">+ New Agent</button>
+    <button class="btn" @click="lA()">↻ Refresh</button>
+    <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="ag.length+' agent(s)'"></span>
+  </div>
+  <div class="ct">
+    <template x-if="ag.length===0"><div class="empty"><h3>No agents yet</h3><p>Create your first agent to start.</p><button class="btn btn-p" @click="sCA=true">+ Create Agent</button></div></template>
+    <div class="agg"><template x-for="a in ag" :key="a.name">
+      <div class="agc"><div class="agc-h"><div class="agc-a" x-text="a.name.charAt(0).toUpperCase()"></div>
+        <div><div class="agc-n" x-text="a.name"></div><div class="agc-r" x-text="a.role||'No role'"></div></div></div>
+        <div class="agc-d"><span class="ch m" x-text="a.has_llm_override?(a.llm_provider+'/'+a.llm_model):'Default LLM'"></span>
+          <span class="ch" x-text="'Concurrent: '+a.max_concurrent"></span></div>
+        <div class="agc-x"><button class="btn btn-r btn-sm" @click="dA(a.name)">Delete</button></div>
+      </div>
+    </template></div>
+  </div>
+  <template x-if="sCA">
+    <div class="mov" @click.self="sCA=false">
+      <div class="mo"><h2>Create Agent</h2>
+        <div class="fg"><label>Name</label><input x-model="na.name" placeholder="e.g. researcher"><div class="ht">Alphanumeric + underscores</div></div>
+        <div class="fg"><label>Role</label><input x-model="na.role" placeholder="e.g. Deep web research"></div>
+        <div class="fg"><label>Personality</label><input x-model="na.personality" placeholder="e.g. thorough, cites sources"></div>
+        <div class="fr">
+          <div class="fg"><label>LLM Provider</label><select x-model="na.llm_provider">
+            <option value="">Default</option><option value="ollama">Ollama</option><option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option><option value="groq">Groq</option><option value="together">Together</option>
+            <option value="lmstudio">LM Studio</option><option value="custom">Custom</option></select></div>
+          <div class="fg"><label>Model</label><input x-model="na.llm_model" placeholder="e.g. llama3.2"></div>
+        </div>
+        <div class="fg"><label>Max Concurrent</label><select x-model="na.max_concurrent"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
+        <div class="fg"><label>System Prompt</label><textarea x-model="na.system_prompt" rows="6" placeholder="Detailed instructions (optional)..."></textarea></div>
+        <div class="fg" x-show="fE" style="color:var(--red);font-size:13px" x-text="fE"></div>
+        <div class="fa"><button class="btn" @click="sCA=false">Cancel</button>
+          <button class="btn btn-p" @click="crA()" :disabled="!na.name">Create</button></div>
+      </div>
+    </div>
+  </template>
+</div>
+
+<!-- ═══ SCHEDULER ═══ -->
+<div x-show="pg==='sched'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>Scheduler</h1></div>
+  <div class="ctl"><button class="btn" @click="lJ()">↻ Refresh</button>
+    <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="jb.length+' job(s)'"></span></div>
+  <div class="ct">
+    <template x-if="jb.length===0"><div class="empty"><h3>No scheduled jobs</h3><p>Use chat to create them: "remind me every day at 9am to check news"</p></div></template>
+    <template x-if="jb.length>0">
+      <table class="tb2"><thead><tr><th>Name</th><th>Trigger</th><th>Status</th><th>Next Run</th><th>Tools</th><th></th></tr></thead>
+        <tbody><template x-for="j in jb" :key="j.id"><tr>
+          <td style="font-weight:600" x-text="j.name"></td>
+          <td x-text="j.trigger_desc"></td>
+          <td><span class="si" :class="j.active?'done':'cancelled'" x-text="j.active?'active':'inactive'"></span></td>
+          <td style="font-size:12px;color:var(--dim)" x-text="j.next_run>0?new Date(j.next_run*1000).toLocaleString():'—'"></td>
+          <td style="font-size:12px" x-text="j.use_tools?'Yes':'No'"></td>
+          <td><button class="btn btn-r btn-sm" @click="xJ(j.id)">Cancel</button></td>
+        </tr></template></tbody>
+      </table>
+    </template>
+  </div>
+</div>
+
+<!-- ═══ SKILLS & MCP ═══ -->
+<div x-show="pg==='skills'" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+  <div class="tp"><h1>Skills & MCP Servers</h1></div>
+  <div class="ctl"><button class="btn" @click="lS();lM()">↻ Refresh</button></div>
+  <div class="ct">
+    <div class="sec">Skills (<span x-text="sk.length"></span>)</div>
+    <template x-if="sk.length===0"><div style="color:var(--dim);font-size:14px">No skills loaded.</div></template>
+    <template x-if="sk.length>0">
+      <table class="tb2"><thead><tr><th>Skill</th><th>Type</th><th>Tools</th></tr></thead>
+        <tbody><template x-for="s in sk" :key="s.name"><tr>
+          <td><div style="font-weight:600" x-text="s.name"></div><div style="font-size:12px;color:var(--dim)" x-text="s.description"></div></td>
+          <td><span class="si" :class="s.always_available?'done':'queued'" x-text="s.always_available?'always-on':'on-demand'"></span></td>
+          <td class="tl"><template x-for="t in s.tools" :key="t.name"><div><span class="tn" x-text="t.name"></span> <span x-text="'— '+t.description.slice(0,60)+(t.description.length>60?'…':'')"></span></div></template></td>
+        </tr></template></tbody>
+      </table>
+    </template>
+    <div class="sec" style="margin-top:32px">MCP Servers (<span x-text="mp.length"></span>)</div>
+    <template x-if="mp.length===0"><div style="color:var(--dim);font-size:14px">No MCP servers configured. Add to ~/.arc/mcp.json</div></template>
+    <template x-for="m in mp" :key="m.name">
+      <div class="mr"><span class="ms2" :class="m.connected?'on':'off'"></span>
+        <span style="font-weight:600" x-text="m.name"></span>
+        <span class="ch" x-text="m.transport||'stdio'"></span>
+        <span class="ch" x-text="m.tools+' tools'"></span>
+        <span style="color:var(--dim);font-size:12px;margin-left:auto" x-text="m.connected?'connected':'lazy'"></span></div>
+    </template>
+  </div>
+</div>
+
+</div>
+
+<script>
+function app(){return{
+  pg:'home',wsc:false,ws:null,toasts:[],
+  hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],
+  sT:null,rT:'',sCT:false,sCA:false,fE:'',
+  nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'},
+  na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''},
+  aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
+  tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
+  cMsg:null,thEl:null,hHist:false,
+
+  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH()},10000)},
+  go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents')this.lA();
+    if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM()}
+    if(p==='chat')this.$nextTick(()=>{const e=document.getElementById('msg-input');if(e)e.focus()})},
+  toast(m){const t={id:Date.now(),msg:m,show:true};this.toasts.push(t);setTimeout(()=>{t.show=false;setTimeout(()=>this.toasts=this.toasts.filter(x=>x.id!==t.id),400)},4000)},
+
+  // WebSocket
+  cWs(){if(this.ws&&(this.ws.readyState===WebSocket.OPEN||this.ws.readyState===WebSocket.CONNECTING))return;
+    const p=location.protocol==='https:'?'wss:':'ws:';this.ws=new WebSocket(p+'//'+location.host+'/ws');
+    this.ws.onopen=()=>{this.wsc=true};this.ws.onclose=()=>{this.wsc=false;this.ws=null;setTimeout(()=>this.cWs(),2000)};
+    this.ws.onerror=()=>{this.wsc=false};this.ws.onmessage=e=>{try{this.hWs(JSON.parse(e.data))}catch{}}},
+
+  hWs(d){const m=document.getElementById('messages');
+    switch(d.type){
+      case'connected':if(m)this._am(m,'system',d.message||'Connected');break;
+      case'history':if(!this.hHist&&d.messages?.length&&m){this.hHist=true;d.messages.forEach(x=>{
+        if(x.source&&x.source!=='webchat'){this._as(m,x.source,x.user_input,x.response)}
+        else{this._am(m,'user',x.user_input);this._am(m,'agent',x.response)}});m.scrollTop=m.scrollHeight}break;
+      case'thinking':if(m)this._st(m);break;
+      case'chunk':this._ht();if(m)this._ac(m,d.content);break;
+      case'done':this._ht();this.cMsg=null;break;
+      case'error':this._ht();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
+      case'command_result':if(m)this._am(m,'agent',d.content||'');break;
+      case'event':if(m)this._he(m,d.event,d.data);break;
+      case'notification':this._ht();if(m)this._am(m,'system','🔔 '+(d.job_name||'Task')+': '+d.content);this.toast('🔔 '+(d.job_name||'Task completed'));break;
+      case'sync':if(m)this._as(m,d.source||'',d.user_input||'',d.response||'');break;
+      case'sync_user':if(m&&d.user_input){const l=document.createElement('div');l.className='sl';l.textContent='via '+d.source;m.appendChild(l);this._am(m,'user',d.user_input)}break;
+    }
+    if(m)m.scrollTop=m.scrollHeight},
+
+  _am(m,c,t){const e=document.createElement('div');e.className='mg '+c;e.textContent=t;m.appendChild(e)},
+  _as(m,s,u,r){const l=document.createElement('div');l.className='sl';l.textContent='via '+s;m.appendChild(l);if(u)this._am(m,'user',u);if(r)this._am(m,'agent',r)},
+  _st(m){if(this.thEl)return;this.thEl=document.createElement('div');this.thEl.className='thk';this.thEl.textContent='Thinking';m.appendChild(this.thEl)},
+  _ht(){if(this.thEl){this.thEl.remove();this.thEl=null}},
+  _ac(m,t){if(!this.cMsg){this.cMsg=document.createElement('div');this.cMsg.className='mg agent';m.appendChild(this.cMsg)}this.cMsg.textContent+=t},
+  _he(m,et,ed){if(et==='skill:tool_call'){const p=Object.entries(ed.arguments||{}).slice(0,2).map(([k,v])=>k+'="'+(String(v).length>25?String(v).slice(0,25)+'…':v)+'"');this._am(m,'event','⟳ '+(ed.tool||'?')+'('+p.join(', ')+')')}
+    else if(et==='skill:tool_result')this._am(m,'event','  '+(ed.success?'✓':'✗')+' '+(ed.output_preview||'').replace(/\n/g,' ').slice(0,60));
+    else if(et==='agent:spawned')this._am(m,'event','⟳ Worker "'+(ed.task_name||'')+'" started');
+    else if(et==='agent:task_complete')this._am(m,'event',(ed.success?'✓':'✗')+' Worker "'+(ed.task_name||'')+'" done')},
+
+  sendChat(){const e=document.getElementById('msg-input');if(!e)return;const t=e.value.trim();if(!t||!this.ws||this.ws.readyState!==1)return;
+    const m=document.getElementById('messages');this._am(m,'user',t);this.ws.send(JSON.stringify({type:'message',content:t}));e.value='';m.scrollTop=m.scrollHeight},
+
+  // Data
+  async lH(){[this.hm,this.ag]=await Promise.all([fetch('/api/overview').then(r=>r.json()).catch(()=>({})),fetch('/api/agents').then(r=>r.json()).catch(()=>[])])},
+  async lA(){this.ag=await fetch('/api/agents').then(r=>r.json()).catch(()=>[])},
+  async lT(){this.tk=await fetch('/api/tasks?limit=100').then(r=>r.json()).catch(()=>[])},
+  async lJ(){this.jb=await fetch('/api/scheduler').then(r=>r.json()).catch(()=>[])},
+  async lS(){this.sk=await fetch('/api/skills').then(r=>r.json()).catch(()=>[])},
+  async lM(){this.mp=await fetch('/api/mcp').then(r=>r.json()).catch(()=>[])},
+
+  // Tasks
+  tF(c){if(c==='needs_action')return this.tk.filter(t=>t.status==='awaiting_human'||t.status==='blocked'||t.status==='revision_needed');
+    if(c==='done')return this.tk.filter(t=>t.status==='done'||t.status==='failed'||t.status==='cancelled');return this.tk.filter(t=>t.status===c)},
+  cA(t){if(t.steps?.length&&t.current_step<t.steps.length)return t.steps[t.current_step].agent_name;return t.assigned_agent||'?'},
+  wD(t){if(!t.steps||t.steps.length<=1)return'Single: '+(t.assigned_agent||'?');return t.steps.map((s,i)=>{let d=(i+1)+'. '+s.agent_name;if(s.review_by)d+=' (→'+s.review_by+')';if(i===t.current_step)d+=' ←';return d}).join('\n')},
+  async oT(id){const d=await fetch('/api/tasks/'+id).then(r=>r.json()).catch(()=>null);if(d){this.sT=d;this.rT=''}},
+  async crT(){this.fE='';const b={title:this.nt.title,instruction:this.nt.instruction||this.nt.title,assigned_agent:this.nt.agent,priority:parseInt(this.nt.priority),max_bounces:parseInt(this.nt.max_bounces)};
+    const r=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+    if(r.ok){this.sCT=false;this.nt={title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'};this.lT();this.toast('Task created')}
+    else{const e=await r.json().catch(()=>({}));this.fE=e.error||'Failed'}},
+  async tRp(a){if(!this.rT.trim())return;await fetch('/api/tasks/'+this.sT.id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reply:this.rT,action:a})});
+    this.rT='';this.oT(this.sT.id);this.lT();this.toast('Reply sent')},
+  async xT(){await fetch('/api/tasks/'+this.sT.id+'/cancel',{method:'POST'});this.sT=null;this.lT();this.toast('Task cancelled')},
+
+  // Agents
+  async crA(){this.fE='';const b={name:this.na.name.trim().toLowerCase().replace(/\s+/g,'_'),role:this.na.role,personality:this.na.personality,
+    llm_provider:this.na.llm_provider,llm_model:this.na.llm_model,max_concurrent:parseInt(this.na.max_concurrent),system_prompt:this.na.system_prompt};
+    const r=await fetch('/api/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+    if(r.ok){this.sCA=false;this.na={name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''};this.lA();this.toast('Agent created')}
+    else{const e=await r.json().catch(()=>({}));this.fE=e.error||'Failed'}},
+  async dA(n){if(!confirm('Delete "'+n+'"?'))return;await fetch('/api/agents/'+n,{method:'DELETE'});this.lA();this.toast('Agent deleted')},
+
+  // Scheduler
+  async xJ(id){await fetch('/api/scheduler/'+id+'/cancel',{method:'POST'});this.lJ();this.toast('Job cancelled')},
+
+  fUp(s){if(!s&&s!==0)return'—';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'},
+}}
+</script>
+</body>
+</html>

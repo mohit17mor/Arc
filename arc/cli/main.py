@@ -514,6 +514,14 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
         gw.set_mcp_manager(rt.mcp_manager)
     gw.set_session_memory(rt.agent._memory)
 
+    # Wire task board dependencies
+    if rt.task_store:
+        gw.set_task_store(rt.task_store)
+    if rt.task_processor:
+        gw.set_task_processor(rt.task_processor)
+    if rt.agent_defs:
+        gw.set_agent_defs(rt.agent_defs)
+
     # Wire workflow skill for /workflow command
     from arc.workflow.skill import WorkflowSkill as _WFSkill
     wf_skill = rt.skill_manager.get_skill("workflow")

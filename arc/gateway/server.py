@@ -78,6 +78,11 @@ class GatewayServer(Platform):
         self._session_memory: Any = None
         self._workflow_skill: Any = None
 
+        # Task board dependencies
+        self._task_store: Any = None
+        self._task_processor: Any = None
+        self._agent_defs: dict = {}
+
         # Kernel reference for event subscriptions
         self._kernel: Any = None
 
@@ -128,6 +133,15 @@ class GatewayServer(Platform):
     def set_kernel(self, kernel: Any) -> None:
         self._kernel = kernel
 
+    def set_task_store(self, store: Any) -> None:
+        self._task_store = store
+
+    def set_task_processor(self, processor: Any) -> None:
+        self._task_processor = processor
+
+    def set_agent_defs(self, agents: dict) -> None:
+        self._agent_defs = agents
+
     def attach_channel(self, channel: Platform) -> None:
         """
         Attach a channel platform to this Gateway.
@@ -164,9 +178,27 @@ class GatewayServer(Platform):
 
         app = web.Application()
         app.router.add_get("/", self._handle_index)
+        app.router.add_get("/chat", self._handle_index)
+        app.router.add_get("/tasks", self._handle_index)
+        app.router.add_get("/agents", self._handle_index)
         app.router.add_get("/ws", self._handle_ws)
         app.router.add_get("/health", self._handle_health)
         app.router.add_get("/status", self._handle_status)
+
+        # REST API for dashboard
+        app.router.add_get("/api/tasks", self._api_list_tasks)
+        app.router.add_post("/api/tasks", self._api_create_task)
+        app.router.add_get("/api/tasks/{task_id}", self._api_get_task)
+        app.router.add_post("/api/tasks/{task_id}/cancel", self._api_cancel_task)
+        app.router.add_post("/api/tasks/{task_id}/reply", self._api_reply_task)
+        app.router.add_get("/api/agents", self._api_list_agents)
+        app.router.add_post("/api/agents", self._api_create_agent)
+        app.router.add_delete("/api/agents/{name}", self._api_delete_agent)
+        app.router.add_get("/api/overview", self._api_overview)
+        app.router.add_get("/api/scheduler", self._api_list_jobs)
+        app.router.add_post("/api/scheduler/{job_id}/cancel", self._api_cancel_job)
+        app.router.add_get("/api/skills", self._api_list_skills)
+        app.router.add_get("/api/mcp", self._api_list_mcp)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -266,18 +298,8 @@ class GatewayServer(Platform):
     # ━━━ HTTP handlers ━━━
 
     async def _handle_index(self, request: web.Request) -> web.Response:
-        """Serve the WebChat UI."""
-        if self._webchat_html is None:
-            template_path = _TEMPLATE_DIR / "webchat.html"
-            if template_path.exists():
-                self._webchat_html = template_path.read_text(encoding="utf-8")
-            else:
-                self._webchat_html = self._fallback_html()
-
-        return web.Response(
-            text=self._webchat_html,
-            content_type="text/html",
-        )
+        """Serve the dashboard landing page."""
+        return self._serve_template("dashboard.html")
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         """Health check — returns 200 OK."""
@@ -826,3 +848,264 @@ class GatewayServer(Platform):
             "<body><h1>Arc Gateway</h1><p>WebChat template not found. "
             "Check arc/gateway/templates/webchat.html</p></body></html>"
         )
+
+    # ━━━ Dashboard page handlers ━━━
+
+    def _serve_template(self, name: str) -> web.Response:
+        """Read and serve an HTML template by name."""
+        path = _TEMPLATE_DIR / name
+        if path.exists():
+            return web.Response(
+                text=path.read_text(encoding="utf-8"),
+                content_type="text/html",
+            )
+        return web.Response(text=f"Template {name} not found", status=404)
+
+    async def _handle_page_chat(self, request: web.Request) -> web.Response:
+        return self._serve_template("dashboard.html")
+
+    async def _handle_page_tasks(self, request: web.Request) -> web.Response:
+        return self._serve_template("dashboard.html")
+
+    async def _handle_page_agents(self, request: web.Request) -> web.Response:
+        return self._serve_template("dashboard.html")
+
+    # ━━━ REST API: Tasks ━━━
+
+    async def _api_list_tasks(self, request: web.Request) -> web.Response:
+        if not self._task_store:
+            return web.json_response({"error": "Task board not available"}, status=503)
+        status = request.query.get("status")
+        limit = int(request.query.get("limit", "50"))
+        tasks = await self._task_store.get_all(status=status or None, limit=limit)
+        return web.json_response([t.to_dict() for t in tasks])
+
+    async def _api_get_task(self, request: web.Request) -> web.Response:
+        if not self._task_store:
+            return web.json_response({"error": "Task board not available"}, status=503)
+        task_id = request.match_info["task_id"]
+        task = await self._task_store.get_by_id(task_id)
+        if not task:
+            return web.json_response({"error": "Not found"}, status=404)
+        comments = await self._task_store.get_comments(task_id)
+        return web.json_response({
+            **task.to_dict(),
+            "comments": [c.to_dict() for c in comments],
+        })
+
+    async def _api_create_task(self, request: web.Request) -> web.Response:
+        if not self._task_store:
+            return web.json_response({"error": "Task board not available"}, status=503)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        from arc.tasks.types import Task, TaskStep
+
+        title = body.get("title", "").strip()
+        instruction = body.get("instruction", "").strip() or title
+        agent = body.get("assigned_agent", "").strip()
+        steps_raw = body.get("steps", [])
+        priority = int(body.get("priority", 1))
+        max_bounces = int(body.get("max_bounces", 3))
+        depends_on = body.get("depends_on") or None
+
+        if not title:
+            return web.json_response({"error": "title is required"}, status=400)
+
+        task_steps = []
+        if steps_raw:
+            for i, s in enumerate(steps_raw):
+                task_steps.append(TaskStep(
+                    step_index=i,
+                    agent_name=s.get("agent", ""),
+                    review_by=s.get("review_by"),
+                ))
+        elif agent:
+            task_steps = [TaskStep(step_index=0, agent_name=agent)]
+        else:
+            return web.json_response(
+                {"error": "assigned_agent or steps required"}, status=400
+            )
+
+        task = Task(
+            title=title,
+            instruction=instruction,
+            steps=task_steps,
+            assigned_agent=agent or task_steps[0].agent_name,
+            priority=max(1, min(priority, 10)),
+            max_bounces=max(1, min(max_bounces, 10)),
+            depends_on=depends_on,
+        )
+        await self._task_store.save(task)
+        return web.json_response(task.to_dict(), status=201)
+
+    async def _api_cancel_task(self, request: web.Request) -> web.Response:
+        if not self._task_store:
+            return web.json_response({"error": "Task board not available"}, status=503)
+        task_id = request.match_info["task_id"]
+        ok = await self._task_store.cancel(task_id)
+        if ok:
+            return web.json_response({"status": "cancelled"})
+        return web.json_response({"error": "Not found or already done"}, status=404)
+
+    async def _api_reply_task(self, request: web.Request) -> web.Response:
+        if not self._task_processor:
+            return web.json_response({"error": "Task processor not available"}, status=503)
+        task_id = request.match_info["task_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        reply = body.get("reply", "").strip()
+        action = body.get("action", "approve")
+        if not reply:
+            return web.json_response({"error": "reply is required"}, status=400)
+        msg = await self._task_processor.handle_human_reply(task_id, reply, action)
+        return web.json_response({"message": msg})
+
+    # ━━━ REST API: Agents ━━━
+
+    async def _api_list_agents(self, request: web.Request) -> web.Response:
+        agents = []
+        for a in self._agent_defs.values():
+            agents.append({
+                "name": a.name,
+                "role": a.role,
+                "personality": a.personality,
+                "llm_provider": a.llm_provider,
+                "llm_model": a.llm_model,
+                "max_concurrent": a.max_concurrent,
+                "has_llm_override": a.has_llm_override,
+            })
+        return web.json_response(agents)
+
+    async def _api_create_agent(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        from arc.tasks.types import AgentDef
+        from arc.tasks.agents import save_agent_def, load_agent_defs
+
+        name = body.get("name", "").strip()
+        if not name:
+            return web.json_response({"error": "name is required"}, status=400)
+
+        agent = AgentDef(
+            name=name,
+            role=body.get("role", ""),
+            personality=body.get("personality", ""),
+            system_prompt=body.get("system_prompt", ""),
+            llm_provider=body.get("llm_provider", ""),
+            llm_model=body.get("llm_model", ""),
+            max_concurrent=int(body.get("max_concurrent", 1)),
+        )
+        save_agent_def(agent)
+        # Reload agents into memory
+        self._agent_defs = load_agent_defs()
+        if self._task_processor:
+            self._task_processor.reload_agents(self._agent_defs)
+        return web.json_response({"name": agent.name, "status": "created"}, status=201)
+
+    async def _api_delete_agent(self, request: web.Request) -> web.Response:
+        from arc.tasks.agents import _AGENTS_DIR, load_agent_defs
+        name = request.match_info["name"]
+        path = _AGENTS_DIR / f"{name}.toml"
+        if not path.exists():
+            return web.json_response({"error": "Not found"}, status=404)
+        path.unlink()
+        self._agent_defs = load_agent_defs()
+        if self._task_processor:
+            self._task_processor.reload_agents(self._agent_defs)
+        return web.json_response({"status": "deleted"})
+
+    # ━━━ REST API: Overview ━━━
+
+    async def _api_overview(self, request: web.Request) -> web.Response:
+        data: dict[str, Any] = {
+            "uptime_s": int(time.time() - self._start_time) if self._start_time else 0,
+            "connected_clients": len(self._clients),
+            "total_messages": self._total_messages,
+            "agents_count": len(self._agent_defs),
+            "channels": self.active_channels,
+        }
+        if self._task_store:
+            all_tasks = await self._task_store.get_all(limit=1000)
+            by_status: dict[str, int] = {}
+            for t in all_tasks:
+                by_status[t.status.value] = by_status.get(t.status.value, 0) + 1
+            data["tasks"] = {"total": len(all_tasks), "by_status": by_status}
+        if self._cost_tracker:
+            data["cost"] = self._cost_tracker
+        return web.json_response(data)
+
+    # ━━━ REST API: Scheduler ━━━
+
+    async def _api_list_jobs(self, request: web.Request) -> web.Response:
+        if not self._scheduler_store:
+            return web.json_response([])
+        try:
+            from arc.scheduler.triggers import make_trigger
+            jobs = await self._scheduler_store.get_all()
+            result = []
+            for job in jobs:
+                trigger = make_trigger(job.trigger)
+                result.append({
+                    "id": job.id,
+                    "name": job.name,
+                    "prompt": job.prompt,
+                    "trigger_desc": trigger.description,
+                    "active": job.active,
+                    "use_tools": job.use_tools,
+                    "next_run": job.next_run,
+                    "last_run": job.last_run,
+                })
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _api_cancel_job(self, request: web.Request) -> web.Response:
+        if not self._scheduler_store:
+            return web.json_response({"error": "Scheduler not available"}, status=503)
+        job_id = request.match_info["job_id"]
+        ok = await self._scheduler_store.delete(job_id)
+        if ok:
+            return web.json_response({"status": "cancelled"})
+        return web.json_response({"error": "Not found"}, status=404)
+
+    # ━━━ REST API: Skills & MCP ━━━
+
+    async def _api_list_skills(self, request: web.Request) -> web.Response:
+        if not self._skill_manager:
+            return web.json_response([])
+        skills = []
+        for name in sorted(self._skill_manager.skill_names):
+            manifest = self._skill_manager.get_manifest(name)
+            if manifest is None:
+                continue
+            tools = [{"name": t.name, "description": t.description} for t in manifest.tools]
+            skills.append({
+                "name": manifest.name,
+                "version": manifest.version,
+                "description": manifest.description,
+                "always_available": manifest.always_available,
+                "tools": tools,
+            })
+        return web.json_response(skills)
+
+    async def _api_list_mcp(self, request: web.Request) -> web.Response:
+        if not self._mcp_manager:
+            return web.json_response([])
+        servers = []
+        for info in self._mcp_manager.server_info():
+            servers.append({
+                "name": info["name"],
+                "transport": info.get("transport", ""),
+                "connected": info["connected"],
+                "tools": info["tools"],
+                "hint": info.get("hint", ""),
+            })
+        return web.json_response(servers)
