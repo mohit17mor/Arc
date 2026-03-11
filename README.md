@@ -1,38 +1,104 @@
 <h1 align="center">Arc</h1>
-<h3 align="center">The AI agent that actually does things.</h3>
+<h3 align="center">Autonomous AI agents that work while you sleep.</h3>
 
 <p align="center">
-  <img src="public/assets/arc.png" width="320" alt="Arc Mascot" />
+  <img src="public/assets/arc.png" width="320" alt="Arc" />
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Python-blue?style=flat-square" alt="Python" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/tests-819%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-930%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" />
 </p>
 
 ---
 
-Arc is a Python framework for building a personal AI agent that runs on your machine. It browses the web, fills forms, manages files, runs commands, and remembers you across sessions.
+Arc is an AI agent framework where you create specialized agents, queue tasks, and wake up to results. Named agents with their own roles, LLMs, and system prompts pick up work from a persistent task board, collaborate through review loops, and deliver results via Telegram — all while you're away.
 
-```
-You:  "Find me a one-way flight from Delhi to Mumbai on April 10"
-Arc:  *opens Google Flights, fills the form, picks dates from the calendar,
-       selects suggestions, clicks search — hands you the results*
+```bash
+# Create agents with different LLMs
+arc agent create researcher --role "Deep web research" --model ollama/llama3.2
+arc agent create writer --role "Content creation" --model openai/gpt-4o
+
+# Queue 5 tasks at midnight
+arc task add "Find top AI startups funded in 2026" --assign researcher
+arc task add "Compare Rust vs Go for backend services" --assign researcher
+arc task add "Write a blog post about AI agents" --assign writer
+
+# Start the daemon and go to sleep
+arc gateway
+
+# Wake up to Telegram notifications with results
 ```
 
 ---
 
-## Why Arc?
+## What Makes Arc Different
 
-| | Cloud agents | Arc |
-|---|---|---|
-| **Cost** | Per-token billing | Free (local LLM via Ollama) |
-| **Privacy** | Your data on someone's server | Everything stays on your machine |
-| **Browser** | Screenshot → vision (slow, expensive) | Accessibility tree → text (fast, free) |
-| **Memory** | Forgets you every session | Three-tier memory that persists forever |
-| **Extensibility** | Closed | Drop a `.py` or `.md` file → new skill |
+### 🤖 Taskforce — Named Autonomous Agents
+Not one agent doing everything. A **team** of specialized agents, each with its own role, LLM, and personality. Define them once, assign tasks forever.
+
+```toml
+# ~/.arc/agents/researcher.toml
+name = "researcher"
+role = "AI industry analyst"
+max_concurrent = 1
+
+[llm]
+provider = "ollama"
+model = "llama3.2"
+
+system_prompt = """
+You are a senior research analyst. Always cite sources.
+Search at least 3 sources for every claim.
+Structure output as: Executive Summary → Key Findings → Sources.
+"""
+```
+
+Each agent can use a **different LLM** — cheap local models for research, powerful cloud models for creative work. Supports Ollama, OpenAI, Groq, OpenRouter, Together, LM Studio, and any OpenAI-compatible endpoint.
+
+### 📋 Persistent Task Queue
+Tasks survive across restarts. Queue 10 tasks at night, close your laptop, results arrive in the morning.
+
+- **Priority ordering** — urgent tasks run first
+- **Task dependencies** — "write the blog post AFTER the research is done"
+- **Human-in-the-loop** — tasks pause and wait for your input when needed
+- **Full audit trail** — every agent action is logged as comments on the task
+
+### 🔄 Multi-Step Workflows with Review
+Chain agents together. The output of one step feeds into the next. Add reviewers at any step — AI or human.
+
+```bash
+# Researcher gathers info → Writer drafts → You review before publishing
+arc task add "Create a blog post about AI trends" \
+  --step researcher \
+  --step writer --review-by human
+```
+
+When the reviewer bounces work back, it goes to the agent who submitted it — with specific feedback. Automatic bounce limits prevent infinite loops.
+
+### 🧠 Code Intelligence
+AST-aware code navigation using tree-sitter. Agents understand codebases structurally, not just as text files.
+
+- **`repo_map`** — condensed project overview with all classes/functions/methods
+- **`find_symbol`** — locate any definition and get the full source body
+- **`search_code`** — grep with AST context (shows the enclosing function/class scope)
+
+Supports Python, JavaScript, TypeScript, Rust, Go, Java, C, C++, and 7 more languages.
+
+### 📊 Web Dashboard
+Full single-page dashboard at `http://localhost:18789`:
+
+- **Dashboard** — task counts, agent status, uptime
+- **Chat** — real-time WebChat with streaming responses
+- **Task Board** — Kanban view, create tasks, approve/revise, view comments
+- **Agents** — create/manage agents with LLM picker and system prompt editor
+- **Scheduler** — view and cancel scheduled jobs
+- **Skills & MCP** — all loaded skills with tools, MCP server status
+- **Logs** — real-time system event stream with source/type filtering
+
+One WebSocket connection stays alive across all tabs. Notifications appear everywhere.
 
 ---
 
@@ -42,17 +108,21 @@ Arc:  *opens Google Flights, fills the form, picks dates from the calendar,
 git clone https://github.com/ArcAI-xyz/Arc.git && cd Arc
 python -m venv .venv && .venv\Scripts\activate   # Windows
 pip install -e ".[dev]"
-playwright install chromium                       # for browser control
-ollama pull llama3.2                              # or any model you prefer
-arc init                                          # first-time setup
-arc chat                                          # start talking
+playwright install chromium
+arc init                                          # setup wizard
+arc chat                                          # interactive chat
+```
+
+To run the full daemon with task processing + dashboard:
+```bash
+arc gateway                                       # http://localhost:18789
 ```
 
 ---
 
-## What It Can Do
+## All Features
 
-### 🌐 Browse the Web — For Real
+### 🌐 Browser Automation
 Not just fetching URLs. Arc opens a **real Chromium browser** and interacts with pages like a human:
 
 - Fills forms (text, dropdowns, comboboxes, date pickers)
@@ -66,26 +136,26 @@ Three browser tools:
 - **`browser_look`** — re-examine the current page
 - **`browser_act`** — click, fill, scroll, submit — all in one call
 
-### 🧠 Remember You
+### 🧠 Three-Tier Memory
 Three tiers of memory, all local SQLite:
 
 - **Core facts** — your name, preferences, projects. Always in the system prompt.
 - **Episodic** — past conversation chunks, retrieved by semantic similarity.
 - **Session** — current conversation, token-budget managed.
 
-### 🔧 Use Tools
+### 🔧 Built-in Skills
 Built-in skills: file read/write, terminal commands, web search, web scraping, browser control.
 
-### 👷 Delegate Work
+### 👷 Background Workers
 Spawn background worker agents for long tasks. Keep chatting while research happens in the background.
 
-### ⏰ Schedule Jobs
+### ⏰ Scheduler
 "Remind me every morning at 9am to check my email" — cron, interval, or one-shot triggers.
 
-### 🔔 Get Notified
+### 🔔 Notifications
 Results delivered in-chat, to a log file, or via Telegram.
 
-### 🎤 Voice Input — Talk Hands-Free
+### 🎤 Voice Input
 Say a wake word and Arc listens. No terminal or browser tab needs to be focused.
 
 ```
@@ -386,12 +456,27 @@ chat_id = ""    # optional
 ## CLI Reference
 
 ```bash
+# Core
 arc init                  # first-time setup
-arc chat                  # start chatting
+arc chat                  # interactive chat
 arc chat -m <model>       # use a specific model
-arc gateway               # run the WebSocket + WebChat server
+arc gateway               # run daemon (dashboard + task processing + Telegram)
 arc listen                # voice input (requires arc gateway)
 arc telegram              # run as a Telegram bot
+
+# Agents
+arc agent create <name>   # create a named agent
+arc agent list            # list all agents
+arc agent remove <name>   # delete an agent
+
+# Task Board
+arc task add "<title>"    # queue a task (--assign <agent>)
+arc task list             # list all tasks
+arc task show <id>        # full detail + comments
+arc task cancel <id>      # cancel a task
+arc task reply <id> "<text>"  # answer a blocked task
+
+# Monitoring
 arc workers --follow      # live-tail background activity
 arc logs                  # view today's logs
 ```
@@ -501,7 +586,7 @@ Arc:  → mcp_list_tools({})           — sees: filesystem, github, memory
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # 777 tests
+pytest                    # 930+ tests
 pytest --cov=arc          # with coverage
 ```
 
