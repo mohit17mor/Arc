@@ -203,52 +203,15 @@ async def bootstrap(
         f"- Platform: {platform_name}\n"
     )
 
-    research_strategy = (
-        "\n\nWeb Research Strategy:\n"
-        "- For any question that needs web data: run ONE web_search, "
-        "then read at most 2-3 of the most relevant URLs with web_read, "
-        "then synthesize everything and give your answer. Stop there.\n"
-        "- Do NOT loop: search → read → search → read. One search is almost always enough.\n"
-        "- For live data (prices, rates, weather): prefer http_get against a known API URL "
-        "instead of going through a search + read cycle.\n"
-        "- Once you have enough information to answer, stop calling tools and respond."
-    )
-
-    delegation_strategy = (
-        "\n\nDelegation Strategy (delegate_task):\n"
-        "MANDATORY RULE — ALWAYS DELEGATE MULTI-TASK REQUESTS:\n"
-        "When the user gives you N tasks (numbered, comma-separated, or multiple requests "
-        "in one message):\n"
-        "  1. You may handle AT MOST 1 trivial task yourself (quick lookup, simple calculation).\n"
-        "  2. You MUST delegate ALL remaining tasks — call delegate_task once per task.\n"
-        "  3. If N >= 3, delegate ALL of them (including the easy ones) — do not do any yourself.\n"
-        "  4. Workers run in PARALLEL, which is dramatically faster than sequential execution.\n\n"
-        "Do it YOURSELF (no delegation) ONLY when there is exactly 1 simple task.\n"
-        "After delegating: confirm what you delegated. Results arrive automatically."
-    )
-
-    browser_strategy = (
-        "\n\nBrowser Control Strategy:\n"
-        "You have TWO ways to access the web:\n"
-        "1. READING (web_search + web_read): For finding information, reading articles, "
-        "checking facts. Fast and cheap — use this by default.\n"
-        "2. INTERACTING (browser_go + browser_act): For clicking buttons, filling forms, "
-        "navigating multi-step flows, shopping, booking, logging in.\n"
-        "3. PRODUCT COMPARISON (liquid_search): For finding and comparing purchasable products.\n\n"
-        "CRITICAL: When filling forms, ALWAYS use the [id] numbers from the page snapshot to "
-        "target fields (e.g., fill target='[3]'). Do NOT use text labels.\n"
-        "After each browser_act, check the fresh snapshot before deciding next steps.\n"
-        "If the browser hits a CAPTCHA or login wall, it will ask the user for help automatically."
-    )
-
-    soft_skill_text = discover_soft_skills()
+    # Soft skills = bundled strategies (tool usage, research, browser, delegation)
+    # + user custom .md files from ~/.arc/skills/
+    # Main agent gets delegation strategy; sub-agents do not.
+    soft_skill_text = discover_soft_skills(include_delegation=True)
+    soft_skill_text_no_delegation = discover_soft_skills(include_delegation=False)
 
     system_prompt = (
         identity["system_prompt"]
         + env_info
-        + research_strategy
-        + delegation_strategy
-        + browser_strategy
         + soft_skill_text
     )
 
@@ -289,6 +252,7 @@ async def bootstrap(
         "Use tools as needed to fulfil the task fully and accurately. "
         "Return a concise, well-structured answer — do not ask follow-up questions."
         + env_info
+        + soft_skill_text_no_delegation
     )
 
     def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
@@ -334,6 +298,13 @@ async def bootstrap(
     # ── Inject skill dependencies ──
     worker_skill = skill_manager.get_skill("worker")
     if worker_skill and isinstance(worker_skill, WorkerSkill):
+        worker_system_prompt = (
+            "You are a focused background worker completing a specific sub-task. "
+            "Do not ask clarifying questions — make your best effort with the "
+            "information provided. Return a clear, structured result."
+            + env_info
+            + soft_skill_text_no_delegation
+        )
         worker_skill.set_dependencies(
             llm=llm,
             worker_llm=worker_llm,
@@ -341,6 +312,7 @@ async def bootstrap(
             escalation_bus=escalation_bus,
             notification_router=notification_router,
             agent_registry=agent_registry,
+            system_prompt=worker_system_prompt,
         )
 
     browser_skill = skill_manager.get_skill("browser_control")
@@ -371,6 +343,8 @@ async def bootstrap(
         notification_router=notification_router,
         kernel=kernel,
         llm_factory=create_llm,
+        env_info=env_info,
+        soft_skills=soft_skill_text_no_delegation,
     ) if agent_defs else None
 
     task_skill = TaskSkill()

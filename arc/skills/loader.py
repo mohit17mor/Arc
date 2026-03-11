@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 _BUILTIN_PACKAGE = "arc.skills.builtin"
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
 
+# Bundled strategy .md files — shipped with the package.
+# These teach every agent how to use tools efficiently.
+_STRATEGIES_DIR = Path(__file__).parent / "strategies"
+
 # Default user skills directory
 _USER_SKILLS_DIR = Path.home() / ".arc" / "skills"
 
@@ -183,28 +187,44 @@ def discover_skills(user_dir: Path | None = None) -> list[Skill]:
     return instances
 
 
-def discover_soft_skills(user_dir: Path | None = None) -> str:
+def discover_soft_skills(
+    user_dir: Path | None = None,
+    include_delegation: bool = True,
+    bundled_dir: Path | None = None,
+) -> str:
     """
-    Load all soft skills (*.md files) from user_dir.
+    Load all soft skills (*.md files) from bundled strategies + user dir.
+
+    Scans two directories:
+      1. arc/skills/strategies/*.md  — bundled tool usage strategies
+      2. ~/.arc/skills/*.md          — user custom instructions
 
     Returns a string ready to be appended to the system prompt,
     or an empty string if no soft skills exist.
 
-    Example ~/.arc/skills/python_expert.md:
-        You are an expert Python developer. Always prefer type hints,
-        follow PEP 8, and suggest dataclasses over plain dicts.
-
-    At runtime this becomes part of every system prompt automatically.
+    Args:
+        user_dir: Override the user skills directory (for testing).
+        include_delegation: If False, exclude delegation.md (for sub-agents
+            that should not delegate to workers).
+        bundled_dir: Override the bundled strategies directory (for testing).
     """
     if user_dir is None:
         user_dir = _USER_SKILLS_DIR
 
-    soft_skills = _load_soft_skills(user_dir)
-    if not soft_skills:
+    # Load bundled strategies first, then user overrides
+    bundled = _load_soft_skills(bundled_dir or _STRATEGIES_DIR)
+    user = _load_soft_skills(user_dir)
+
+    # Filter out delegation for sub-agents
+    if not include_delegation:
+        bundled = [(n, c) for n, c in bundled if n != "delegation"]
+
+    all_skills = bundled + user
+    if not all_skills:
         return ""
 
     parts = ["\n\n## Additional Instructions"]
-    for name, content in soft_skills:
+    for name, content in all_skills:
         title = name.replace("_", " ").replace("-", " ").title()
         parts.append(f"\n### {title}\n{content}")
 

@@ -277,8 +277,12 @@ def test_discover_skills_tolerates_empty_user_dir(tmp_path):
 
 
 def test_discover_soft_skills_empty_dir(tmp_path):
-    """Returns empty string when no .md files exist."""
-    result = discover_soft_skills(user_dir=tmp_path)
+    """Returns empty string when no .md files exist in either directory."""
+    empty_bundled = tmp_path / "bundled"
+    empty_bundled.mkdir()
+    empty_user = tmp_path / "user"
+    empty_user.mkdir()
+    result = discover_soft_skills(user_dir=empty_user, bundled_dir=empty_bundled)
     assert result == ""
 
 
@@ -286,7 +290,9 @@ def test_discover_soft_skills_formats_output(tmp_path):
     """Wraps content under '## Additional Instructions' header."""
     (tmp_path / "python_expert.md").write_text("Always use type hints.", encoding="utf-8")
 
-    result = discover_soft_skills(user_dir=tmp_path)
+    empty_bundled = tmp_path / "bundled"
+    empty_bundled.mkdir()
+    result = discover_soft_skills(user_dir=tmp_path, bundled_dir=empty_bundled)
     assert "## Additional Instructions" in result
     assert "Python Expert" in result
     assert "Always use type hints." in result
@@ -297,6 +303,31 @@ def test_discover_soft_skills_multiple_files(tmp_path):
     (tmp_path / "style.md").write_text("Be concise.", encoding="utf-8")
     (tmp_path / "domain.md").write_text("You are a finance expert.", encoding="utf-8")
 
-    result = discover_soft_skills(user_dir=tmp_path)
+    empty_bundled = tmp_path / "bundled"
+    empty_bundled.mkdir()
+    result = discover_soft_skills(user_dir=tmp_path, bundled_dir=empty_bundled)
     assert "Be concise." in result
     assert "You are a finance expert." in result
+
+
+def test_discover_soft_skills_loads_bundled_strategies(tmp_path):
+    """Bundled strategies from arc/skills/strategies/ are loaded by default."""
+    result = discover_soft_skills(user_dir=tmp_path)  # empty user dir, real bundled
+    assert "## Additional Instructions" in result
+    # At least the tool_efficiency strategy should be present
+    assert "Tool Efficiency" in result or "tool" in result.lower()
+
+
+def test_discover_soft_skills_exclude_delegation(tmp_path):
+    """Delegation strategy is excluded when include_delegation=False."""
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "delegation.md").write_text("Delegate everything.", encoding="utf-8")
+    (bundled / "research.md").write_text("Research carefully.", encoding="utf-8")
+
+    result_with = discover_soft_skills(user_dir=tmp_path, bundled_dir=bundled, include_delegation=True)
+    assert "Delegate everything." in result_with
+
+    result_without = discover_soft_skills(user_dir=tmp_path, bundled_dir=bundled, include_delegation=False)
+    assert "Delegate everything." not in result_without
+    assert "Research carefully." in result_without

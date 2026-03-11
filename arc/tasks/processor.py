@@ -73,6 +73,8 @@ class TaskProcessor:
         notification_router: "NotificationRouter",
         kernel: "Kernel",
         llm_factory: "Callable[..., LLMProvider] | None" = None,
+        env_info: str = "",
+        soft_skills: str = "",
     ) -> None:
         self._store = store
         self._agents = agents
@@ -81,6 +83,8 @@ class TaskProcessor:
         self._router = notification_router
         self._kernel = kernel
         self._llm_factory = llm_factory
+        self._env_info = env_info
+        self._soft_skills = soft_skills
         self._task: asyncio.Task | None = None
         self._running = False
         # Track in-flight tasks per agent to enforce max_concurrent
@@ -250,8 +254,12 @@ class TaskProcessor:
         # Compute excluded skills
         excluded = self._compute_excluded(agent_def)
 
-        # Build system prompt
+        # Build system prompt — agent's custom prompt + strategies + env info
         system_prompt = agent_def.build_system_prompt()
+        if self._soft_skills:
+            system_prompt += self._soft_skills
+        if self._env_info:
+            system_prompt += self._env_info
         if is_reviewer:
             system_prompt += (
                 "\n\nYou are reviewing another agent's work. "
