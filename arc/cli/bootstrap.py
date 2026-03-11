@@ -46,21 +46,30 @@ class ArcRuntime:
     make_sub_agent: Callable  # factory for sub-agents
     system_prompt: str
     env_info: str
+    task_store: Any | None = None  # TaskStore
+    task_processor: Any | None = None  # TaskProcessor
+    agent_defs: dict = field(default_factory=dict)  # name → AgentDef
 
     async def start(self) -> None:
-        """Start kernel + scheduler."""
+        """Start kernel + scheduler + task processor."""
         await self.kernel.start()
         if self.scheduler_engine:
             await self.scheduler_engine.start()
+        if self.task_processor:
+            await self.task_processor.start()
 
     async def shutdown(self) -> None:
         """Shut down everything in the correct order."""
         self.worker_log.close()
+        if self.task_processor:
+            await self.task_processor.stop()
         await self.agent_registry.shutdown_all()
         if self.scheduler_engine:
             await self.scheduler_engine.stop()
         if self.config.scheduler.enabled:
             await self.sched_store.close()
+        if self.task_store:
+            await self.task_store.close()
         await self.skill_manager.shutdown_all()
         await self.kernel.stop()
         await self.llm.close()
@@ -344,6 +353,34 @@ async def bootstrap(
     await skill_manager.register(workflow_skill)
     workflow_skill.set_dependencies(agent=agent, kernel=kernel)
 
+    # ── Task Board ──
+    from arc.tasks.store import TaskStore
+    from arc.tasks.agents import load_agent_defs
+    from arc.tasks.processor import TaskProcessor
+    from arc.tasks.skill import TaskSkill
+
+    agent_defs = load_agent_defs()
+    task_store = TaskStore(db_path=arc_home / "tasks.db")
+    await task_store.initialize()
+
+    task_processor = TaskProcessor(
+        store=task_store,
+        agents=agent_defs,
+        skill_manager=skill_manager,
+        default_llm=worker_llm,
+        notification_router=notification_router,
+        kernel=kernel,
+        llm_factory=create_llm,
+    ) if agent_defs else None
+
+    task_skill = TaskSkill()
+    await skill_manager.register(task_skill)
+    task_skill.set_dependencies(
+        store=task_store,
+        agents=agent_defs,
+        processor=task_processor,
+    )
+
     # ── Worker activity log ──
     worker_log = WorkerActivityLog(arc_home / "worker_activity.log")
     worker_log.open()
@@ -378,4 +415,7 @@ async def bootstrap(
         make_sub_agent=make_sub_agent,
         system_prompt=system_prompt,
         env_info=env_info,
+        task_store=task_store,
+        task_processor=task_processor,
+        agent_defs=agent_defs,
     )

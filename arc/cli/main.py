@@ -994,5 +994,329 @@ async def _run_listen_terminal(
             await daemon.stop()
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Task Board CLI commands
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+task_app = typer.Typer(name="task", help="Manage the persistent task queue.")
+app.add_typer(task_app)
+
+
+@task_app.command("add")
+def task_add(
+    title: str = typer.Argument(..., help="Short title for the task"),
+    instruction: str = typer.Option("", "--instruction", "-i", help="Full instructions (defaults to title if empty)"),
+    assign: str = typer.Option("", "--assign", "-a", help="Agent name to assign to"),
+    priority: int = typer.Option(1, "--priority", "-p", help="Priority (1=highest)"),
+    max_bounces: int = typer.Option(3, "--max-bounces", help="Max review iterations"),
+    depends_on: str = typer.Option("", "--after", help="Task ID that must complete first"),
+) -> None:
+    """Add a task to the queue."""
+    asyncio.run(_task_add(title, instruction, assign, priority, max_bounces, depends_on))
+
+
+async def _task_add(
+    title: str, instruction: str, assign: str,
+    priority: int, max_bounces: int, depends_on: str,
+) -> None:
+    from arc.tasks.store import TaskStore
+    from arc.tasks.types import Task, TaskStep
+    from arc.tasks.agents import load_agent_defs
+
+    agents = load_agent_defs()
+    if assign and assign not in agents:
+        console.print(f"[red]Unknown agent '{assign}'.[/red] Available: {', '.join(agents) or 'none'}")
+        raise typer.Exit(1)
+
+    if not assign:
+        if not agents:
+            console.print("[red]No agents defined. Create one first:[/red] arc agent create <name>")
+            raise typer.Exit(1)
+        assign = list(agents.keys())[0]
+        console.print(f"[dim]No agent specified, using '{assign}'[/dim]")
+
+    task = Task(
+        title=title,
+        instruction=instruction or title,
+        steps=[TaskStep(step_index=0, agent_name=assign)],
+        assigned_agent=assign,
+        priority=max(1, min(priority, 10)),
+        max_bounces=max(1, min(max_bounces, 10)),
+        depends_on=depends_on or None,
+    )
+
+    store = TaskStore()
+    await store.initialize()
+    await store.save(task)
+    await store.close()
+
+    console.print(f"[green]✓[/green] Task queued: {task.title} (id: {task.id}, agent: {assign})")
+
+
+@task_app.command("list")
+def task_list(
+    status: str = typer.Option("", "--status", "-s", help="Filter by status"),
+    limit: int = typer.Option(30, "--limit", "-n", help="Max results"),
+) -> None:
+    """List tasks in the queue."""
+    asyncio.run(_task_list(status, limit))
+
+
+async def _task_list(status: str, limit: int) -> None:
+    from arc.tasks.store import TaskStore
+    from rich.table import Table
+
+    store = TaskStore()
+    await store.initialize()
+    tasks = await store.get_all(status=status or None, limit=limit)
+    await store.close()
+
+    if not tasks:
+        console.print("[dim]No tasks found.[/dim]")
+        return
+
+    table = Table(title="Task Queue", border_style="dim")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Title")
+    table.add_column("Agent", style="green")
+    table.add_column("Step")
+    table.add_column("Bounces")
+
+    status_styles = {
+        "queued": "yellow",
+        "in_progress": "bold cyan",
+        "in_review": "magenta",
+        "revision_needed": "bold yellow",
+        "awaiting_human": "bold red",
+        "blocked": "bold red",
+        "done": "green",
+        "failed": "red",
+        "cancelled": "dim",
+    }
+
+    for t in tasks:
+        style = status_styles.get(t.status.value, "")
+        step_info = f"{t.current_step + 1}/{len(t.steps) or 1}"
+        table.add_row(
+            t.id,
+            f"[{style}]{t.status.value}[/{style}]",
+            t.title[:50],
+            t.current_agent,
+            step_info,
+            f"{t.bounce_count}/{t.max_bounces}",
+        )
+
+    console.print(table)
+
+
+@task_app.command("show")
+def task_show(
+    task_id: str = typer.Argument(..., help="Task ID"),
+) -> None:
+    """Show full detail for a task including comments."""
+    asyncio.run(_task_show(task_id))
+
+
+async def _task_show(task_id: str) -> None:
+    from arc.tasks.store import TaskStore
+
+    store = TaskStore()
+    await store.initialize()
+    task = await store.get_by_id(task_id)
+    if not task:
+        console.print(f"[red]Task '{task_id}' not found.[/red]")
+        await store.close()
+        return
+
+    comments = await store.get_comments(task_id)
+    await store.close()
+
+    console.print(Panel(
+        f"[bold]{task.title}[/bold]\n"
+        f"ID: {task.id}\n"
+        f"Status: {task.status.value}\n"
+        f"Agent: {task.current_agent}\n"
+        f"Step: {task.current_step + 1}/{len(task.steps) or 1}\n"
+        f"Bounces: {task.bounce_count}/{task.max_bounces}\n"
+        f"Priority: {task.priority}\n"
+        f"{'Depends on: ' + task.depends_on if task.depends_on else ''}\n\n"
+        f"[bold]Instruction:[/bold]\n{task.instruction}",
+        title="Task Detail",
+        border_style="cyan",
+    ))
+
+    if task.result:
+        console.print(Panel(task.result[:2000], title="Final Result", border_style="green"))
+
+    if comments:
+        console.print(f"\n[bold]Comments ({len(comments)}):[/bold]")
+        for c in comments:
+            style = "green" if c.agent_name == "human" else "cyan" if c.agent_name != "system" else "dim"
+            console.print(f"  [{style}][{c.agent_name}][/{style}] {c.content[:300]}")
+
+
+@task_app.command("cancel")
+def task_cancel(
+    task_id: str = typer.Argument(..., help="Task ID to cancel"),
+) -> None:
+    """Cancel a task."""
+    asyncio.run(_task_cancel(task_id))
+
+
+async def _task_cancel(task_id: str) -> None:
+    from arc.tasks.store import TaskStore
+
+    store = TaskStore()
+    await store.initialize()
+    ok = await store.cancel(task_id)
+    await store.close()
+
+    if ok:
+        console.print(f"[green]✓[/green] Task {task_id} cancelled.")
+    else:
+        console.print(f"[red]Task {task_id} not found or already completed.[/red]")
+
+
+@task_app.command("reply")
+def task_reply(
+    task_id: str = typer.Argument(..., help="Task ID to reply to"),
+    reply: str = typer.Argument(..., help="Your response"),
+    action: str = typer.Option("approve", "--action", "-a", help="'approve' or 'revise'"),
+) -> None:
+    """Reply to a blocked or awaiting-human task."""
+    asyncio.run(_task_reply(task_id, reply, action))
+
+
+async def _task_reply(task_id: str, reply: str, action: str) -> None:
+    from arc.tasks.store import TaskStore
+    from arc.tasks.types import TaskStatus
+
+    store = TaskStore()
+    await store.initialize()
+    task = await store.get_blocked_task(task_id)
+    if not task:
+        console.print(f"[red]Task {task_id} is not waiting for human input.[/red]")
+        await store.close()
+        return
+
+    if task.status == TaskStatus.AWAITING_HUMAN:
+        if action == "approve":
+            await store.update_status_with_comment(
+                task_id, TaskStatus.QUEUED, "human",
+                f"APPROVED: {reply}", task.current_step,
+                extra_updates={"current_step": task.current_step + 1, "bounce_count": 0},
+            )
+            console.print(f"[green]✓[/green] Task {task_id} approved. Moving to next step.")
+        else:
+            await store.update_status_with_comment(
+                task_id, TaskStatus.REVISION_NEEDED, "human",
+                f"Revision requested: {reply}", task.current_step,
+                extra_updates={"bounce_count": task.bounce_count + 1},
+            )
+            console.print(f"[green]✓[/green] Task {task_id} sent back for revision.")
+    elif task.status == TaskStatus.BLOCKED:
+        await store.update_status_with_comment(
+            task_id, TaskStatus.QUEUED, "human",
+            reply, task.current_step,
+        )
+        console.print(f"[green]✓[/green] Answer delivered to task {task_id}.")
+
+    await store.close()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Agent management CLI commands
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+agent_app = typer.Typer(name="agent", help="Manage named agents.")
+app.add_typer(agent_app)
+
+
+@agent_app.command("create")
+def agent_create(
+    name: str = typer.Argument(..., help="Agent name (alphanumeric + underscore)"),
+    role: str = typer.Option("", "--role", "-r", help="Agent's role description"),
+    personality: str = typer.Option("", "--personality", "-p", help="Personality traits"),
+    model: str = typer.Option("", "--model", "-m", help="LLM model (e.g. 'ollama/llama3.2', 'openai/gpt-4o')"),
+    max_concurrent: int = typer.Option(1, "--max-concurrent", help="Max parallel tasks"),
+) -> None:
+    """Create a new named agent.
+
+    After creating, edit ~/.arc/agents/<name>.toml to add a detailed
+    system_prompt using triple-quoted strings.
+    """
+    from arc.tasks.types import AgentDef
+    from arc.tasks.agents import save_agent_def
+
+    # Parse model string
+    llm_provider = ""
+    llm_model = ""
+    if model and "/" in model:
+        llm_provider, llm_model = model.split("/", 1)
+    elif model:
+        llm_model = model
+
+    agent = AgentDef(
+        name=name,
+        role=role,
+        personality=personality,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        max_concurrent=max_concurrent,
+    )
+
+    path = save_agent_def(agent)
+    console.print(f"[green]✓[/green] Agent '{name}' created at {path}")
+    if role:
+        console.print(f"  Role: {role}")
+    if model:
+        console.print(f"  Model: {model}")
+    console.print(f"  [dim]Edit {path} to add a detailed system_prompt[/dim]")
+
+
+@agent_app.command("list")
+def agent_list() -> None:
+    """List all configured agents."""
+    from arc.tasks.agents import load_agent_defs
+    from rich.table import Table
+
+    agents = load_agent_defs()
+    if not agents:
+        console.print(
+            "[dim]No agents configured. Create one:[/dim]\n"
+            "  arc agent create researcher --role 'Web research' --model ollama/llama3.2"
+        )
+        return
+
+    table = Table(title="Named Agents", border_style="dim")
+    table.add_column("Name", style="cyan")
+    table.add_column("Role")
+    table.add_column("LLM", style="green")
+    table.add_column("Concurrent", justify="center")
+
+    for a in agents.values():
+        llm = f"{a.llm_provider}/{a.llm_model}" if a.has_llm_override else "default"
+        table.add_row(a.name, a.role, llm, str(a.max_concurrent))
+
+    console.print(table)
+
+
+@agent_app.command("remove")
+def agent_remove(
+    name: str = typer.Argument(..., help="Agent name to remove"),
+) -> None:
+    """Remove an agent definition."""
+    from arc.tasks.agents import _AGENTS_DIR
+
+    path = _AGENTS_DIR / f"{name}.toml"
+    if not path.exists():
+        console.print(f"[red]Agent '{name}' not found.[/red]")
+        raise typer.Exit(1)
+
+    path.unlink()
+    console.print(f"[green]✓[/green] Agent '{name}' removed.")
+
+
 if __name__ == "__main__":
     app()

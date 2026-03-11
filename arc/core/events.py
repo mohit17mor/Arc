@@ -74,6 +74,15 @@ class EventType:
     AGENT_TASK_COMPLETE = "agent:task_complete"  # worker finished, result ready
     AGENT_ESCALATION = "agent:escalation"     # worker/expert needs user input via main
 
+    # Task board
+    TASK_QUEUED = "task:queued"               # new task created
+    TASK_START = "task:start"                 # agent picked up a task
+    TASK_REVIEW = "task:review"               # task submitted for review
+    TASK_BOUNCED = "task:bounced"             # reviewer sent task back
+    TASK_BLOCKED = "task:blocked"             # agent needs human input
+    TASK_COMPLETE = "task:complete"           # task finished successfully
+    TASK_FAILED = "task:failed"              # task failed
+
     # Workflow execution
     WORKFLOW_START = "workflow:start"          # workflow begun
     WORKFLOW_STEP_START = "workflow:step_start"    # step N starting
