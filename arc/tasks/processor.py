@@ -296,7 +296,8 @@ class TaskProcessor:
                 messages=messages,
                 tools=None,
                 temperature=0.0,
-                max_tokens=5,
+                # Use a generous cap so classifiers can respond fully on stricter APIs.
+                max_tokens=500,
             ):
                 if chunk.text:
                     collected += chunk.text
@@ -334,6 +335,12 @@ class TaskProcessor:
             system_prompt += self._soft_skills
         if self._env_info:
             system_prompt += self._env_info
+
+        logger.info(
+            "Task agent '%s' system prompt:\n%s",
+            agent_def.name,
+            system_prompt,
+        )
         if is_reviewer:
             system_prompt += (
                 "\n\nYou are reviewing another agent's work. "
