@@ -31,6 +31,7 @@ from arc.core.types import (
     ToolResult,
 )
 from arc.llm.base import LLMProvider
+from arc.memory.compaction import CompactionState
 from arc.memory.context import ContextComposer
 from arc.memory.session import SessionMemory
 from arc.security.engine import SecurityEngine
@@ -123,6 +124,10 @@ class AgentLoop:
         # State
         self._state = AgentState(agent_id="agent")
         self._iteration = 0
+        
+        # Compaction — background for main agent, sync for others
+        self._compaction = CompactionState()
+        self._is_main_agent = (agent_id == "main")
     
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """
@@ -156,12 +161,34 @@ class AgentLoop:
                 )
                 
                 # 1. COMPOSE context
+                
+                # Apply pending compaction (main agent, background mode)
+                if self._is_main_agent:
+                    self._compaction.apply_if_ready(self._memory)
+                
                 context = await self._composer.compose(
                     session=self._memory,
                     recent_window=self._config.recent_window,
                     query=user_input,
                     memory_manager=self._memory_manager,
                 )
+                
+                # Sync compaction for background agents (task/worker/scheduler)
+                if not self._is_main_agent:
+                    compacted = await self._compaction.maybe_compact_sync(
+                        session=self._memory,
+                        token_count=context.token_count,
+                        token_budget=self._composer.token_budget,
+                        llm=self._llm,
+                    )
+                    if compacted:
+                        # Re-compose after compaction
+                        context = await self._composer.compose(
+                            session=self._memory,
+                            recent_window=self._config.recent_window,
+                            query=user_input,
+                            memory_manager=self._memory_manager,
+                        )
                 
                 # Inject current plan into the system message so the LLM
                 # sees it on EVERY iteration (mechanism 2: plan always visible).
@@ -325,6 +352,16 @@ class AgentLoop:
 
                     # Fire-and-forget background memory tasks
                     self._fire_memory_tasks(user_input, collected_text)
+                    
+                    # Trigger background compaction if approaching limit
+                    # (main agent only — bg agents use sync in compose)
+                    if self._is_main_agent:
+                        self._compaction.check_and_start_background(
+                            session=self._memory,
+                            token_count=context.token_count,
+                            token_budget=self._composer.token_budget,
+                            llm=self._llm,
+                        )
 
                     await self._emit(
                         EventType.AGENT_COMPLETE,
