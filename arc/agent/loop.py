@@ -34,6 +34,7 @@ from arc.llm.base import LLMProvider
 from arc.memory.context import ContextComposer
 from arc.memory.session import SessionMemory
 from arc.security.engine import SecurityEngine
+from arc.skills.builtin.planning import PlanningSkill
 from arc.skills.manager import SkillManager
 from arc.skills.router import SkillRouter
 
@@ -103,6 +104,10 @@ class AgentLoop:
         self._agent_id = agent_id
         self._router = router
         
+        # Planning — each agent gets its own PlanningSkill instance
+        self._planning = PlanningSkill()
+        self._planning_initialized = False
+        
         # Memory
         self._memory = SessionMemory()
         self._memory.set_system_prompt(system_prompt)
@@ -130,6 +135,11 @@ class AgentLoop:
         self._state.status = AgentStatus.COMPOSING
         self._iteration = 0
 
+        # Initialize planning skill (once, lazy)
+        if not self._planning_initialized:
+            await self._planning.initialize(self._kernel, {})
+            self._planning_initialized = True
+
         # Reset the router so each user turn starts with a clean slate
         if self._router:
             self._router.reset()
@@ -153,6 +163,16 @@ class AgentLoop:
                     memory_manager=self._memory_manager,
                 )
                 
+                # Inject current plan into the system message so the LLM
+                # sees it on EVERY iteration (mechanism 2: plan always visible).
+                if self._planning.has_plan and context.messages:
+                    plan_text = self._planning.format_plan_for_context()
+                    first = context.messages[0]
+                    if first.role == "system" and first.content:
+                        context.messages[0] = Message.system(
+                            first.content + "\n\n" + plan_text
+                        )
+                
                 # 2. THINK — call LLM
                 self._state.status = AgentStatus.THINKING
                 
@@ -168,6 +188,14 @@ class AgentLoop:
                         ts for ts in all_specs
                         if self._skills.get_tool_skill(ts.name) not in excluded
                     ] if excluded else all_specs
+                
+                # Always include the planning tool
+                planning_specs = list(self._planning.manifest().tools)
+                # Avoid duplicates if somehow already present
+                existing_names = {ts.name for ts in tool_specs}
+                for ps in planning_specs:
+                    if ps.name not in existing_names:
+                        tool_specs.append(ps)
                 
                 collected_text = ""
                 collected_tool_calls: list[ToolCall] = []
@@ -275,6 +303,23 @@ class AgentLoop:
                         # Continue the loop — next iteration will re-compose and call LLM
                         continue
 
+                    # ── Plan enforcement (mechanism 4): nudge on incomplete plan ──
+                    if (
+                        self._planning.has_plan
+                        and self._planning.has_incomplete_steps
+                        and self._iteration < self._config.max_iterations
+                    ):
+                        logger.debug(
+                            "LLM declared done but plan has incomplete steps — nudging"
+                        )
+                        self._memory.add_assistant_message(collected_text)
+                        self._memory.add_user_message(
+                            "You still have unfinished steps in your plan. "
+                            "Please complete the remaining steps or update "
+                            "your plan to reflect what was actually done."
+                        )
+                        continue
+
                     self._memory.add_assistant_message(collected_text)
                     self._state.status = AgentStatus.COMPLETE
 
@@ -297,8 +342,15 @@ class AgentLoop:
                 )
                 
                 for tool_call in collected_tool_calls:
+                    # Intercept update_plan — handled by per-agent PlanningSkill
+                    if tool_call.name == "update_plan":
+                        result = await self._planning.execute_tool(
+                            "update_plan", tool_call.arguments
+                        )
+                        result.tool_call_id = tool_call.id
+                        self._memory.add_tool_result(result, tool_call.name)
                     # Intercept use_skill — handled by router, not by skills
-                    if self._router and self._router.is_use_skill_call(tool_call.name):
+                    elif self._router and self._router.is_use_skill_call(tool_call.name):
                         msg = self._router.activate(
                             tool_call.arguments.get("skill_name", "")
                         )

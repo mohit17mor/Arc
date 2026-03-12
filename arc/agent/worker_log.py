@@ -131,6 +131,22 @@ class WorkerActivityLog:
             icon = "✓" if success else "✗"
             self._write(ts, label, "COMPLETE", icon)
 
+        elif event.type == EventType.AGENT_PLAN_UPDATE:
+            plan = event.data.get("plan", [])
+            all_done = event.data.get("all_completed", False)
+            total = len(plan)
+            done = sum(1 for s in plan if s.get("status") == "completed")
+            current = next(
+                (s["step"] for s in plan if s.get("status") == "in_progress"),
+                None,
+            )
+            if all_done:
+                self._write(ts, label, "PLAN", f"✓ all {total} steps done")
+            elif current:
+                self._write(ts, label, "PLAN", f"[{done}/{total}] {_truncate(current, 40)}")
+            else:
+                self._write(ts, label, "PLAN", f"{total} step(s) created")
+
         elif event.type == EventType.AGENT_ERROR:
             error = event.data.get("error", "unknown error")
             self._write(ts, label, "ERROR", _truncate(str(error), 60))

@@ -73,6 +73,7 @@ class EventType:
     AGENT_TERMINATED = "agent:terminated"     # worker/expert finished or cancelled
     AGENT_TASK_COMPLETE = "agent:task_complete"  # worker finished, result ready
     AGENT_ESCALATION = "agent:escalation"     # worker/expert needs user input via main
+    AGENT_PLAN_UPDATE = "agent:plan_update"   # agent created/updated execution plan
 
     # Task board
     TASK_QUEUED = "task:queued"               # new task created

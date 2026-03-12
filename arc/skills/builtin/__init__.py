@@ -5,6 +5,7 @@ from arc.skills.builtin.terminal import TerminalSkill
 from arc.skills.builtin.browsing import BrowsingSkill
 from arc.skills.builtin.worker import WorkerSkill
 from arc.skills.builtin.browser_control import BrowserControlSkill
+from arc.skills.builtin.planning import PlanningSkill
 
 __all__ = [
     "FilesystemSkill",
@@ -12,4 +13,5 @@ __all__ = [
     "BrowsingSkill",
     "WorkerSkill",
     "BrowserControlSkill",
+    "PlanningSkill",
 ]

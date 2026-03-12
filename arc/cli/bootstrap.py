@@ -209,10 +209,13 @@ async def bootstrap(
     soft_skill_text = discover_soft_skills(include_delegation=True)
     soft_skill_text_no_delegation = discover_soft_skills(include_delegation=False)
 
+    from arc.agent.prompts import get_reliability_block
+
     system_prompt = (
         identity["system_prompt"]
         + env_info
         + soft_skill_text
+        + get_reliability_block("main")
     )
 
     if mcp_manager.has_servers:
@@ -252,8 +255,7 @@ async def bootstrap(
         "Use tools as needed to fulfil the task fully and accurately. "
         "Return a concise, well-structured answer — do not ask follow-up questions."
         + env_info
-        + soft_skill_text_no_delegation
-    )
+        + soft_skill_text_no_delegation        + get_reliability_block("scheduler")    )
 
     def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
         return AgentLoop(
@@ -303,8 +305,7 @@ async def bootstrap(
             "Do not ask clarifying questions — make your best effort with the "
             "information provided. Return a clear, structured result."
             + env_info
-            + soft_skill_text_no_delegation
-        )
+            + soft_skill_text_no_delegation            + get_reliability_block("worker")        )
         worker_skill.set_dependencies(
             llm=llm,
             worker_llm=worker_llm,
@@ -366,6 +367,7 @@ async def bootstrap(
     kernel.on(EventType.SKILL_TOOL_RESULT, worker_log.handle)
     kernel.on(EventType.AGENT_TASK_COMPLETE, worker_log.handle)
     kernel.on(EventType.AGENT_ERROR, worker_log.handle)
+    kernel.on(EventType.AGENT_PLAN_UPDATE, worker_log.handle)
 
     return ArcRuntime(
         config=config,

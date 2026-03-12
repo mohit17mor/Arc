@@ -336,11 +336,9 @@ class TaskProcessor:
         if self._env_info:
             system_prompt += self._env_info
 
-        logger.info(
-            "Task agent '%s' system prompt:\n%s",
-            agent_def.name,
-            system_prompt,
-        )
+        from arc.agent.prompts import get_reliability_block
+        system_prompt += get_reliability_block("task")
+
         if is_reviewer:
             system_prompt += (
                 "\n\nYou are reviewing another agent's work. "
