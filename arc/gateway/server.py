@@ -207,6 +207,7 @@ class GatewayServer(Platform):
         app.router.add_get("/api/tasks", self._api_list_tasks)
         app.router.add_post("/api/tasks", self._api_create_task)
         app.router.add_get("/api/tasks/{task_id}", self._api_get_task)
+        app.router.add_post("/api/tasks/clear", self._api_clear_tasks)
         app.router.add_post("/api/tasks/{task_id}/cancel", self._api_cancel_task)
         app.router.add_post("/api/tasks/{task_id}/reply", self._api_reply_task)
         app.router.add_get("/api/agents", self._api_list_agents)
@@ -959,6 +960,26 @@ class GatewayServer(Platform):
         )
         await self._task_store.save(task)
         return web.json_response(task.to_dict(), status=201)
+
+    async def _api_clear_tasks(self, request: web.Request) -> web.Response:
+        if not self._task_store:
+            return web.json_response({"error": "Task board not available"}, status=503)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        task_ids = body.get("task_ids")
+        if not isinstance(task_ids, list) or not task_ids:
+            return web.json_response({"error": "task_ids must be a non-empty list"}, status=400)
+
+        deleted = await self._task_store.clear_tasks(task_ids, only_terminal=True)
+        if deleted == 0:
+            return web.json_response(
+                {"error": "No matching completed, failed, or cancelled tasks found"},
+                status=404,
+            )
+        return web.json_response({"status": "cleared", "deleted": deleted})
 
     async def _api_cancel_task(self, request: web.Request) -> web.Response:
         if not self._task_store:

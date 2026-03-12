@@ -79,8 +79,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .co-h .ct2{background:var(--s2);padding:1px 7px;border-radius:10px;font-size:10px}
 .co-c{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
 .co-c::-webkit-scrollbar{width:4px}.co-c::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
-.tc{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);padding:10px;cursor:pointer;transition:all .15s}
+.tc{background:var(--surface);border:1px solid var(--border);border-radius:var(--rs);padding:10px;cursor:pointer;transition:all .15s;position:relative}
 .tc:hover{border-color:var(--accent);transform:translateY(-1px)}
+.tc.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.tsel{position:absolute;top:8px;right:8px;accent-color:var(--accent)}
 .tc .ti{font-size:13px;font-weight:600;margin-bottom:5px;line-height:1.3}
 .tc .me{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
 .tc .at{background:var(--abg);color:var(--accent);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
@@ -272,13 +274,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   <div class="ctl">
     <button class="btn btn-p" @click="sCT=true">+ New Task</button>
     <button class="btn" @click="lT()">↻ Refresh</button>
+    <button class="btn" @click="tSM()" x-text="tSelMode?'Done Selecting':'Select Completed'"></button>
+    <button class="btn btn-r" @click="cTs()" :disabled="tSel.length===0" x-show="tSelMode">Clear Selected</button>
+    <span style="font-size:12px;color:var(--dim)" x-show="tSelMode" x-text="tSel.length+' selected'"></span>
     <span style="font-size:12px;color:var(--dim);margin-left:auto" x-text="tk.length+' task(s)'"></span>
   </div>
   <div class="bd" style="margin-top:12px">
     <template x-for="col in tC" :key="col.key">
       <div class="co"><div class="co-h"><span x-text="col.label"></span><span class="ct2" x-text="tF(col.key).length"></span></div>
         <div class="co-c"><template x-for="t in tF(col.key)" :key="t.id">
-          <div class="tc" :class="{'need':t.status==='awaiting_human'||t.status==='blocked'}" @click="oT(t.id)">
+          <div class="tc" :class="{'need':t.status==='awaiting_human'||t.status==='blocked','sel':tSel.includes(t.id)}" @click="tSelMode ? tgTs(t) : oT(t.id)">
+            <input class="tsel" type="checkbox" x-show="tSelMode && tClr(t)" :checked="tSel.includes(t.id)" @click.stop="tgTs(t)">
             <div class="ti" x-text="t.title"></div>
             <div class="me"><span class="at" x-text="cA(t)"></span>
               <span x-show="t.bounce_count>0" class="bo" x-text="'↩'+t.bounce_count"></span>
@@ -485,7 +491,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 function app(){return{
   pg:'home',wsc:false,ws:null,toasts:[],
   hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],
-  sT:null,rT:'',sCT:false,sCA:false,fE:'',
+  sT:null,rT:'',sCT:false,sCA:false,fE:'',tSelMode:false,tSel:[],
   logFilter:'',logTypeFilter:'',logLive:true,
   nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'},
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''},
@@ -583,7 +589,7 @@ function app(){return{
   // Data
   async lH(){[this.hm,this.ag]=await Promise.all([fetch('/api/overview').then(r=>r.json()).catch(()=>({})),fetch('/api/agents').then(r=>r.json()).catch(()=>[])])},
   async lA(){this.ag=await fetch('/api/agents').then(r=>r.json()).catch(()=>[])},
-  async lT(){this.tk=await fetch('/api/tasks?limit=100').then(r=>r.json()).catch(()=>[])},
+  async lT(){this.tk=await fetch('/api/tasks?limit=100').then(r=>r.json()).catch(()=>[]);this.tSel=this.tSel.filter(id=>this.tk.some(t=>t.id===id&&this.tClr(t)))},
   async lJ(){this.jb=await fetch('/api/scheduler').then(r=>r.json()).catch(()=>[])},
   async lS(){this.sk=await fetch('/api/skills').then(r=>r.json()).catch(()=>[])},
   async lM(){this.mp=await fetch('/api/mcp').then(r=>r.json()).catch(()=>[])},
@@ -616,6 +622,9 @@ function app(){return{
     const s=JSON.stringify(d);return s.length>2?s.slice(0,100):''},
 
   // Tasks
+  tClr(t){return ['done','failed','cancelled'].includes(t.status)},
+  tSM(){this.tSelMode=!this.tSelMode;if(!this.tSelMode)this.tSel=[]},
+  tgTs(t){if(!this.tClr(t))return;this.tSel=this.tSel.includes(t.id)?this.tSel.filter(id=>id!==t.id):[...this.tSel,t.id]},
   tF(c){if(c==='needs_action')return this.tk.filter(t=>t.status==='awaiting_human'||t.status==='blocked'||t.status==='revision_needed');
     if(c==='done')return this.tk.filter(t=>t.status==='done'||t.status==='failed'||t.status==='cancelled');return this.tk.filter(t=>t.status===c)},
   cA(t){if(t.steps?.length&&t.current_step<t.steps.length)return t.steps[t.current_step].agent_name;return t.assigned_agent||'?'},
@@ -628,6 +637,10 @@ function app(){return{
   async tRp(a){if(!this.rT.trim())return;await fetch('/api/tasks/'+this.sT.id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reply:this.rT,action:a})});
     this.rT='';this.oT(this.sT.id);this.lT();this.toast('Reply sent')},
   async xT(){await fetch('/api/tasks/'+this.sT.id+'/cancel',{method:'POST'});this.sT=null;this.lT();this.toast('Task cancelled')},
+  async cTs(){if(this.tSel.length===0)return;if(!confirm('Permanently clear '+this.tSel.length+' completed task(s)? This cannot be undone.'))return;
+    const r=await fetch('/api/tasks/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_ids:this.tSel})});
+    if(r.ok){const d=await r.json().catch(()=>({deleted:this.tSel.length}));this.tSel=[];this.tSelMode=false;if(this.sT&&!this.tk.some(t=>t.id===this.sT.id&&this.tClr(t)===false))this.sT=null;this.lT();this.lH();this.toast('Cleared '+(d.deleted||0)+' task(s)')}
+    else{const e=await r.json().catch(()=>({}));this.toast(e.error||'Failed to clear tasks')}},
 
   // Agents
   async crA(){this.fE='';const b={name:this.na.name.trim().toLowerCase().replace(/\s+/g,'_'),role:this.na.role,personality:this.na.personality,

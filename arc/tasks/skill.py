@@ -9,6 +9,7 @@ Tools:
     list_tasks      — show task statuses
     task_detail     — show full detail + comments for a task
     cancel_task     — cancel a queued/running task
+    clear_tasks     — permanently delete completed/cancelled tasks
     reply_to_task   — answer a blocked task's question or approve/revise
     list_agents     — show available named agents
 """
@@ -195,6 +196,25 @@ class TaskSkill(Skill):
                     required_capabilities=frozenset(),
                 ),
                 ToolSpec(
+                    name="clear_tasks",
+                    description=(
+                        "Permanently delete completed, failed, or cancelled tasks from the queue. "
+                        "Use this to clean up finished tasks and reclaim storage."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "task_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "One or more task IDs to permanently delete.",
+                            },
+                        },
+                        "required": ["task_ids"],
+                    },
+                    required_capabilities=frozenset(),
+                ),
+                ToolSpec(
                     name="reply_to_task",
                     description=(
                         "Reply to a task that is blocked or awaiting human review. "
@@ -253,6 +273,8 @@ class TaskSkill(Skill):
             return await self._task_detail(arguments.get("task_id", ""))
         if tool_name == "cancel_task":
             return await self._cancel_task(arguments.get("task_id", ""))
+        if tool_name == "clear_tasks":
+            return await self._clear_tasks(arguments.get("task_ids", []))
         if tool_name == "reply_to_task":
             return await self._reply_to_task(
                 arguments.get("task_id", ""),
@@ -430,6 +452,25 @@ class TaskSkill(Skill):
         return ToolResult(
             success=False, output="",
             error=f"Task {task_id} not found or already completed.",
+        )
+
+    async def _clear_tasks(self, task_ids: list[str]) -> ToolResult:
+        if not self._store:
+            return ToolResult(success=False, output="", error="Task store not initialised")
+        if not task_ids:
+            return ToolResult(success=False, output="", error="At least one task_id is required.")
+
+        deleted = await self._store.clear_tasks(task_ids, only_terminal=True)
+        if deleted == 0:
+            return ToolResult(
+                success=False,
+                output="",
+                error="No matching completed, failed, or cancelled tasks could be cleared.",
+            )
+
+        return ToolResult(
+            success=True,
+            output=f"Cleared {deleted} task(s) from the queue.",
         )
 
     async def _reply_to_task(

@@ -10,6 +10,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from arc.gateway.server import GatewayServer
+from arc.tasks.store import TaskStore
+from arc.tasks.types import Task, TaskStatus
 
 
 # ━━━ Unit tests (no HTTP) ━━━
@@ -45,7 +47,7 @@ def test_fallback_html():
 
 
 @pytest.fixture
-async def gateway_app():
+async def gateway_app(tmp_path):
     """Create a Gateway wired to a mock handler and return (app, gateway)."""
 
     async def mock_handler(user_input: str):
@@ -55,29 +57,34 @@ async def gateway_app():
 
     gw = GatewayServer(host="127.0.0.1", port=0)
     gw._handler = mock_handler
+    store = TaskStore(db_path=tmp_path / "gateway_tasks.db")
+    await store.initialize()
+    gw.set_task_store(store)
 
     app = web.Application()
     app.router.add_get("/", gw._handle_index)
     app.router.add_get("/ws", gw._handle_ws)
     app.router.add_get("/health", gw._handle_health)
     app.router.add_get("/status", gw._handle_status)
+    app.router.add_post("/api/tasks/clear", gw._api_clear_tasks)
     gw._running = True
     gw._start_time = time.time()
 
-    return app, gw
+    return app, gw, store
 
 
 @pytest.fixture
 async def client(gateway_app):
     """Create an aiohttp test client."""
-    app, gw = gateway_app
+    app, gw, store = gateway_app
     async with TestClient(TestServer(app)) as c:
-        yield c, gw
+        yield c, gw, store
+    await store.close()
 
 
 async def test_health_endpoint(client):
     """GET /health returns 200 with status ok."""
-    c, gw = client
+    c, gw, store = client
     resp = await c.get("/health")
     assert resp.status == 200
     data = await resp.json()
@@ -87,7 +94,7 @@ async def test_health_endpoint(client):
 
 async def test_status_endpoint(client):
     """GET /status returns running status."""
-    c, gw = client
+    c, gw, store = client
     resp = await c.get("/status")
     assert resp.status == 200
     data = await resp.json()
@@ -98,7 +105,7 @@ async def test_status_endpoint(client):
 
 async def test_webchat_page(client):
     """GET / serves the WebChat HTML."""
-    c, gw = client
+    c, gw, store = client
     resp = await c.get("/")
     assert resp.status == 200
     text = await resp.text()
@@ -108,7 +115,7 @@ async def test_webchat_page(client):
 
 async def test_websocket_connect(client):
     """WebSocket connects and receives welcome message."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         msg = await ws.receive_json()
         assert msg["type"] == "connected"
@@ -121,7 +128,7 @@ async def test_websocket_connect(client):
 
 async def test_websocket_chat(client):
     """Send a message and receive streamed chunks + done."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         # Consume welcome
         await ws.receive_json()
@@ -150,7 +157,7 @@ async def test_websocket_chat(client):
 
 async def test_websocket_ping_pong(client):
     """Ping message gets a pong response."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "ping"})
@@ -160,7 +167,7 @@ async def test_websocket_ping_pong(client):
 
 async def test_websocket_plain_text(client):
     """Plain text (non-JSON) is treated as a chat message."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_str("hello plain text")
@@ -178,7 +185,7 @@ async def test_websocket_plain_text(client):
 
 async def test_slash_help(client):
     """/help returns command list."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/help"})
@@ -192,7 +199,7 @@ async def test_slash_help(client):
 
 async def test_slash_status(client):
     """/status returns gateway info."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/status"})
@@ -226,7 +233,7 @@ def test_attach_channel():
 
 async def test_status_shows_channels(client):
     """/status shows attached channel names."""
-    c, gw = client
+    c, gw, store = client
 
     # Attach a mock channel
     from unittest.mock import AsyncMock, PropertyMock
@@ -243,7 +250,7 @@ async def test_status_shows_channels(client):
 
 async def test_slash_unknown(client):
     """/unknown returns error message."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/foobar"})
@@ -254,7 +261,7 @@ async def test_slash_unknown(client):
 
 async def test_slash_cost_no_tracker(client):
     """/cost without tracker shows unavailable."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/cost"})
@@ -265,7 +272,7 @@ async def test_slash_cost_no_tracker(client):
 
 async def test_slash_cost_with_tracker(client):
     """/cost with tracker shows token counts."""
-    c, gw = client
+    c, gw, store = client
     gw.set_cost_tracker({"requests": 5, "input_tokens": 1000, "output_tokens": 200,
                           "total_tokens": 1200, "cost_usd": 0.01,
                           "worker_total_tokens": 0, "grand_total_tokens": 1200})
@@ -280,7 +287,7 @@ async def test_slash_cost_with_tracker(client):
 
 async def test_slash_skills_no_manager(client):
     """/skills without manager shows unavailable."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/skills"})
@@ -291,7 +298,7 @@ async def test_slash_skills_no_manager(client):
 
 async def test_slash_commands_dont_count_as_messages(client):
     """Slash commands should not increment the message counter."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/help"})
@@ -303,7 +310,7 @@ async def test_slash_commands_dont_count_as_messages(client):
 
 async def test_broadcast_event(client):
     """broadcast_event sends to all connected clients."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws1:
         await ws1.receive_json()  # welcome
         async with c.ws_connect("/ws") as ws2:
@@ -320,7 +327,7 @@ async def test_broadcast_event(client):
 
 async def test_empty_message_ignored(client):
     """Empty content messages are silently ignored."""
-    c, gw = client
+    c, gw, store = client
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": ""})
@@ -328,3 +335,19 @@ async def test_empty_message_ignored(client):
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(ws.receive_json(), timeout=0.3)
         assert gw._total_messages == 0
+
+
+async def test_api_clear_tasks_deletes_terminal_tasks(client):
+    c, gw, store = client
+    done_task = Task(title="Done", instruction="i", status=TaskStatus.DONE)
+    queued_task = Task(title="Queued", instruction="i", status=TaskStatus.QUEUED)
+    await store.save(done_task)
+    await store.save(queued_task)
+
+    resp = await c.post("/api/tasks/clear", json={"task_ids": [done_task.id, queued_task.id]})
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "cleared"
+    assert data["deleted"] == 1
+    assert await store.get_by_id(done_task.id) is None
+    assert await store.get_by_id(queued_task.id) is not None

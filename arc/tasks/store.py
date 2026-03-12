@@ -324,6 +324,50 @@ class TaskStore:
         db.commit()
         return cur.rowcount > 0
 
+    async def clear_tasks(self, task_ids: list[str], *, only_terminal: bool = True) -> int:
+        """Permanently delete tasks and their comments.
+
+        By default, only terminal tasks (done/failed/cancelled) are eligible
+        for deletion so active queue items cannot be removed accidentally.
+        Returns the number of tasks deleted.
+        """
+        unique_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
+        if not unique_ids:
+            return 0
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._clear_tasks_sync,
+            unique_ids,
+            only_terminal,
+        )
+
+    def _clear_tasks_sync(self, task_ids: list[str], only_terminal: bool) -> int:
+        db = self._get_db()
+        placeholders = ", ".join("?" for _ in task_ids)
+        status_clause = " AND status IN ('done', 'failed', 'cancelled')" if only_terminal else ""
+
+        rows = db.execute(
+            f"SELECT id FROM tasks WHERE id IN ({placeholders}){status_clause}",
+            task_ids,
+        ).fetchall()
+        deletable_ids = [row["id"] for row in rows]
+        if not deletable_ids:
+            return 0
+
+        delete_placeholders = ", ".join("?" for _ in deletable_ids)
+        with db:
+            db.execute(
+                f"DELETE FROM task_comments WHERE task_id IN ({delete_placeholders})",
+                deletable_ids,
+            )
+            db.execute(
+                f"DELETE FROM tasks WHERE id IN ({delete_placeholders})",
+                deletable_ids,
+            )
+        return len(deletable_ids)
+
     async def close(self) -> None:
         if self._db:
             loop = asyncio.get_running_loop()

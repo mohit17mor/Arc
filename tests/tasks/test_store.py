@@ -239,6 +239,29 @@ class TestTaskStore:
         assert ok is False
         await tmp_store.close()
 
+    # ── Clear ────────────────────────────────────────────────────────────────
+
+    async def test_clear_tasks_deletes_terminal_tasks_and_comments(self, tmp_store):
+        await tmp_store.initialize()
+        done_task = Task(title="Done", instruction="i", status=TaskStatus.DONE)
+        active_task = Task(title="Queued", instruction="i", status=TaskStatus.QUEUED)
+        await tmp_store.save(done_task)
+        await tmp_store.save(active_task)
+        await tmp_store.add_comment(done_task.id, "system", "Finished")
+
+        deleted = await tmp_store.clear_tasks([done_task.id, active_task.id])
+
+        assert deleted == 1
+        assert await tmp_store.get_by_id(done_task.id) is None
+        assert await tmp_store.get_by_id(active_task.id) is not None
+        assert await tmp_store.get_comments(done_task.id) == []
+        await tmp_store.close()
+
+    async def test_clear_tasks_empty_input_returns_zero(self, tmp_store):
+        await tmp_store.initialize()
+        assert await tmp_store.clear_tasks([]) == 0
+        await tmp_store.close()
+
     # ── Get all with filters ─────────────────────────────────────────────────
 
     async def test_get_all_with_status_filter(self, tmp_store):

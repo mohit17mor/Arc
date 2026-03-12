@@ -55,6 +55,7 @@ class TestManifest:
         assert "list_tasks" in tool_names
         assert "task_detail" in tool_names
         assert "cancel_task" in tool_names
+        assert "clear_tasks" in tool_names
         assert "reply_to_task" in tool_names
         assert "list_agents" in tool_names
 
@@ -254,6 +255,30 @@ class TestCancelTask:
     async def test_cancel_nonexistent(self, skill):
         result = await skill.execute_tool("cancel_task", {"task_id": "t-nope"})
         assert not result.success
+
+
+# ── clear_tasks ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestClearTasks:
+
+    async def test_clear_terminal_task(self, skill, tmp_store):
+        task = Task(title="Done", instruction="i", status=TaskStatus.DONE)
+        await tmp_store.save(task)
+
+        result = await skill.execute_tool("clear_tasks", {"task_ids": [task.id]})
+        assert result.success
+        assert "cleared 1 task" in result.output.lower()
+        assert await tmp_store.get_by_id(task.id) is None
+
+    async def test_clear_requires_terminal_task(self, skill, tmp_store):
+        task = Task(title="Queued", instruction="i", status=TaskStatus.QUEUED)
+        await tmp_store.save(task)
+
+        result = await skill.execute_tool("clear_tasks", {"task_ids": [task.id]})
+        assert not result.success
+        assert "completed" in result.error.lower()
 
 
 # ── reply_to_task ────────────────────────────────────────────────────────────
