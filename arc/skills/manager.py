@@ -49,6 +49,79 @@ def _write_bytes_buffered(filepath: Path, data: bytes) -> None:
         f.write(data)
 
 
+# ── JSON Schema type mapping for validation ──────────────────────────────
+
+_JSON_TYPE_MAP: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+}
+
+
+def _format_param_summary(schema: dict[str, Any]) -> str:
+    """Build a one-line summary of expected parameters from a JSON Schema."""
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    if not properties:
+        return "(no parameters)"
+    parts = []
+    for name, prop in properties.items():
+        ptype = prop.get("type", "any")
+        tag = "required" if name in required else "optional"
+        parts.append(f"{name} ({ptype}, {tag})")
+    return ", ".join(parts)
+
+
+def _validate_tool_arguments(
+    tool_name: str,
+    arguments: dict[str, Any],
+    schema: dict[str, Any],
+) -> str | None:
+    """
+    Validate *arguments* against a tool's JSON Schema.
+
+    Returns None if valid, or a human-readable error string that the LLM
+    can use to self-correct.  Designed to be terse but actionable.
+    """
+    if not schema or schema.get("type") != "object":
+        return None  # no schema to validate against
+
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    param_summary = _format_param_summary(schema)
+
+    # 1. Check required parameters are present
+    missing = [r for r in required if r not in arguments]
+    if missing:
+        return (
+            f"Tool '{tool_name}' was not executed — missing required "
+            f"parameter(s): {', '.join(missing)}. "
+            f"Expected parameters: {param_summary}"
+        )
+
+    # 2. Check types of provided parameters
+    for arg_name, arg_value in arguments.items():
+        if arg_name not in properties:
+            continue  # allow extra args — LLMs sometimes add unexpected keys
+        expected_type = properties[arg_name].get("type")
+        if not expected_type or arg_value is None:
+            continue
+        allowed_types = _JSON_TYPE_MAP.get(expected_type)
+        if allowed_types and not isinstance(arg_value, allowed_types):
+            actual = type(arg_value).__name__
+            return (
+                f"Tool '{tool_name}' was not executed — parameter "
+                f"'{arg_name}' has wrong type: got {actual}, "
+                f"expected {expected_type}. "
+                f"Expected parameters: {param_summary}"
+            )
+
+    return None
+
+
 class SkillManager:
     """
     Manages skill registration, lifecycle, and tool routing.
@@ -57,6 +130,7 @@ class SkillManager:
         manager = SkillManager(kernel)
         await manager.register(filesystem_skill)
         await manager.register(terminal_skill)
+
 
         # Get all available tools (for sending to LLM)
         tools = manager.get_all_tool_specs()
@@ -151,7 +225,8 @@ class SkillManager:
         Execute a tool by name.
 
         Finds the skill that owns the tool, activates it if needed,
-        then calls execute_tool on the skill.
+        validates arguments against the tool's JSON Schema, then
+        calls execute_tool on the skill.
         """
         skill_name = self._tool_to_skill.get(tool_name)
         if not skill_name:
@@ -161,6 +236,20 @@ class SkillManager:
                 output="",
                 error=f"Unknown tool: {tool_name}. Available: {list(self._tool_to_skill.keys())}",
             )
+
+        # ── Validate arguments against tool schema ───────────────────
+        tool_spec = self._tool_specs.get(tool_name)
+        if tool_spec:
+            validation_error = _validate_tool_arguments(
+                tool_name, arguments, tool_spec.parameters
+            )
+            if validation_error:
+                return ToolResult(
+                    tool_call_id="",
+                    success=False,
+                    output="",
+                    error=validation_error,
+                )
 
         try:
             skill = await self._ensure_activated(skill_name)

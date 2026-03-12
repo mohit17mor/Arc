@@ -119,3 +119,121 @@ async def test_multiple_skills(manager):
 
     r2 = await manager.execute_tool("upper", {"text": "hello"})
     assert r2.output == "HELLO"
+
+
+# ── Tool argument validation tests ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_missing_required_param(manager, sample_skill):
+    """Missing required parameter returns clear error without executing."""
+    await manager.register(sample_skill)
+
+    result = await manager.execute_tool("greet", {})
+    assert result.success is False
+    assert "missing required" in result.error.lower()
+    assert "name" in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_error_shows_expected_params(manager, sample_skill):
+    """Validation error message includes expected parameters summary."""
+    await manager.register(sample_skill)
+
+    result = await manager.execute_tool("greet", {})
+    assert result.success is False
+    assert "Expected parameters:" in result.error
+    assert "name" in result.error
+    assert "string" in result.error
+    assert "required" in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_wrong_type(manager):
+    """Wrong parameter type returns clear error without executing."""
+
+    @tool(name="add")
+    async def add(a: int, b: int) -> str:
+        return str(a + b)
+
+    math_skill = FunctionSkill("math", "Math operations", [add])
+    await manager.register(math_skill)
+
+    # Pass string instead of integer
+    result = await manager.execute_tool("add", {"a": "not_a_number", "b": 2})
+    assert result.success is False
+    assert "wrong type" in result.error.lower()
+    assert "a" in result.error
+    assert "integer" in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_passes_correct_args(manager, sample_skill):
+    """Valid arguments pass validation and tool executes normally."""
+    await manager.register(sample_skill)
+
+    result = await manager.execute_tool("greet", {"name": "Arc"})
+    assert result.success is True
+    assert "Hello, Arc" in result.output
+
+
+@pytest.mark.asyncio
+async def test_validation_allows_extra_args(manager, sample_skill):
+    """Extra args pass validation but may fail at tool level — that's expected.
+
+    Validation doesn't reject extra args because LLMs sometimes add them
+    and some tools accept **kwargs.  The tool itself decides.
+    """
+    await manager.register(sample_skill)
+
+    result = await manager.execute_tool(
+        "greet", {"name": "Arc", "extra_param": "ignored"}
+    )
+    # Validation passed (no "was not executed" in error), but tool may
+    # reject the extra kwarg at the Python level — that's fine.
+    if not result.success:
+        assert "was not executed" not in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_multiple_missing_params(manager):
+    """Multiple missing required params are all listed in the error."""
+
+    @tool(name="create_file")
+    async def create_file(path: str, content: str) -> str:
+        return "ok"
+
+    fs_skill = FunctionSkill("fs", "File operations", [create_file])
+    await manager.register(fs_skill)
+
+    result = await manager.execute_tool("create_file", {})
+    assert result.success is False
+    assert "path" in result.error
+    assert "content" in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_optional_params_not_required(manager):
+    """Optional parameters do not trigger missing-required errors."""
+
+    @tool(name="search")
+    async def search(query: str, max_results: int = 10) -> str:
+        return f"searched: {query}"
+
+    search_skill = FunctionSkill("searcher", "Search things", [search])
+    await manager.register(search_skill)
+
+    # Only provide required param, omit optional
+    result = await manager.execute_tool("search", {"query": "AI news"})
+    assert result.success is True
+    assert "searched: AI news" in result.output
+
+
+@pytest.mark.asyncio
+async def test_validation_tool_name_in_error(manager, sample_skill):
+    """Error message includes the tool name so the LLM knows which call failed."""
+    await manager.register(sample_skill)
+
+    result = await manager.execute_tool("greet", {})
+    assert result.success is False
+    assert "greet" in result.error
