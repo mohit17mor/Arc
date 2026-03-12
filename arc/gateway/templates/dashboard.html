@@ -140,6 +140,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .mg.agent{align-self:flex-start;background:var(--s2);border:1px solid var(--border);border-bottom-left-radius:4px}
 .mg.system{align-self:center;background:transparent;color:var(--dim);font-size:12px;padding:4px 8px}
 .mg.event{align-self:flex-start;background:transparent;color:var(--yellow);font-size:12px;padding:2px 8px;max-width:90%}
+.stl{align-self:flex-start;background:transparent;color:var(--yellow);font-size:12px;padding:2px 8px;max-width:90%;transition:opacity .15s}
+.pnl{position:fixed;top:54px;right:16px;width:270px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:0 4px 20px rgba(0,0,0,.4);z-index:20;overflow:hidden;transition:transform .2s,opacity .2s}
+.pnl.hid{transform:translateX(310px);opacity:0;pointer-events:none}
+.pnl-h{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);cursor:default;user-select:none}
+.pnl-h h3{margin:0;font-size:13px;color:var(--accent)}
+.pnl-h .pp{font-size:12px;color:var(--dim)}
+.pnl-h .pc{font-size:16px;color:var(--dim);cursor:pointer;padding:0 4px;line-height:1}
+.pnl-h .pc:hover{color:var(--text)}
+.pnl-s{padding:6px 0;max-height:280px;overflow-y:auto}
+.ps{display:flex;align-items:flex-start;gap:7px;padding:4px 12px;font-size:13px;color:var(--text)}
+.ps .si{flex-shrink:0;width:18px;text-align:center}
+.ps.completed{color:var(--dim)}.ps.completed .st{text-decoration:line-through}
+.ps.in_progress{color:var(--accent);font-weight:600}
 .sl{font-size:11px;color:var(--accent);margin-bottom:2px;opacity:.8}
 .thk{align-self:flex-start;color:var(--dim);font-size:13px;padding:6px 12px}
 .thk::after{content:'';animation:dot 1.2s steps(4,end) infinite}
@@ -153,6 +167,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .ir button{padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);
   font-size:14px;font-weight:600;cursor:pointer;transition:background .2s;white-space:nowrap}
 .ir button:hover{background:var(--ah)}.ir button:disabled{opacity:.5;cursor:not-allowed}
+.cm{display:none;position:absolute;bottom:100%;left:0;right:70px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);margin-bottom:6px;max-height:240px;overflow-y:auto;z-index:30;box-shadow:0 -4px 16px rgba(0,0,0,.4)}
+.cm.vis{display:block}
+.ci{padding:7px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:background .1s}
+.ci:hover,.ci.act{background:var(--bg)}
+.ci .cn{color:var(--accent);font-weight:600;font-size:13px}
+.ci .cd{color:var(--dim);font-size:12px;margin-left:12px}
 
 /* Agent cards */
 .agg{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
@@ -237,9 +258,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <div :class="{show:pg==='chat'}" class="pg">
   <div class="tp"><h1>Chat</h1></div>
   <div class="ms" id="messages"></div>
-  <div class="ia"><div class="ir">
-    <textarea id="msg-input" placeholder="Message Arc…" rows="1"
-      @keydown.enter.prevent="if(!$event.shiftKey)sendChat()"></textarea>
+  <div id="plan-panel" class="pnl hid"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
+  <div class="ia"><div class="ir" style="position:relative">
+    <div class="cm" id="cmd-menu"></div>
+    <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
     <button @click="sendChat()">Send</button>
   </div></div>
 </div>
@@ -471,7 +493,29 @@ function app(){return{
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
   cMsg:null,thEl:null,hHist:false,
 
-  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000)},
+  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
+    const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
+    // Slash command autocomplete
+    const CMDS=[{n:'/help',d:'Show available commands'},{n:'/skills',d:'List skills and tools'},{n:'/cost',d:'Token usage and cost'},{n:'/memory',d:'Core facts (long-term memory)'},{n:'/memory episodic',d:'Recent episodic memories'},{n:'/jobs',d:'List scheduled jobs'},{n:'/workflow',d:'List or run workflows'},{n:'/mcp',d:'MCP server status'},{n:'/clear',d:'Clear conversation'},{n:'/status',d:'Gateway status'}];
+    const cmEl=document.getElementById('cmd-menu');const miEl=document.getElementById('msg-input');
+    let cmIdx=-1;
+    function showCm(f){const mt=CMDS.filter(c=>c.n.startsWith(f));if(!mt.length||f===''){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1;return}
+      cmEl.innerHTML='';cmIdx=0;mt.forEach((c,i)=>{const d=document.createElement('div');d.className='ci'+(i===0?' act':'');
+        const sn=document.createElement('span');sn.className='cn';sn.textContent=c.n;
+        const sd=document.createElement('span');sd.className='cd';sd.textContent=c.d;
+        d.appendChild(sn);d.appendChild(sd);
+        d.addEventListener('mousedown',e=>{e.preventDefault();miEl.value=c.n;cmEl.classList.remove('vis');cmEl.innerHTML='';miEl.focus()});
+        cmEl.appendChild(d)});cmEl.classList.add('vis')}
+    if(miEl){miEl.addEventListener('input',()=>{miEl.style.height='auto';miEl.style.height=Math.min(miEl.scrollHeight,150)+'px';
+      const v=miEl.value;if(v.startsWith('/')&&(!v.includes(' ')||(v.split(' ').length<=2&&CMDS.some(c=>c.n.startsWith(v))))){showCm(v)}else{cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1}});
+      const self=this;
+      miEl.addEventListener('keydown',function(e){const items=cmEl.querySelectorAll('.ci');
+        if(cmEl.classList.contains('vis')&&items.length>0){if(e.key==='ArrowDown'){e.preventDefault();cmIdx=Math.min(cmIdx+1,items.length-1);items.forEach(function(el,i){el.classList.toggle('act',i===cmIdx)});return}
+          if(e.key==='ArrowUp'){e.preventDefault();cmIdx=Math.max(cmIdx-1,0);items.forEach(function(el,i){el.classList.toggle('act',i===cmIdx)});return}
+          if((e.key==='Tab'||e.key==='Enter')&&cmIdx>=0){e.preventDefault();var nm=items[cmIdx].querySelector('.cn').textContent;miEl.value=nm;cmEl.classList.remove('vis');cmEl.innerHTML='';if(e.key==='Enter')self.sendChat();return}
+          if(e.key==='Escape'){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1;return}}
+        if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();cmEl.classList.remove('vis');cmEl.innerHTML='';self.sendChat()}});
+      miEl.addEventListener('blur',function(){setTimeout(function(){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1},150)})}},
   go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents')this.lA();
     if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM()}
     if(p==='logs')this.lLg();
@@ -491,9 +535,9 @@ function app(){return{
         if(x.source&&x.source!=='webchat'){this._as(m,x.source,x.user_input,x.response)}
         else{this._am(m,'user',x.user_input);this._am(m,'agent',x.response)}});m.scrollTop=m.scrollHeight}break;
       case'thinking':if(m)this._st(m);break;
-      case'chunk':this._ht();if(m)this._ac(m,d.content);break;
-      case'done':this._ht();this.cMsg=null;break;
-      case'error':this._ht();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
+      case'chunk':this._ht();this._xsl();if(m)this._ac(m,d.content);break;
+      case'done':this._ht();this._xsl();this.cMsg=null;break;
+      case'error':this._ht();this._xsl();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
       case'command_result':if(m)this._am(m,'agent',d.content||'');break;
       case'event':if(m)this._he(m,d.event,d.data);
         if(this.logLive&&this.pg==='logs'){this.lg.push({timestamp:Date.now()/1000,type:d.event,source:d.data?.source||'system',data:d.data||{}});
@@ -509,10 +553,29 @@ function app(){return{
   _st(m){if(this.thEl)return;this.thEl=document.createElement('div');this.thEl.className='thk';this.thEl.textContent='Thinking';m.appendChild(this.thEl)},
   _ht(){if(this.thEl){this.thEl.remove();this.thEl=null}},
   _ac(m,t){if(!this.cMsg){this.cMsg=document.createElement('div');this.cMsg.className='mg agent';m.appendChild(this.cMsg)}this.cMsg.textContent+=t},
-  _he(m,et,ed){if(et==='skill:tool_call'){const p=Object.entries(ed.arguments||{}).slice(0,2).map(([k,v])=>k+'="'+(String(v).length>25?String(v).slice(0,25)+'…':v)+'"');this._am(m,'event','⟳ '+(ed.tool||'?')+'('+p.join(', ')+')')}
-    else if(et==='skill:tool_result')this._am(m,'event','  '+(ed.success?'✓':'✗')+' '+(ed.output_preview||'').replace(/\n/g,' ').slice(0,60));
-    else if(et==='agent:spawned')this._am(m,'event','⟳ Worker "'+(ed.task_name||'')+'" started');
-    else if(et==='agent:task_complete')this._am(m,'event',(ed.success?'✓':'✗')+' Worker "'+(ed.task_name||'')+'" done')},
+  _he(m,et,ed){const sl=this._gsl(m);
+    if(et==='skill:tool_call'){const p=Object.entries(ed.arguments||{}).slice(0,2).map(([k,v])=>k+'="'+(String(v).length>25?String(v).slice(0,25)+'…':v)+'"');sl.textContent='⟳ '+(ed.tool||'?')+'('+p.join(', ')+')'}
+    else if(et==='skill:tool_result'){sl.textContent=(ed.success?'✓':'✗')+' '+(ed.output_preview||'').replace(/\n/g,' ').slice(0,60);this._csl(1500)}
+    else if(et==='agent:spawned'){sl.textContent='⟳ Worker "'+(ed.task_name||'')+'" started';this._csl(3000)}
+    else if(et==='agent:task_complete'){sl.textContent=(ed.success?'✓':'✗')+' Worker "'+(ed.task_name||'')+'" done';this._csl(3000)}
+    else if(et==='agent:plan_update'){const plan=ed.plan||[];const done=plan.filter(s=>s.status==='completed').length;const cur=plan.find(s=>s.status==='in_progress');
+      if(cur)sl.textContent='📋 ['+done+'/'+plan.length+'] '+cur.step;
+      else if(done===plan.length&&plan.length>0){sl.textContent='📋 ✓ All '+plan.length+' steps done';this._csl(2000)}
+      else sl.textContent='📋 Plan: '+plan.length+' steps';
+      this._rpp(plan)}},
+  _gsl(m){if(!this._slEl){this._slEl=document.createElement('div');this._slEl.className='stl';m.appendChild(this._slEl)}
+    if(this._slEl.parentNode)m.appendChild(this._slEl);if(this._slT)clearTimeout(this._slT);return this._slEl},
+  _csl(ms){if(this._slT)clearTimeout(this._slT);this._slT=setTimeout(()=>{if(this._slEl){this._slEl.remove();this._slEl=null}},ms)},
+  _xsl(){if(this._slEl){this._slEl.remove();this._slEl=null}if(this._slT){clearTimeout(this._slT);this._slT=null}},
+  _rpp(plan){const pp=document.getElementById('plan-panel');const ps=document.getElementById('plan-steps');const pr=document.getElementById('plan-progress');
+    if(!pp||!ps||!plan||!plan.length){if(pp)pp.classList.add('hid');return}
+    const done=plan.filter(s=>s.status==='completed').length;pr.textContent=done+'/'+plan.length;
+    ps.innerHTML='';plan.forEach(s=>{const el=document.createElement('div');el.className='ps '+s.status;
+      const ic=document.createElement('span');ic.className='si';
+      if(s.status==='completed')ic.textContent='✅';else if(s.status==='in_progress')ic.textContent='🔄';else ic.textContent='⬜';
+      const tx=document.createElement('span');tx.className='st';tx.textContent=s.step;
+      el.appendChild(ic);el.appendChild(tx);ps.appendChild(el)});pp.classList.remove('hid');
+    if(done===plan.length)setTimeout(()=>pp.classList.add('hid'),5000)},
 
   sendChat(){const e=document.getElementById('msg-input');if(!e)return;const t=e.value.trim();if(!t||!this.ws||this.ws.readyState!==1)return;
     const m=document.getElementById('messages');this._am(m,'user',t);this.ws.send(JSON.stringify({type:'message',content:t}));e.value='';m.scrollTop=m.scrollHeight},

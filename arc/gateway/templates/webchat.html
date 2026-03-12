@@ -119,6 +119,86 @@
     padding: 2px 8px;
     max-width: 90%;
   }
+  .status-line {
+    align-self: flex-start;
+    background: transparent;
+    color: var(--yellow);
+    font-size: 12px;
+    padding: 2px 8px;
+    max-width: 90%;
+    transition: opacity 0.15s;
+  }
+
+  /* ━━━ Plan panel ━━━ */
+  .plan-panel {
+    position: fixed;
+    top: 50px;
+    right: 16px;
+    width: 280px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    z-index: 20;
+    overflow: hidden;
+    transition: transform 0.2s, opacity 0.2s;
+  }
+  .plan-panel.hidden {
+    transform: translateX(320px);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .plan-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+  }
+  .plan-header h3 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--accent);
+  }
+  .plan-header .plan-progress {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .plan-header .plan-close {
+    font-size: 16px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .plan-header .plan-close:hover { color: var(--text); }
+  .plan-steps {
+    padding: 8px 0;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .plan-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 14px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .plan-step .step-icon {
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+  }
+  .plan-step.completed { color: var(--text-dim); }
+  .plan-step.completed .step-text { text-decoration: line-through; }
+  .plan-step.in_progress { color: var(--accent); font-weight: 600; }
+  @media (max-width: 600px) {
+    .plan-panel { right: 8px; left: 8px; width: auto; top: 45px; }
+  }
   .sync-label {
     font-size: 11px;
     color: var(--accent);
@@ -250,6 +330,16 @@
 
 <div class="messages" id="messages"></div>
 
+<!-- Plan panel (hidden by default, shown when agent creates a plan) -->
+<div class="plan-panel hidden" id="plan-panel">
+  <div class="plan-header" id="plan-header">
+    <h3>📋 Plan</h3>
+    <span class="plan-progress" id="plan-progress"></span>
+    <span class="plan-close" id="plan-close">×</span>
+  </div>
+  <div class="plan-steps" id="plan-steps"></div>
+</div>
+
 <div class="input-area">
   <div class="input-row">
     <div class="cmd-menu" id="cmd-menu"></div>
@@ -266,6 +356,12 @@
   const statusDot  = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
   const cmdMenu    = document.getElementById('cmd-menu');
+
+  // Plan panel elements
+  const planPanel    = document.getElementById('plan-panel');
+  const planProgress = document.getElementById('plan-progress');
+  const planSteps    = document.getElementById('plan-steps');
+  const planClose    = document.getElementById('plan-close');
 
   let ws = null;
   let currentAgentMsg = null;   // The <div> being streamed into
@@ -389,16 +485,19 @@
 
       case 'chunk':
         hideThinking();
+        clearStatus();
         appendChunk(data.content);
         break;
 
       case 'done':
         hideThinking();
+        clearStatus();
         finalizeAgent();
         break;
 
       case 'error':
         hideThinking();
+        clearStatus();
         finalizeAgent();
         addSystem('⚠ ' + (data.message || 'Unknown error'));
         break;
@@ -460,18 +559,35 @@
           const s = String(v);
           return k + '="' + (s.length > 25 ? s.slice(0, 25) + '…' : s) + '"';
         });
-      addEvent('⟳ ' + tool + '(' + parts.join(', ') + ')');
+      showStatus('⟳ ' + tool + '(' + parts.join(', ') + ')');
     } else if (eventType === 'skill:tool_result') {
       const icon = eventData.success ? '✓' : '✗';
       const preview = (eventData.output_preview || '').replace(/\n/g, ' ').slice(0, 60);
-      addEvent('  ' + icon + ' ' + preview);
+      showStatus(icon + ' ' + preview);
+      clearStatusAfterDelay(1500);
     } else if (eventType === 'agent:spawned') {
       const name = eventData.task_name || eventData.task_id || 'worker';
-      addEvent('⟳ Worker "' + name + '" started');
+      showStatus('⟳ Worker "' + name + '" started');
+      clearStatusAfterDelay(3000);
     } else if (eventType === 'agent:task_complete') {
       const name = eventData.task_name || eventData.task_id || 'worker';
       const icon = eventData.success ? '✓' : '✗';
-      addEvent(icon + ' Worker "' + name + '" done');
+      showStatus(icon + ' Worker "' + name + '" done');
+      clearStatusAfterDelay(3000);
+    } else if (eventType === 'agent:plan_update') {
+      const plan = eventData.plan || [];
+      const done = plan.filter(function(s) { return s.status === 'completed'; }).length;
+      const current = plan.find(function(s) { return s.status === 'in_progress'; });
+      if (current) {
+        showStatus('📋 [' + done + '/' + plan.length + '] ' + current.step);
+      } else if (done === plan.length && plan.length > 0) {
+        showStatus('📋 ✓ All ' + plan.length + ' steps done');
+        clearStatusAfterDelay(2000);
+      } else {
+        showStatus('📋 Plan: ' + plan.length + ' steps');
+      }
+      // Update the plan panel
+      renderPlanPanel(plan);
     }
   }
 
@@ -515,6 +631,92 @@
   }
   function addSystem(text) { addMsg('system', text); }
   function addEvent(text) { addMsg('event', text); }
+
+  // ━━━ Single-line status indicator (replaces in place) ━━━
+  let statusLineEl = null;
+  let statusLineClearTimer = null;
+
+  function showStatus(text) {
+    if (statusLineClearTimer) {
+      clearTimeout(statusLineClearTimer);
+      statusLineClearTimer = null;
+    }
+    if (!statusLineEl) {
+      statusLineEl = document.createElement('div');
+      statusLineEl.className = 'status-line';
+      messagesEl.appendChild(statusLineEl);
+    }
+    statusLineEl.textContent = text;
+    // Keep it at the bottom
+    if (statusLineEl.parentNode) {
+      messagesEl.appendChild(statusLineEl);
+    }
+    scrollDown();
+  }
+
+  function clearStatus() {
+    if (statusLineEl) {
+      statusLineEl.remove();
+      statusLineEl = null;
+    }
+    if (statusLineClearTimer) {
+      clearTimeout(statusLineClearTimer);
+      statusLineClearTimer = null;
+    }
+  }
+
+  function clearStatusAfterDelay(ms) {
+    if (statusLineClearTimer) clearTimeout(statusLineClearTimer);
+    statusLineClearTimer = setTimeout(clearStatus, ms || 2000);
+  }
+
+  // ━━━ Plan panel ━━━
+  let planDismissed = false;  // user manually closed — don't re-show until new plan
+
+  function renderPlanPanel(plan) {
+    if (!plan || plan.length === 0) {
+      planPanel.classList.add('hidden');
+      return;
+    }
+
+    // If user dismissed, only re-show if this is a brand new plan
+    // (detected by checking if step texts changed)
+    if (planDismissed) {
+      planDismissed = false;  // new plan update → allow showing again
+    }
+
+    const done = plan.filter(function(s) { return s.status === 'completed'; }).length;
+    planProgress.textContent = done + '/' + plan.length;
+
+    planSteps.innerHTML = '';
+    plan.forEach(function(s) {
+      var el = document.createElement('div');
+      el.className = 'plan-step ' + s.status;
+
+      var icon = document.createElement('span');
+      icon.className = 'step-icon';
+      if (s.status === 'completed') icon.textContent = '✅';
+      else if (s.status === 'in_progress') icon.textContent = '🔄';
+      else icon.textContent = '⬚';
+
+      var text = document.createElement('span');
+      text.className = 'step-text';
+      text.textContent = s.step;
+
+      el.appendChild(icon);
+      el.appendChild(text);
+      planSteps.appendChild(el);
+    });
+
+    planPanel.classList.remove('hidden');
+
+    // Auto-hide when all steps are completed
+    if (done === plan.length) {
+      setTimeout(function() {
+        planPanel.classList.add('hidden');
+      }, 5000);
+    }
+  }
 
   function appendSyncLabel(source) {
     var label = document.createElement('div');
@@ -656,6 +858,12 @@
   inputEl.addEventListener('blur', () => {
     // Small delay so mousedown on menu item fires first
     setTimeout(hideCmdMenu, 150);
+  });
+
+  planClose.addEventListener('click', function(e) {
+    e.stopPropagation();
+    planPanel.classList.add('hidden');
+    planDismissed = true;
   });
 
   // ━━━ Boot ━━━

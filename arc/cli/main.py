@@ -559,6 +559,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     rt.kernel.on(EventType.SKILL_TOOL_RESULT, forward_to_gateway)
     rt.kernel.on(EventType.AGENT_SPAWNED, forward_to_gateway)
     rt.kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_gateway)
+    rt.kernel.on(EventType.AGENT_PLAN_UPDATE, forward_to_gateway)
 
     # Record ALL events into the gateway's ring buffer for the Logs tab
     async def record_event_for_logs(event: Event) -> None:
