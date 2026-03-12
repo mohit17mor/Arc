@@ -213,6 +213,23 @@ class TaskProcessor:
                 task.id, agent_name, result, step_index=task.current_step
             )
 
+            # Check if the agent is asking for human input (LLM-based check)
+            if await self._check_needs_human_input(result, agent_def):
+                logger.info(f"Task {task.id}: agent '{agent_name}' is requesting human input")
+                await self._store.update_status_with_comment(
+                    task.id,
+                    TaskStatus.BLOCKED,
+                    "system",
+                    "Agent is requesting your input. Please reply to continue.",
+                    step_index=task.current_step,
+                )
+                await self._notify(
+                    task,
+                    f"🔒 Task #{task.id} needs your input: {task.title}\n\n"
+                    f"Agent '{agent_name}' says:\n{result[:500]}",
+                )
+                return
+
             # Route to next state
             if is_reviewer:
                 await self._handle_review_result(task, agent_name, result)
@@ -232,6 +249,63 @@ class TaskProcessor:
             return False
         step = task.steps[task.current_step]
         return step.review_by is not None and agent_name == step.review_by
+
+    @staticmethod
+    def _agent_needs_human_input(result: str) -> bool:
+        """Detect if the agent's output is asking a question or requesting input.
+
+        This is a placeholder — the actual check is done via LLM in
+        _check_needs_human_input which replaces this method.
+        """
+        return False
+
+    async def _check_needs_human_input(self, result: str, agent_def: AgentDef) -> bool:
+        """Ask the LLM whether the agent's output requires human input.
+
+        Makes a single cheap LLM call with the agent's response and asks
+        for a simple yes/no verdict. Uses the same LLM as the agent.
+        """
+        if not result or len(result.strip()) < 20:
+            return False
+
+        from arc.core.types import Message
+
+        llm = await self._get_agent_llm(agent_def)
+
+        messages = [
+            Message.system(
+                "You are a classifier. Read the following agent output and determine "
+                "if the agent is asking the user a question or requesting human input "
+                "to proceed. Respond with ONLY 'yes' or 'no'.\n\n"
+                "Respond 'yes' if the agent is:\n"
+                "- Asking the user to make a decision\n"
+                "- Requesting clarification or more information\n"
+                "- Asking if the user wants to retry or proceed differently\n"
+                "- Deferring to the user instead of completing the task\n\n"
+                "Respond 'no' if the agent:\n"
+                "- Completed the task and is presenting results\n"
+                "- Failed but gave a final answer/summary\n"
+                "- Is simply explaining what it did"
+            ),
+            Message.user(f"Agent output:\n\n{result[-1500:]}"),
+        ]
+
+        try:
+            collected = ""
+            async for chunk in llm.generate(
+                messages=messages,
+                tools=None,
+                temperature=0.0,
+                max_tokens=5,
+            ):
+                if chunk.text:
+                    collected += chunk.text
+
+            answer = collected.strip().lower()
+            return answer.startswith("yes")
+        except Exception as e:
+            logger.warning(f"Human input check failed (non-fatal): {e}")
+            return False
 
     # ── Agent execution ──────────────────────────────────────────────────────
 

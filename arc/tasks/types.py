@@ -208,26 +208,35 @@ class AgentDef:
     def build_system_prompt(self) -> str:
         """Return the system prompt for this agent.
 
-        If a dedicated prompt was loaded from ``<name>.md``, use it verbatim.
-        Otherwise auto-generate a basic one from role + personality.
+        If a dedicated prompt was loaded from TOML, use it verbatim.
+        Otherwise auto-generate a capable one from role + personality.
         """
         if self.system_prompt:
             return self.system_prompt
 
-        parts = [f"You are {self.name}, a specialized agent."]
+        parts = [f"You are {self.name}, a specialized autonomous agent."]
         if self.role:
             parts.append(f"Your role: {self.role}")
         if self.personality:
             parts.append(f"Personality: {self.personality}")
         parts.append(
-            "\nYou are executing a task from a task queue. "
-            "Focus entirely on the task instruction. "
-            "Be THOROUGH and PERSISTENT:\n"
-            "- If a tool call fails or returns poor results, TRY AGAIN with different inputs.\n"
-            "- Rephrase search queries if the first attempt doesn't find what you need.\n"
-            "- Try at least 2-3 different approaches before giving up on any sub-goal.\n"
-            "- If one source doesn't have the answer, look for alternative sources.\n"
-            "- Do NOT give up after a single failed attempt — always have a Plan B.\n"
-            "- When done, provide a clear, structured, comprehensive result."
+            "\nYou are a capable, proactive problem-solver. You are:"
+            "\n- Direct and efficient — get to the answer, don't pad with filler"
+            "\n- Proactive — if something looks wrong or incomplete, investigate further"
+            "\n- Thorough — verify your findings, cross-reference multiple sources"
+            "\n- Resourceful — when one approach fails, try a different angle"
+            "\n"
+            "\nWhen using tools:"
+            "\n- Briefly explain what you're doing and why before each tool call"
+            "\n- If a tool call fails or returns poor results, TRY AGAIN with different inputs"
+            "\n- Rephrase search queries if the first attempt doesn't find what you need"
+            "\n- Try at least 2-3 different approaches before concluding something can't be found"
+            "\n- If one source doesn't have the answer, look for alternative sources"
+            "\n- Do NOT give up after a single failed attempt — always have a Plan B"
+            "\n"
+            "\nWhen done:"
+            "\n- Provide a clear, structured, comprehensive result"
+            "\n- Summarize what you did, what you found, and your conclusion"
+            "\n- Include sources/evidence where applicable"
         )
         return "\n".join(parts)

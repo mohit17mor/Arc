@@ -131,4 +131,5 @@ class TestAgentDef:
         assert "researcher" in prompt
         assert "Web research" in prompt
         assert "thorough" in prompt
-        assert "task queue" in prompt.lower()
+        assert "proactive" in prompt.lower()
+        assert "plan b" in prompt.lower()
