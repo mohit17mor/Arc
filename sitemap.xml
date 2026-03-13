@@ -1,75 +1,147 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://arcai.github.io/Arc/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/architecture/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/architecture/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/cli/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/cli/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/configuration/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/configuration/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/getting-started/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/getting-started/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/browser/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/capabilities/build-your-own-skill/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/code-intel/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/capabilities/mcp/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/dashboard/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/capabilities/overview/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/liquid-web/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/capabilities/skills/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/memory/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/core/main-agent-vs-task-agents/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/scheduler/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/core/tasks-chains-reviews/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/skills-mcp/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/core/what-is-arc/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/voice/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/browser/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/features/workflows-yaml/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/code-intel/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/taskforce/agents/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/dashboard/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/taskforce/overview/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/liquid-web/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/taskforce/tasks/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/memory/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
     <url>
-         <loc>https://arcai.github.io/Arc/taskforce/workflows/</loc>
-         <lastmod>2026-03-11</lastmod>
+         <loc>https://mohit17mor.github.io/Arc/features/scheduler/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/features/skills-mcp/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/features/voice/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/features/workflows-yaml/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/multi-agent/chains-and-reviews/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/multi-agent/create-agents/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/multi-agent/overview/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/multi-agent/tasks/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/providers/overview/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/providers/per-agent-config/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/superpowers/plans/2026-03-13-custom-main-agent-personality/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/superpowers/plans/2026-03-13-dashboard-agent-provider-config/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/superpowers/plans/2026-03-13-dashboard-multistep-task-builder/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/superpowers/plans/2026-03-13-task-step-handoff-prompt/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/superpowers/specs/2026-03-13-docs-information-architecture-design/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/taskforce/agents/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/taskforce/overview/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/taskforce/tasks/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://mohit17mor.github.io/Arc/taskforce/workflows/</loc>
+         <lastmod>2026-03-13</lastmod>
     </url>
 </urlset>
