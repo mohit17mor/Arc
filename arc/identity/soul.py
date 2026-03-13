@@ -63,17 +63,23 @@ class SoulManager:
         agent_name: str,
         user_name: str,
         personality_id: str,
+        custom_system_prompt: str | None = None,
     ) -> None:
         """Create a new identity file."""
         from datetime import datetime
 
         personality = get_personality(personality_id)
+        personality_description = (
+            custom_system_prompt.strip()
+            if personality_id == "custom" and custom_system_prompt and custom_system_prompt.strip()
+            else personality.system_prompt
+        )
 
         content = IDENTITY_TEMPLATE.format(
             agent_name=agent_name,
             user_name=user_name,
             personality_id=personality_id,
-            personality_description=personality.system_prompt,
+            personality_description=personality_description,
             created_date=datetime.now().strftime("%Y-%m-%d"),
         )
 
@@ -100,11 +106,13 @@ class SoulManager:
             "agent_name": "Arc",
             "user_name": "User",
             "personality_id": "helpful",
+            "custom_system_prompt": "",
             "raw_content": content,
         }
 
         lines = content.split("\n")
         current_section = ""
+        how_i_behave_lines: list[str] = []
 
         for line in lines:
             stripped = line.strip()
@@ -113,6 +121,9 @@ class SoulManager:
             if stripped.startswith("## "):
                 current_section = stripped[3:].lower()
                 continue
+
+            if current_section == "how i behave":
+                how_i_behave_lines.append(line)
 
             # Parse key-value pairs
             if ":" in stripped and not stripped.startswith("#"):
@@ -126,6 +137,8 @@ class SoulManager:
                     result["user_name"] = value
                 elif key == "personality":
                     result["personality_id"] = value
+
+        result["custom_system_prompt"] = "\n".join(how_i_behave_lines).strip()
 
         # Build system prompt
         personality = get_personality(result["personality_id"])
@@ -143,7 +156,11 @@ class SoulManager:
             f"Your name is {identity['agent_name']}.",
             f"You are talking to {identity['user_name']}.",
             "",
-            personality.system_prompt,
+            (
+                identity.get("custom_system_prompt", "").strip()
+                if identity.get("personality_id") == "custom"
+                else personality.system_prompt
+            ) or personality.system_prompt,
         ]
         return "\n".join(parts)
 

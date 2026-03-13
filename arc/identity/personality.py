@@ -85,6 +85,16 @@ Maintain a professional tone. Document actions clearly. Prioritize safety and co
 
 Think creatively. Suggest multiple approaches when relevant. Get excited about cool solutions!""",
     ),
+    "custom": Personality(
+        id="custom",
+        name="Custom Prompt",
+        emoji="✍️",
+        description="Use your own full system prompt.",
+        system_prompt=(
+            "Custom personality placeholder. "
+            "arc init should capture a full custom system prompt."
+        ),
+    ),
 }
 
 

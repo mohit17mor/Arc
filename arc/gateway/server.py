@@ -213,6 +213,7 @@ class GatewayServer(Platform):
         app.router.add_get("/api/agents", self._api_list_agents)
         app.router.add_post("/api/agents", self._api_create_agent)
         app.router.add_delete("/api/agents/{name}", self._api_delete_agent)
+        app.router.add_get("/api/llm/providers", self._api_list_llm_providers)
         app.router.add_get("/api/overview", self._api_overview)
         app.router.add_get("/api/scheduler", self._api_list_jobs)
         app.router.add_post("/api/scheduler/{job_id}/cancel", self._api_cancel_job)
@@ -1041,6 +1042,8 @@ class GatewayServer(Platform):
             system_prompt=body.get("system_prompt", ""),
             llm_provider=body.get("llm_provider", ""),
             llm_model=body.get("llm_model", ""),
+            llm_base_url=body.get("llm_base_url", ""),
+            llm_api_key=body.get("llm_api_key", ""),
             max_concurrent=int(body.get("max_concurrent", 1)),
         )
         save_agent_def(agent)
@@ -1049,6 +1052,23 @@ class GatewayServer(Platform):
         if self._task_processor:
             self._task_processor.reload_agents(self._agent_defs)
         return web.json_response({"name": agent.name, "status": "created"}, status=201)
+
+    async def _api_list_llm_providers(self, request: web.Request) -> web.Response:
+        from arc.llm.factory import get_presets
+
+        presets = get_presets()
+        providers = [
+            {
+                "name": name,
+                "label": preset["label"],
+                "needs_key": preset["needs_key"],
+                "base_url": preset["base_url"],
+                "default_model": preset["default_model"],
+                "kind": preset["class"],
+            }
+            for name, preset in presets.items()
+        ]
+        return web.json_response(providers)
 
     async def _api_delete_agent(self, request: web.Request) -> web.Response:
         from arc.tasks.agents import _AGENTS_DIR, load_agent_defs

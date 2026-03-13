@@ -153,6 +153,39 @@ def _q_text(message: str, default: str = "") -> str:
     return result
 
 
+def _q_multiline_text(
+    console: Console,
+    message: str,
+    default: str = "",
+    terminator: str = "END",
+) -> str:
+    """
+    Collect multiline text until a terminator line is entered.
+
+    If no lines are provided and default is non-empty, the default is returned.
+    """
+    console.print(f"[bold]{message}[/bold]")
+    console.print(
+        f"[dim]Enter your prompt. Type '{terminator}' on a new line when done.[/dim]"
+    )
+    if default.strip():
+        console.print(
+            f"[dim]Tip: type '{terminator}' immediately to keep the current prompt.[/dim]"
+        )
+
+    lines: list[str] = []
+    while True:
+        line = console.input("[cyan]> [/cyan]")
+        if line.strip() == terminator:
+            break
+        lines.append(line)
+
+    prompt_text = "\n".join(lines).strip()
+    if not prompt_text and default.strip():
+        return default.strip()
+    return prompt_text
+
+
 def _q_password(message: str) -> str:
     """Password input using questionary (masked)."""
     import questionary
@@ -264,10 +297,16 @@ def _pick_provider(
     same_provider = (provider_name == default_provider)
 
     # Base URL
-    if provider_name in ("ollama", "lmstudio", "custom"):
+    needs_base_url_prompt = provider_name in ("ollama", "lmstudio", "custom") or (
+        preset.get("class") == "responses"
+    )
+    if needs_base_url_prompt:
+        fallback_url = preset["base_url"] or "http://localhost:8000/v1"
+        if provider_name == "codex" and not preset["base_url"]:
+            fallback_url = "https://api.openai.com/v1"
         default_url = (
-            d.get("base_url") if same_provider and d.get("base_url")
-            else (preset["base_url"] or "http://localhost:8000/v1")
+            d.get("base_url") if d.get("base_url")
+            else fallback_url
         )
         if interactive:
             result["base_url"] = _q_text("Base URL:", default=default_url)
@@ -562,7 +601,7 @@ SETUP_SECTIONS = [
     {"value": "tavily",   "name": "🌐  Liquid Web — Tavily search API"},
     {"value": "telegram", "name": "📱  Telegram — bot platform"},
     {"value": "all",      "name": "⚙️   Everything — full reconfiguration"},
-    {"value": "exit",     "name": "✖   Exit — no changes"},
+    {"value": "exit",     "name": "Done"},
 ]
 
 
@@ -744,6 +783,16 @@ def _run_sections(
         # Personality
         personalities = list_personalities()
 
+        custom_system_prompt_default = ""
+        try:
+            existing_identity = SoulManager(identity_path).load()
+            if existing_identity.get("personality_id") == "custom":
+                custom_system_prompt_default = existing_identity.get(
+                    "custom_system_prompt", ""
+                )
+        except Exception:
+            custom_system_prompt_default = ""
+
         if interactive:
             personality_choices = [
                 {"value": p.id, "name": f"{p.emoji}  {p.name} — {p.description}"}
@@ -777,11 +826,24 @@ def _run_sections(
 
         console.print(f"  [green]✓[/green] {personality.emoji} {personality.name} it is!")
         console.print()
+
+        custom_system_prompt = ""
+        if personality.id == "custom":
+            custom_system_prompt = _q_multiline_text(
+                console,
+                "Enter the full custom system prompt",
+                default=custom_system_prompt_default,
+            )
+            if not custom_system_prompt.strip():
+                custom_system_prompt = get_personality("helpful").system_prompt
+            console.print("  [green]✓[/green] Custom system prompt saved.")
+            console.print()
     else:
         # Carry forward existing identity
         user_name = e.get("user_name", "User")
         agent_name = e.get("agent_name", "Arc")
         personality = get_personality(e.get("personality", "helpful"))
+        custom_system_prompt = ""
 
     # ── LLM Provider + Worker ─────────────────────────────────
     if "models" in sections:
@@ -866,7 +928,12 @@ def _run_sections(
     # ── Create identity file (only if identity was changed) ──
     if "identity" in sections:
         soul = SoulManager(identity_path)
-        soul.create(agent_name, user_name, personality.id)
+        soul.create(
+            agent_name,
+            user_name,
+            personality.id,
+            custom_system_prompt=custom_system_prompt,
+        )
 
     # ── Create config file ───────────────────────────────────
     config_lines = [

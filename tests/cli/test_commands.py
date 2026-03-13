@@ -106,3 +106,35 @@ def test_chat_without_init(runner, tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "not configured" in result.stdout.lower() or "arc init" in result.stdout.lower()
+
+
+def test_init_custom_personality_writes_custom_prompt(runner, tmp_path, monkeypatch):
+    """arc init supports custom full system prompt for the main identity."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["init"],
+        input=(
+            "Alex\n"
+            "Friday\n"
+            "6\n"
+            "You are a strict coding assistant.\n"
+            "Be direct and concise.\n"
+            "END\n"
+            "1\n"
+            "http://localhost:11434\n"
+            "llama3.1\n"
+            "n\n"
+            "n\n"
+            "n\n"
+        ),
+    )
+
+    assert result.exit_code == 0
+    cfg_text = (tmp_path / ".arc" / "config.toml").read_text(encoding="utf-8")
+    identity_text = (tmp_path / ".arc" / "identity.md").read_text(encoding="utf-8")
+
+    assert 'personality = "custom"' in cfg_text
+    assert "You are a strict coding assistant." in identity_text
+    assert "Be direct and concise." in identity_text

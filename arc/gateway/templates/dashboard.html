@@ -376,16 +376,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
         <div class="fg"><label>Personality</label><input x-model="na.personality" placeholder="e.g. thorough, cites sources"></div>
         <div class="fr">
           <div class="fg"><label>LLM Provider</label><select x-model="na.llm_provider">
-            <option value="">Default</option><option value="ollama">Ollama</option><option value="openai">OpenAI</option>
-            <option value="openrouter">OpenRouter</option><option value="groq">Groq</option><option value="together">Together</option>
-            <option value="lmstudio">LM Studio</option><option value="custom">Custom</option></select></div>
+            <option value="">Default</option>
+            <template x-for="p in prv" :key="p.name"><option :value="p.name" x-text="p.label"></option></template>
+          </select></div>
           <div class="fg"><label>Model</label><input x-model="na.llm_model" placeholder="e.g. llama3.2"></div>
+        </div>
+        <div class="fr" x-show="na.llm_provider">
+          <div class="fg"><label>Base URL</label><input x-model="na.llm_base_url" :placeholder="pPH('base_url')"></div>
+          <div class="fg"><label>API Key</label><input type="password" x-model="na.llm_api_key" :placeholder="pPH('api_key')"></div>
         </div>
         <div class="fg"><label>Max Concurrent</label><select x-model="na.max_concurrent"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
         <div class="fg"><label>System Prompt</label><textarea x-model="na.system_prompt" rows="6" placeholder="Detailed instructions (optional)..."></textarea></div>
         <div class="fg" x-show="fE" style="color:var(--red);font-size:13px" x-text="fE"></div>
         <div class="fa"><button class="btn" @click="sCA=false">Cancel</button>
-          <button class="btn btn-p" @click="crA()" :disabled="!na.name">Create</button></div>
+          <button class="btn btn-p" @click="crA()" :disabled="!na.name||!!na.llm_provider&&!na.llm_model">Create</button></div>
       </div>
     </div>
   </template>
@@ -490,16 +494,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <script>
 function app(){return{
   pg:'home',wsc:false,ws:null,toasts:[],
-  hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],
+  hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],prv:[],
   sT:null,rT:'',sCT:false,sCA:false,fE:'',tSelMode:false,tSel:[],
   logFilter:'',logTypeFilter:'',logLive:true,
   nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'},
-  na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''},
+  na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
   cMsg:null,thEl:null,hHist:false,
 
-  init(){this.cWs();this.lA();this.lH();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
+  init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
     // Slash command autocomplete
     const CMDS=[{n:'/help',d:'Show available commands'},{n:'/skills',d:'List skills and tools'},{n:'/cost',d:'Token usage and cost'},{n:'/memory',d:'Core facts (long-term memory)'},{n:'/memory episodic',d:'Recent episodic memories'},{n:'/jobs',d:'List scheduled jobs'},{n:'/workflow',d:'List or run workflows'},{n:'/mcp',d:'MCP server status'},{n:'/clear',d:'Clear conversation'},{n:'/status',d:'Gateway status'}];
@@ -522,7 +526,7 @@ function app(){return{
           if(e.key==='Escape'){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1;return}}
         if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();cmEl.classList.remove('vis');cmEl.innerHTML='';self.sendChat()}});
       miEl.addEventListener('blur',function(){setTimeout(function(){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1},150)})}},
-  go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents')this.lA();
+  go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents'){this.lA();this.lP();}
     if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM()}
     if(p==='logs')this.lLg();
     if(p==='chat')this.$nextTick(()=>{const e=document.getElementById('msg-input');if(e)e.focus()})},
@@ -589,6 +593,7 @@ function app(){return{
   // Data
   async lH(){[this.hm,this.ag]=await Promise.all([fetch('/api/overview').then(r=>r.json()).catch(()=>({})),fetch('/api/agents').then(r=>r.json()).catch(()=>[])])},
   async lA(){this.ag=await fetch('/api/agents').then(r=>r.json()).catch(()=>[])},
+  async lP(){this.prv=await fetch('/api/llm/providers').then(r=>r.json()).catch(()=>[])},
   async lT(){this.tk=await fetch('/api/tasks?limit=100').then(r=>r.json()).catch(()=>[]);this.tSel=this.tSel.filter(id=>this.tk.some(t=>t.id===id&&this.tClr(t)))},
   async lJ(){this.jb=await fetch('/api/scheduler').then(r=>r.json()).catch(()=>[])},
   async lS(){this.sk=await fetch('/api/skills').then(r=>r.json()).catch(()=>[])},
@@ -643,10 +648,13 @@ function app(){return{
     else{const e=await r.json().catch(()=>({}));this.toast(e.error||'Failed to clear tasks')}},
 
   // Agents
+  pI(n){return this.prv.find(p=>p.name===n)||null},
+  pPH(k){const p=this.pI(this.na.llm_provider);if(!p)return'';if(k==='base_url')return p.base_url||'e.g. https://api.example.com/v1';return p.needs_key?'Required for this provider':'Optional override'},
   async crA(){this.fE='';const b={name:this.na.name.trim().toLowerCase().replace(/\s+/g,'_'),role:this.na.role,personality:this.na.personality,
-    llm_provider:this.na.llm_provider,llm_model:this.na.llm_model,max_concurrent:parseInt(this.na.max_concurrent),system_prompt:this.na.system_prompt};
+    llm_provider:this.na.llm_provider,llm_model:this.na.llm_model,llm_base_url:this.na.llm_base_url,llm_api_key:this.na.llm_api_key,
+    max_concurrent:parseInt(this.na.max_concurrent),system_prompt:this.na.system_prompt};
     const r=await fetch('/api/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
-    if(r.ok){this.sCA=false;this.na={name:'',role:'',personality:'',llm_provider:'',llm_model:'',max_concurrent:'1',system_prompt:''};this.lA();this.toast('Agent created')}
+    if(r.ok){this.sCA=false;this.na={name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''};this.lA();this.toast('Agent created')}
     else{const e=await r.json().catch(()=>({}));this.fE=e.error||'Failed'}},
   async dA(n){if(!confirm('Delete "'+n+'"?'))return;await fetch('/api/agents/'+n,{method:'DELETE'});this.lA();this.toast('Agent deleted')},
 

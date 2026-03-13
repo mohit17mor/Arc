@@ -68,3 +68,34 @@ def test_get_system_prompt(soul):
 
     assert isinstance(prompt, str)
     assert len(prompt) > 50
+
+
+def test_load_custom_personality_uses_how_i_behave_section(soul, tmp_path):
+    """When personality is custom, system prompt comes from identity.md content."""
+    custom_prompt = "You are strict and concise.\nNever use emojis.\nPrefer numbered lists."
+    content = f"""# Friday's Soul
+
+## Identity
+name: Friday
+created: 2026-03-13
+personality: custom
+
+## My Human
+user_name: Alex
+
+## How I Behave
+{custom_prompt}
+
+## Things I've Learned About Alex
+(This section grows as we interact)
+"""
+    (tmp_path / "identity.md").write_text(content, encoding="utf-8")
+
+    identity = soul.load()
+    prompt = identity["system_prompt"]
+
+    assert identity["personality_id"] == "custom"
+    assert "Friday" in prompt
+    assert "Alex" in prompt
+    assert "strict and concise" in prompt
+    assert "Never use emojis." in prompt

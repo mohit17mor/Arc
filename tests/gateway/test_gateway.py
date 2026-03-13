@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from arc.gateway.server import GatewayServer
 from arc.tasks.store import TaskStore
 from arc.tasks.types import Task, TaskStatus
+from arc.tasks.agents import load_agent_defs
 
 
 # ━━━ Unit tests (no HTTP) ━━━
@@ -351,3 +352,45 @@ async def test_api_clear_tasks_deletes_terminal_tasks(client):
     assert data["deleted"] == 1
     assert await store.get_by_id(done_task.id) is None
     assert await store.get_by_id(queued_task.id) is not None
+
+
+async def test_api_create_agent_persists_full_llm_config(tmp_path, monkeypatch):
+    agents_dir = tmp_path / "agents"
+    monkeypatch.setattr("arc.tasks.agents._AGENTS_DIR", agents_dir)
+
+    gw = GatewayServer(host="127.0.0.1", port=0)
+    request = AsyncMock()
+    request.json = AsyncMock(
+        return_value={
+            "name": "researcher",
+            "role": "Deep research",
+            "llm_provider": "codex",
+            "llm_model": "codex-mini-latest",
+            "llm_base_url": "http://internal.example/v1",
+            "llm_api_key": "sk-secret",
+        }
+    )
+
+    resp = await gw._api_create_agent(request)
+    assert resp.status == 201
+
+    agents = load_agent_defs(agents_dir)
+    assert "researcher" in agents
+    agent = agents["researcher"]
+    assert agent.llm_provider == "codex"
+    assert agent.llm_model == "codex-mini-latest"
+    assert agent.llm_base_url == "http://internal.example/v1"
+    assert agent.llm_api_key == "sk-secret"
+
+
+async def test_api_llm_providers_lists_all_presets():
+    gw = GatewayServer(host="127.0.0.1", port=0)
+    request = AsyncMock()
+    resp = await gw._api_list_llm_providers(request)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+
+    names = [item["name"] for item in data]
+    assert "codex" in names
+    assert "responses" in names
+    assert "openai" in names
