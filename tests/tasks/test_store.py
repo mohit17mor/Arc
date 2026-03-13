@@ -138,6 +138,22 @@ class TestTaskStore:
         assert "Child" in titles
         await tmp_store.close()
 
+    async def test_get_actionable_treats_blank_dependency_as_none(self, tmp_store):
+        await tmp_store.initialize()
+        task = Task(
+            title="Legacy blank dependency",
+            instruction="i",
+            assigned_agent="a",
+            depends_on="",
+            steps=[TaskStep(step_index=0, agent_name="a")],
+        )
+        await tmp_store.save(task)
+
+        actionable = await tmp_store.get_actionable_tasks(["a"])
+        assert len(actionable) == 1
+        assert actionable[0].title == "Legacy blank dependency"
+        await tmp_store.close()
+
     # ── Status transitions with comments ─────────────────────────────────────
 
     async def test_update_status_with_comment(self, tmp_store):

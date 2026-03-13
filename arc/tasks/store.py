@@ -154,6 +154,7 @@ class TaskStore:
             SELECT * FROM tasks
             WHERE status IN ('queued', 'revision_needed')
               AND (depends_on IS NULL
+                   OR depends_on = ''
                    OR depends_on IN (SELECT id FROM tasks WHERE status='done'))
             ORDER BY priority ASC, created_at ASC
             """,

@@ -183,6 +183,18 @@ class TestQueueTask:
         tasks = await tmp_store.get_all()
         assert tasks[0].priority == 1
 
+    async def test_queue_task_blank_dependency_is_treated_as_none(self, skill, tmp_store):
+        result = await skill.execute_tool("queue_task", {
+            "title": "No real dependency",
+            "instruction": "I",
+            "assigned_agent": "researcher",
+            "depends_on": "",
+        })
+        assert result.success
+
+        tasks = await tmp_store.get_all()
+        assert tasks[0].depends_on is None
+
 
 # ── list_tasks ───────────────────────────────────────────────────────────────
 

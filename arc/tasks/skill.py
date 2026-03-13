@@ -300,6 +300,8 @@ class TaskSkill(Skill):
         if not self._store:
             return ToolResult(success=False, output="", error="Task store not initialised")
 
+        depends_on = depends_on or None
+
         # Build steps
         task_steps: list[TaskStep] = []
         if steps:
