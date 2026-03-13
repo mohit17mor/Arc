@@ -16,6 +16,7 @@ Key strategies:
 from __future__ import annotations
 
 import logging
+import platform
 import re
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -32,6 +33,11 @@ logger = logging.getLogger(__name__)
 AUTOCOMPLETE_WAIT_MS = 300
 NAVIGATION_WAIT_MS = 1000
 ACTION_TIMEOUT_MS = 10000
+
+
+def _select_all_shortcut() -> str:
+    """Return the OS-appropriate select-all shortcut for browser inputs."""
+    return "Meta+a" if platform.system().lower() == "darwin" else "Control+a"
 
 
 @dataclass
@@ -930,13 +936,13 @@ class ActionExecutor:
         try:
             # Clear any existing value.
             # .fill("") doesn't trigger JS events on SPAs (Google Flights, etc.)
-            # so we also do Ctrl+A → Backspace which works universally.
+            # so we also do the OS-native select-all chord → Backspace.
             try:
                 await input_locator.fill("", timeout=2000)
             except Exception:
                 pass  # might fail if contenteditable — that's fine
             await input_locator.click(timeout=2000)
-            await page.keyboard.press("Control+a")
+            await page.keyboard.press(_select_all_shortcut())
             await page.wait_for_timeout(50)
             await page.keyboard.press("Backspace")
             await page.wait_for_timeout(150)
@@ -976,7 +982,7 @@ class ActionExecutor:
         """
         # Clear any existing value in the focused field first
         try:
-            await page.keyboard.press("Control+a")
+            await page.keyboard.press(_select_all_shortcut())
             await page.wait_for_timeout(50)
             await page.keyboard.press("Backspace")
             await page.wait_for_timeout(150)
@@ -1242,9 +1248,10 @@ class ActionExecutor:
             await page.wait_for_timeout(300)
 
             # Step 2: Clear any pre-filled value (e.g. "Bengaluru")
-            #   .fill("") doesn't trigger JS events.  Ctrl+A → Backspace
-            #   works universally on native inputs AND contenteditable.
-            await page.keyboard.press("Control+a")
+            #   .fill("") doesn't trigger JS events. The OS-native
+            #   select-all chord → Backspace works on native inputs and
+            #   contenteditable fields.
+            await page.keyboard.press(_select_all_shortcut())
             await page.wait_for_timeout(50)
             await page.keyboard.press("Backspace")
             await page.wait_for_timeout(200)
@@ -1357,7 +1364,7 @@ class ActionExecutor:
                 await locator.click(timeout=ACTION_TIMEOUT_MS)
             except Exception:
                 await locator.click(timeout=ACTION_TIMEOUT_MS, force=True)
-            await page.keyboard.press("Control+a")
+            await page.keyboard.press(_select_all_shortcut())
             await page.wait_for_timeout(50)
             await page.keyboard.press("Backspace")
             await page.wait_for_timeout(100)

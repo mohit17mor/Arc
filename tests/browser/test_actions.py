@@ -7,6 +7,7 @@ without a real browser.
 
 from __future__ import annotations
 
+import platform
 import pytest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
@@ -14,6 +15,7 @@ from arc.browser.actions import (
     ActionExecutor,
     ActionResult,
     ActionsResult,
+    _select_all_shortcut,
     _score_suggestion,
     _normalize_date,
 )
@@ -85,6 +87,19 @@ class TestNormalizeDate:
 
     def test_unparseable_passthrough(self):
         assert _normalize_date("next tuesday") == "next tuesday"
+
+
+# ━━━ Platform Helpers ━━━
+
+
+class TestPlatformShortcuts:
+    def test_select_all_shortcut_uses_meta_on_macos(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        assert _select_all_shortcut() == "Meta+a"
+
+    def test_select_all_shortcut_uses_control_elsewhere(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        assert _select_all_shortcut() == "Control+a"
 
 
 # ━━━ ActionResult ━━━
@@ -295,6 +310,20 @@ class TestActionExecutor:
         ])
 
         assert result.results[0].success is True
+
+    @pytest.mark.asyncio
+    async def test_fill_autocomplete_uses_meta_on_macos(self, executor, mock_page, monkeypatch):
+        locator = self._make_locator()
+        mock_page.keyboard = AsyncMock()
+        executor._pick_suggestion = AsyncMock(return_value=None)
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+
+        result = await executor._fill_autocomplete(mock_page, locator, "Mumbai", "From")
+
+        assert result.success is True
+        mock_page.keyboard.press.assert_any_call("Meta+a")
+        mock_page.keyboard.press.assert_any_call("Backspace")
+        mock_page.keyboard.type.assert_awaited_once_with("Mumbai", delay=60)
 
 
 # ━━━ Select Product ━━━
