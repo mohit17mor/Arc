@@ -78,10 +78,14 @@ class BashProvider(ShellProvider):
 
         # Build the bash script
         bash_script = f'''
+__arc_emit_state() {{
+  local code="$?"
+  echo "___EXIT_CODE___:${{code}}"
+  echo "___NEW_CWD___:$(pwd)"
+}}
+trap __arc_emit_state EXIT
 cd "{cwd}" 2>/dev/null || true
 {command}
-echo "___EXIT_CODE___:$?"
-echo "___NEW_CWD___:$(pwd)"
 '''
 
         start_time = time.time()
