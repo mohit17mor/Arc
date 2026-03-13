@@ -1,14 +1,19 @@
 # Getting Started
 
-## Prerequisites
+This page is the shortest path to a working Arc setup.
+
+You do **not** need to create task agents to get started. The main agent works immediately after `arc init`.
+
+## 1. Install Arc
+
+Requirements:
 
 - Python 3.11+
-- [Ollama](https://ollama.ai) (for local LLMs) or an API key for OpenAI/Groq/OpenRouter
-
-## Installation
+- One model provider you can reach: Ollama locally, or a cloud API
 
 ```bash
-git clone https://github.com/ArcAI-xyz/Arc.git && cd Arc
+git clone https://github.com/mohit17mor/Arc.git
+cd Arc
 python -m venv .venv
 ```
 
@@ -29,45 +34,68 @@ pip install -e ".[dev]"
 playwright install chromium
 ```
 
-## Setup
+## 2. Run The Setup Wizard
 
 ```bash
 arc init
 ```
 
-The setup wizard walks you through:
+The wizard sets up your main agent identity and your default provider.
 
-1. Your name and agent personality
-2. LLM provider selection (Ollama, OpenAI, Groq, OpenRouter, etc.)
-3. Model selection
-4. Optional: Telegram bot token, Tavily API key, ngrok token
+It walks through:
 
-## First Chat
+1. your name and the agent name
+2. the main agent personality or custom system prompt
+3. the default LLM provider and model
+4. optional extras like Telegram, Tavily, and ngrok
+
+Arc stores this in `~/.arc/config.toml` and `~/.arc/identity.md`.
+
+## 3. Start Your First Chat
 
 ```bash
 arc chat
 ```
 
-## Run the Daemon
+This is the easiest way to understand Arc. At this point you already have:
 
-For task processing, web dashboard, and Telegram:
+- the main agent
+- your default provider
+- built-in capabilities
+- any local skills and MCP config you have added
+
+## 4. Run The Gateway When You Need More Than Chat
 
 ```bash
 arc gateway
 ```
 
-Open [http://localhost:18789](http://localhost:18789) for the web dashboard.
+Use `arc gateway` when you want:
 
-## Create Your First Agent
+- the web dashboard
+- task processing for named task agents
+- Telegram or other connected channels
+- real-time logs and background services
 
-```bash
-arc agent create researcher --role "Web research" --model ollama/llama3.2
-```
+Open `http://localhost:18789` in your browser.
 
-## Queue Your First Task
+## 5. Optional Next Steps
 
-```bash
-arc task add "Find the top 5 AI startups funded in 2026" --assign researcher
-```
+### Add named task agents
 
-The agent picks it up automatically (requires `arc gateway` running).
+If you want background workers for specialized jobs, go to [Create Agents](multi-agent/create-agents.md).
+
+### Queue tasks and chains
+
+If you want work to continue without staying in chat, go to [Queue Tasks](multi-agent/tasks.md) and [Multi-Step Chains and Reviews](multi-agent/chains-and-reviews.md).
+
+### Add more tools
+
+If you want to extend Arc, go to [Skills](capabilities/skills.md) and [MCP](capabilities/mcp.md).
+
+## First-Day Mental Model
+
+- `arc init` configures the **main agent** and the default LLM settings.
+- `arc chat` talks to the **main agent**.
+- `arc gateway` turns on the dashboard and background systems.
+- **Task agents** are optional. You only create them when you want queued multi-agent work.

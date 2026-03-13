@@ -1,53 +1,72 @@
 # Web Dashboard
 
-A single-page app served at `http://localhost:18789` by `arc gateway`.
+The dashboard is the browser UI served by `arc gateway` at `http://localhost:18789`.
 
-## Tabs
+Use it when you want a visual way to work with Arc instead of staying in the terminal.
 
-### 📊 Dashboard
-Overview of the system — task counts by status, agent list, uptime, total messages.
+## What The Dashboard Is Good For
 
-### 💬 Chat
-Full WebChat with streaming responses, tool call events, worker notifications, and slash commands. Same functionality as `arc chat` but in the browser.
+- chatting with the main agent in the browser
+- monitoring queued and running tasks
+- creating and managing task agents
+- creating single-step or multi-step tasks
+- reviewing work and replying to blocked tasks
+- checking loaded skills, MCP status, and system logs
 
-### 📋 Task Board
-Kanban-style columns: Queued, In Progress, In Review, Needs Action, Done. Click any task to see full detail with comment history. Create tasks, approve/revise, cancel — all from the UI.
+## Main Areas
 
-### 🤖 Agents
-Create and manage named agents. The create form includes LLM provider/model picker and a system prompt editor. Delete agents with one click.
+### Dashboard
 
-### ⏰ Scheduler
-View all scheduled jobs with trigger info and next run time. Cancel jobs directly.
+System overview: task counts, agent counts, uptime, and high-level status.
 
-### 🧩 Skills & MCP
-All loaded skills with their tools listed. MCP server status (connected/lazy). Useful for understanding what tools are available to agents.
+### Chat
 
-### 📜 Logs
-Real-time system event stream. Filter by source (main agent, task agents, workers, scheduler) and by event type (tool calls, errors, completions). Live mode auto-scrolls as events arrive.
+Browser-based chat with the main agent. This is the same main-agent layer as `arc chat`, just in a web UI.
 
-## Architecture
+### Task Board
 
-The dashboard is a single HTML file using Alpine.js (~15KB) for reactivity. No npm, no build step, no node_modules.
+Kanban-style task view for:
 
-- One WebSocket connection stays alive across all tabs
-- Notifications appear on any tab (not just Chat)
-- Data loaded via REST API endpoints
-- Auto-refreshes every 10 seconds on Dashboard and Task Board
+- queued work
+- active work
+- review states
+- completed work
 
-## REST API
+The task form supports both:
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/overview` | Dashboard stats |
-| `GET` | `/api/tasks` | List tasks |
-| `POST` | `/api/tasks` | Create task |
-| `GET` | `/api/tasks/:id` | Task detail + comments |
-| `POST` | `/api/tasks/:id/cancel` | Cancel task |
-| `POST` | `/api/tasks/:id/reply` | Approve/revise/answer |
-| `GET` | `/api/agents` | List agents |
-| `POST` | `/api/agents` | Create agent |
-| `DELETE` | `/api/agents/:name` | Delete agent |
-| `GET` | `/api/scheduler` | List scheduled jobs |
-| `GET` | `/api/skills` | List skills + tools |
-| `GET` | `/api/mcp` | List MCP servers |
-| `GET` | `/api/logs` | Recent system events |
+- simple single-agent tasks
+- multi-step chains with one agent per step and an optional reviewer per step
+
+### Agents
+
+Create and manage named task agents.
+
+The form supports the full per-agent model block, including:
+
+- provider
+- model
+- base URL
+- API key
+- system prompt
+
+So if a task agent needs its own endpoint, users can configure it from the dashboard.
+
+### Scheduler
+
+View scheduled jobs and cancel them.
+
+### Skills And MCP
+
+Inspect the currently loaded capabilities and MCP server status.
+
+### Logs
+
+Watch real-time activity from the main agent, task agents, workers, and other background systems.
+
+## Architecture Notes
+
+The dashboard is a lightweight single-page app served directly by Arc.
+
+- no separate frontend build is required
+- one WebSocket connection powers live updates
+- REST endpoints provide overview, tasks, agents, scheduler, skills, MCP, and logs

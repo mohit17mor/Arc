@@ -1,38 +1,65 @@
 # Arc
 
-**Autonomous AI agents that work while you sleep.**
+Arc is an AI workspace with two modes:
 
-Arc is an AI agent framework where you create specialized agents, queue tasks, and wake up to results. Named agents with their own roles, LLMs, and system prompts pick up work from a persistent task board, collaborate through review loops, and deliver results via Telegram — all while you're away.
+- a **main agent** you talk to directly in chat
+- optional **task agents** that pick up queued background work
+
+You can start simple with one chat session, then add multi-agent automation only when you need it.
+
+## Fastest Setup
 
 ```bash
-# Create agents with different LLMs
-arc agent create researcher --role "Deep web research" --model ollama/llama3.2
-arc agent create writer --role "Content creation" --model openai/gpt-4o
+git clone https://github.com/mohit17mor/Arc.git
+cd Arc
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+playwright install chromium
+arc init
+arc chat
+```
 
-# Queue tasks at midnight
-arc task add "Find top AI startups funded in 2026" --assign researcher
-arc task add "Write a blog post about AI agents" --assign writer
+When you want the dashboard, background task processing, and channels, start:
 
-# Start the daemon and go to sleep
+```bash
 arc gateway
 ```
 
-## Key Features
+The dashboard runs at `http://localhost:18789`.
 
-- **[Taskforce](taskforce/overview.md)** — Named autonomous agents with per-agent LLMs, persistent task queue, multi-step workflows with review loops
-- **[Browser Automation](features/browser.md)** — Real Chromium browser control via accessibility tree (not screenshots)
-- **[Code Intelligence](features/code-intel.md)** — AST-aware code navigation using tree-sitter
-- **[Web Dashboard](features/dashboard.md)** — Single-page app with task board, agent management, real-time logs
-- **[Three-Tier Memory](features/memory.md)** — Core facts + episodic recall + session context
-- **[Voice Input](features/voice.md)** — Wake word → speech-to-text → agent
-- **[Skills & MCP](features/skills-mcp.md)** — Drop-in Python skills + any MCP server
-- **[Scheduler](features/scheduler.md)** — Cron, interval, and one-shot scheduled tasks
-- **[Workflows](features/workflows-yaml.md)** — Deterministic YAML-defined automation
+## Start Here
 
-## Quick Links
+- **[Getting Started](getting-started.md)**: fastest path from install to first chat
+- **[What Arc Is](core/what-is-arc.md)**: the mental model in plain language
+- **[Main Agent vs Task Agents](core/main-agent-vs-task-agents.md)**: understand the two agent types
+- **[Capabilities Overview](capabilities/overview.md)**: browser, memory, code tools, skills, MCP, and more
+- **[Multi-Agent Overview](multi-agent/overview.md)**: task agents, queues, chains, and reviews
+- **[Providers Overview](providers/overview.md)**: global provider setup and per-agent overrides
 
-- [Getting Started](getting-started.md)
-- [CLI Reference](cli.md)
-- [Configuration](configuration.md)
-- [Architecture](architecture.md)
-- [GitHub Repository](https://github.com/mohit17mor/Arc)
+## What Arc Can Do
+
+- Chat with a local or cloud model
+- Run a web dashboard for chat, task management, logs, and agent management
+- Queue tasks for named background agents
+- Chain multiple agents in sequence with optional reviewers
+- Use built-in tools like browser automation, code intelligence, memory, scheduler, and voice input
+- Extend the system with custom skills or external MCP servers
+
+## Choose Based On What You Want
+
+### I just want a good local AI assistant
+
+Start with [Getting Started](getting-started.md), run `arc init`, then use `arc chat`.
+
+### I want multiple specialized agents working in the background
+
+Go to [Multi-Agent Overview](multi-agent/overview.md).
+
+### I want to connect more tools
+
+Read [Skills](capabilities/skills.md) and [MCP](capabilities/mcp.md).
+
+### I want to tune providers and models
+
+Read [Providers Overview](providers/overview.md) and [Per-Agent Provider Config](providers/per-agent-config.md).

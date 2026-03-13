@@ -1,82 +1,98 @@
 # CLI Reference
 
-## Core Commands
+This page is grouped by what users usually want to do, not just by command family.
 
-| Command | Description |
-|---------|-------------|
-| `arc init` | First-time setup wizard |
-| `arc chat` | Interactive chat session |
-| `arc chat -m <model>` | Chat with a specific model |
-| `arc gateway` | Run daemon (dashboard + tasks + Telegram) |
-| `arc listen` | Voice input (requires `arc gateway`) |
-| `arc telegram` | Run as a Telegram bot |
+## Setup And Core Use
+
+| Command | What it does |
+|---|---|
+| `arc init` | First-time setup wizard for the main agent and default provider |
+| `arc chat` | Start an interactive chat with the main agent |
+| `arc gateway` | Run the dashboard and background systems |
+| `arc listen` | Start voice input |
+| `arc telegram` | Run Arc as a Telegram bot |
 | `arc config` | Show current configuration |
 | `arc version` | Show Arc version |
 
-## Agent Commands
+## Task Agents
 
-| Command | Description |
-|---------|-------------|
-| `arc agent create <name>` | Create a named agent |
-| `arc agent list` | List all agents |
-| `arc agent remove <name>` | Delete an agent |
+| Command | What it does |
+|---|---|
+| `arc agent create <name>` | Create a named task agent |
+| `arc agent list` | List task agents |
+| `arc agent remove <name>` | Delete a task agent |
 
-Options for `arc agent create`:
+Common flags for `arc agent create`:
 
-| Flag | Description |
-|------|-------------|
-| `--role`, `-r` | Agent's role description |
-| `--personality`, `-p` | Personality traits |
-| `--model`, `-m` | LLM model (`provider/model` format) |
-| `--max-concurrent` | Max parallel tasks (default: 1) |
+| Flag | Meaning |
+|---|---|
+| `--role`, `-r` | Role description |
+| `--personality`, `-p` | Personality text |
+| `--model`, `-m` | Model in `provider/model` format |
+| `--max-concurrent` | Maximum parallel tasks for that agent |
 
-## Task Commands
+## Tasks
 
-| Command | Description |
-|---------|-------------|
+| Command | What it does |
+|---|---|
 | `arc task add "<title>"` | Queue a task |
-| `arc task list` | List all tasks |
-| `arc task show <id>` | Full detail + comments |
+| `arc task list` | List tasks |
+| `arc task show <id>` | Show task detail and comments |
 | `arc task cancel <id>` | Cancel a task |
-| `arc task reply <id> "<text>"` | Answer a blocked task |
+| `arc task reply <id> "<text>"` | Approve, revise, or answer a task |
 
-Options for `arc task add`:
+Common flags for `arc task add`:
 
-| Flag | Description |
-|------|-------------|
-| `--assign`, `-a` | Agent name to assign to |
-| `--priority`, `-p` | Priority (1=highest, default: 1) |
-| `--max-bounces` | Max review iterations (default: 3) |
-| `--after` | Task ID dependency |
+| Flag | Meaning |
+|---|---|
+| `--assign`, `-a` | Assign to a task agent |
+| `--priority`, `-p` | Lower number means higher priority |
+| `--max-bounces` | Review loop limit |
+| `--after` | Make this task wait for another task |
 
-Options for `arc task reply`:
+Common flags for `arc task reply`:
 
-| Flag | Description |
-|------|-------------|
-| `--action`, `-a` | `approve` or `revise` (default: approve) |
+| Flag | Meaning |
+|---|---|
+| `--action`, `-a` | `approve` or `revise` |
 
-## Monitoring Commands
+## Monitoring
 
-| Command | Description |
-|---------|-------------|
-| `arc workers` | Show recent worker activity |
+| Command | What it does |
+|---|---|
+| `arc workers` | Show worker activity |
 | `arc workers --follow` | Live-tail worker activity |
-| `arc logs` | View today's logs |
+| `arc logs` | Show today's logs |
 
-## Chat Slash Commands
+## Slash Commands In Chat
 
-| Command | Description |
-|---------|-------------|
+| Command | What it does |
+|---|---|
+| `/help` | Show available commands |
+| `/status` | Show gateway status |
 | `/skills` | List loaded skills and tools |
-| `/mcp` | MCP server status |
-| `/memory` | Core facts (long-term memory) |
-| `/memory episodic` | Recent episodic memories |
-| `/memory forget <id>` | Delete a core fact |
+| `/mcp` | Show MCP server status |
+| `/memory` | Show core memory |
+| `/memory episodic` | Show episodic memory |
+| `/memory forget <id>` | Delete a core memory fact |
 | `/jobs` | List scheduled jobs |
 | `/jobs cancel <name>` | Cancel a scheduled job |
-| `/workflow` | List available workflows |
+| `/workflow` | List workflows |
 | `/workflow <name>` | Run a workflow |
-| `/cost` | Token usage this session |
-| `/clear` | Reset conversation |
-| `/status` | Gateway connection status |
-| `/help` | Show available commands |
+| `/cost` | Show token usage for the current session |
+| `/clear` | Reset the current conversation |
+
+## Most Common First Commands
+
+```bash
+arc init
+arc chat
+arc gateway
+```
+
+If you are exploring multi-agent features after that:
+
+```bash
+arc agent create researcher --role "Deep web research" --model ollama/llama3.2
+arc task add "Research AI coding tools" --assign researcher
+```

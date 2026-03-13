@@ -20,6 +20,7 @@ theme:
         icon: material/brightness-7
         name: Switch to dark mode
   features:
+    - navigation.tabs
     - navigation.sections
     - navigation.expand
     - navigation.top
@@ -45,21 +46,32 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
-  - Taskforce:
-    - Overview: taskforce/overview.md
-    - Agents: taskforce/agents.md
-    - Task Queue: taskforce/tasks.md
-    - Workflows: taskforce/workflows.md
-  - Features:
+  - Core Concepts:
+    - What Arc Is: core/what-is-arc.md
+    - Main Agent vs Task Agents: core/main-agent-vs-task-agents.md
+    - Tasks, Chains, and Reviews: core/tasks-chains-reviews.md
+  - Capabilities:
+    - Overview: capabilities/overview.md
     - Browser Automation: features/browser.md
+    - Web Dashboard: features/dashboard.md
     - Memory: features/memory.md
     - Code Intelligence: features/code-intel.md
-    - Web Dashboard: features/dashboard.md
     - Voice Input: features/voice.md
     - Scheduler: features/scheduler.md
     - Liquid Web: features/liquid-web.md
-    - Skills & MCP: features/skills-mcp.md
+    - Skills: capabilities/skills.md
+    - MCP: capabilities/mcp.md
+    - Build Your Own Skill: capabilities/build-your-own-skill.md
+  - Multi-Agent:
+    - Overview: multi-agent/overview.md
+    - Create Agents: multi-agent/create-agents.md
+    - Queue Tasks: multi-agent/tasks.md
+    - Multi-Step Chains and Reviews: multi-agent/chains-and-reviews.md
+  - Providers:
+    - Overview: providers/overview.md
+    - Per-Agent Provider Config: providers/per-agent-config.md
+    - Configuration: configuration.md
+  - Reference:
+    - CLI Reference: cli.md
+    - Architecture: architecture.md
     - Workflows (YAML): features/workflows-yaml.md
-  - Architecture: architecture.md
-  - CLI Reference: cli.md
-  - Configuration: configuration.md
