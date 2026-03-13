@@ -134,6 +134,23 @@ class TestTaskProcessorUnit:
         prompt = processor._build_prompt(task, "writer", "[reviewer] Fix the intro")
         assert "reviewer requested changes" in prompt.lower()
 
+    async def test_build_prompt_multistep_includes_handoff_guidance(self, processor):
+        task = Task(
+            title="Research and write memo",
+            instruction="Create a final recommendation memo.",
+            steps=[
+                TaskStep(step_index=0, agent_name="researcher"),
+                TaskStep(step_index=1, agent_name="writer"),
+                TaskStep(step_index=2, agent_name="reviewer"),
+            ],
+            current_step=1,
+        )
+        prompt = processor._build_prompt(task, "writer", "[researcher] Source notes")
+        assert "step 2 of 3" in prompt.lower()
+        assert "previous steps are complete" in prompt.lower()
+        assert "do not repeat prior work" in prompt.lower()
+        assert "complete your part based on your role" in prompt.lower()
+
     async def test_is_review_step_true(self, processor):
         steps = [TaskStep(step_index=0, agent_name="writer", review_by="reviewer")]
         task = Task(title="T", instruction="i", steps=steps, current_step=0)

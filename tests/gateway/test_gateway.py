@@ -5,6 +5,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock
 import time
+from pathlib import Path
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -42,6 +43,13 @@ def test_fallback_html():
     html = GatewayServer._fallback_html()
     assert "Arc Gateway" in html
     assert "<html>" in html
+
+
+def test_dashboard_template_has_multistep_task_controls():
+    """Dashboard exposes task-step builder controls for chained tasks."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "Add Step" in template
+    assert "Reviewer" in template
 
 
 # ━━━ Integration tests (with aiohttp test server) ━━━

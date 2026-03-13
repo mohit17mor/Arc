@@ -424,6 +424,20 @@ class TaskProcessor:
         """Build the full prompt for the agent."""
         parts = [f"## Task: {task.title}", "", task.instruction]
 
+        if task.steps and len(task.steps) > 1:
+            parts.extend([
+                "",
+                "## Current Step",
+                (
+                    f"You are handling step {task.current_step + 1} of {len(task.steps)} "
+                    f"for this task."
+                ),
+                "Previous steps are complete.",
+                "Complete your part based on your role.",
+                "Do not repeat prior work unless it is necessary to finish your step correctly.",
+                "Use the previous activity below as input and continue the task from there.",
+            ])
+
         if context_text:
             parts.append("")
             parts.append("## Previous Activity on This Task")

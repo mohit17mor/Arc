@@ -334,16 +334,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     <div class="mov" @click.self="sCT=false">
       <div class="mo"><h2>New Task</h2>
         <div class="fg"><label>Title</label><input x-model="nt.title" placeholder="Short task description"></div>
-        <div class="fg"><label>Instruction</label><textarea x-model="nt.instruction" rows="4" placeholder="Full instructions..."></textarea></div>
-        <div class="fg"><label>Assign to Agent</label><select x-model="nt.agent"><option value="">Select...</option>
+        <div class="fg"><label>Instruction</label><textarea x-model="nt.instruction" rows="4" placeholder="Shared instructions for the whole task..."></textarea></div>
+        <div class="fg" x-show="nt.steps.length===0"><label>Assign to Agent</label><select x-model="nt.agent"><option value="">Select...</option>
           <template x-for="a in ag" :key="a.name"><option :value="a.name" x-text="a.name+' — '+a.role"></option></template></select></div>
+        <div class="fg">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px">
+            <label style="margin:0">Chain Steps</label>
+            <button class="btn btn-sm" @click="aTS()">+ Add Step</button>
+          </div>
+          <div class="ht">Use steps for multi-agent chains. Each step can optionally be reviewed by another agent or by you.</div>
+          <template x-if="nt.steps.length===0">
+            <div style="margin-top:10px;padding:12px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);font-size:13px">
+              No chain steps yet. Add a step to create a multi-agent task, or use the single agent selector above.
+            </div>
+          </template>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px" x-show="nt.steps.length>0">
+            <template x-for="(st,i) in nt.steps" :key="i">
+              <div style="border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--s2)">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+                  <div style="font-size:13px;font-weight:700" x-text="'Step '+(i+1)"></div>
+                  <div style="display:flex;gap:8px">
+                    <button class="btn btn-sm" @click="uTS(i)" :disabled="i===0">↑</button>
+                    <button class="btn btn-sm" @click="dTS(i)" :disabled="i===nt.steps.length-1">↓</button>
+                    <button class="btn btn-r btn-sm" @click="rTS(i)">Remove</button>
+                  </div>
+                </div>
+                <div class="fr">
+                  <div class="fg"><label>Agent</label><select x-model="st.agent"><option value="">Select...</option>
+                    <template x-for="a in ag" :key="a.name"><option :value="a.name" x-text="a.name+' — '+a.role"></option></template></select></div>
+                  <div class="fg"><label>Reviewer</label><select x-model="st.review_by">
+                    <option value="">None</option>
+                    <option value="human">Human</option>
+                    <template x-for="a in ag" :key="a.name"><option :value="a.name" x-text="a.name"></option></template></select></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
         <div class="fr">
           <div class="fg"><label>Priority</label><select x-model="nt.priority"><option value="1">1 (Highest)</option><option value="2">2</option><option value="3">3</option><option value="5">5</option></select></div>
           <div class="fg"><label>Max Bounces</label><select x-model="nt.max_bounces"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="5">5</option></select></div>
         </div>
         <div class="fg" x-show="fE" style="color:var(--red);font-size:13px" x-text="fE"></div>
         <div class="fa"><button class="btn" @click="sCT=false">Cancel</button>
-          <button class="btn btn-p" @click="crT()" :disabled="!nt.title||!nt.agent">Create</button></div>
+          <button class="btn btn-p" @click="crT()" :disabled="!tRV()">Create</button></div>
       </div>
     </div>
   </template>
@@ -497,7 +531,7 @@ function app(){return{
   hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],prv:[],
   sT:null,rT:'',sCT:false,sCA:false,fE:'',tSelMode:false,tSel:[],
   logFilter:'',logTypeFilter:'',logLive:true,
-  nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'},
+  nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3',steps:[]},
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
@@ -627,6 +661,12 @@ function app(){return{
     const s=JSON.stringify(d);return s.length>2?s.slice(0,100):''},
 
   // Tasks
+  mTS(){return{agent:'',review_by:''}},
+  aTS(){if(this.nt.steps.length===0&&this.nt.agent){this.nt.steps=[{agent:this.nt.agent,review_by:''}];this.nt.agent='';return}this.nt.steps=[...this.nt.steps,this.mTS()]},
+  rTS(i){this.nt.steps=this.nt.steps.filter((_,idx)=>idx!==i)},
+  uTS(i){if(i<=0)return;const s=[...this.nt.steps];[s[i-1],s[i]]=[s[i],s[i-1]];this.nt.steps=s},
+  dTS(i){if(i>=this.nt.steps.length-1)return;const s=[...this.nt.steps];[s[i],s[i+1]]=[s[i+1],s[i]];this.nt.steps=s},
+  tRV(){return !!this.nt.title&&((this.nt.steps.length>0&&this.nt.steps.every(s=>s.agent))||!!this.nt.agent)},
   tClr(t){return ['done','failed','cancelled'].includes(t.status)},
   tSM(){this.tSelMode=!this.tSelMode;if(!this.tSelMode)this.tSel=[]},
   tgTs(t){if(!this.tClr(t))return;this.tSel=this.tSel.includes(t.id)?this.tSel.filter(id=>id!==t.id):[...this.tSel,t.id]},
@@ -635,9 +675,10 @@ function app(){return{
   cA(t){if(t.steps?.length&&t.current_step<t.steps.length)return t.steps[t.current_step].agent_name;return t.assigned_agent||'?'},
   wD(t){if(!t.steps||t.steps.length<=1)return'Single: '+(t.assigned_agent||'?');return t.steps.map((s,i)=>{let d=(i+1)+'. '+s.agent_name;if(s.review_by)d+=' (→'+s.review_by+')';if(i===t.current_step)d+=' ←';return d}).join('\n')},
   async oT(id){const d=await fetch('/api/tasks/'+id).then(r=>r.json()).catch(()=>null);if(d){this.sT=d;this.rT=''}},
-  async crT(){this.fE='';const b={title:this.nt.title,instruction:this.nt.instruction||this.nt.title,assigned_agent:this.nt.agent,priority:parseInt(this.nt.priority),max_bounces:parseInt(this.nt.max_bounces)};
+  async crT(){this.fE='';const hs=this.nt.steps.length>0;const b={title:this.nt.title,instruction:this.nt.instruction||this.nt.title,priority:parseInt(this.nt.priority),max_bounces:parseInt(this.nt.max_bounces)};
+    if(hs)b.steps=this.nt.steps.map((s,i)=>({agent:s.agent,review_by:s.review_by||null,step_index:i}));else b.assigned_agent=this.nt.agent;
     const r=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
-    if(r.ok){this.sCT=false;this.nt={title:'',instruction:'',agent:'',priority:'1',max_bounces:'3'};this.lT();this.toast('Task created')}
+    if(r.ok){this.sCT=false;this.nt={title:'',instruction:'',agent:'',priority:'1',max_bounces:'3',steps:[]};this.lT();this.toast('Task created')}
     else{const e=await r.json().catch(()=>({}));this.fE=e.error||'Failed'}},
   async tRp(a){if(!this.rT.trim())return;await fetch('/api/tasks/'+this.sT.id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reply:this.rT,action:a})});
     this.rT='';this.oT(this.sT.id);this.lT();this.toast('Reply sent')},
