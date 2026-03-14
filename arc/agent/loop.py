@@ -12,7 +12,9 @@ This is where the magic happens. The agent:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -44,6 +46,16 @@ logger = logging.getLogger(__name__)
 # LLM retry configuration
 _MAX_LLM_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds, doubles each retry
+_REPEATED_FAILURE_THRESHOLD = 2
+_META_TURN_PATTERNS = (
+    re.compile(r"\bwhy did you\b"),
+    re.compile(r"\bwhy didn't you\b"),
+    re.compile(r"\bwhy did you not\b"),
+    re.compile(r"\bwhat happened\b"),
+    re.compile(r"\bwhat went wrong\b"),
+    re.compile(r"\bexplain what happened\b"),
+    re.compile(r"\bwhy were you\b"),
+)
 
 
 @dataclass
@@ -124,6 +136,8 @@ class AgentLoop:
         # State
         self._state = AgentState(agent_id="agent")
         self._iteration = 0
+        self._explain_only_reason: str | None = None
+        self._failed_tool_signatures: dict[str, int] = {}
         
         # Compaction — background for main agent, sync for others
         self._compaction = CompactionState()
@@ -139,6 +153,14 @@ class AgentLoop:
         self._memory.add_user_message(user_input)
         self._state.status = AgentStatus.COMPOSING
         self._iteration = 0
+        self._failed_tool_signatures = {}
+        self._explain_only_reason = None
+
+        if self._is_meta_turn(user_input):
+            self._explain_only_reason = (
+                "This turn is asking for explanation or reflection. "
+                "Do not use tools. Explain directly what happened and why."
+            )
 
         # Initialize planning skill (once, lazy)
         if not self._planning_initialized:
@@ -204,7 +226,9 @@ class AgentLoop:
                 self._state.status = AgentStatus.THINKING
                 
                 # Get available tools
-                if self._router:
+                if self._explain_only_reason:
+                    tool_specs = []
+                elif self._router:
                     # Two-tier: always-on + activated + use_skill meta-tool
                     tool_specs = self._router.get_active_tool_specs()
                 else:
@@ -216,13 +240,15 @@ class AgentLoop:
                         if self._skills.get_tool_skill(ts.name) not in excluded
                     ] if excluded else all_specs
                 
-                # Always include the planning tool
-                planning_specs = list(self._planning.manifest().tools)
-                # Avoid duplicates if somehow already present
-                existing_names = {ts.name for ts in tool_specs}
-                for ps in planning_specs:
-                    if ps.name not in existing_names:
-                        tool_specs.append(ps)
+                # Always include the planning tool unless this turn is locked
+                # into explanation mode.
+                if not self._explain_only_reason:
+                    planning_specs = list(self._planning.manifest().tools)
+                    # Avoid duplicates if somehow already present
+                    existing_names = {ts.name for ts in tool_specs}
+                    for ps in planning_specs:
+                        if ps.name not in existing_names:
+                            tool_specs.append(ps)
                 
                 collected_text = ""
                 collected_tool_calls: list[ToolCall] = []
@@ -304,6 +330,29 @@ class AgentLoop:
                         "has_tool_calls": len(collected_tool_calls) > 0,
                     },
                 )
+
+                if (
+                    self._explain_only_reason
+                    and collected_tool_calls
+                    and self._iteration < self._config.max_iterations
+                ):
+                    self._memory.add_assistant_message(collected_text or None)
+                    self._memory.add_user_message(self._explain_only_reason)
+                    continue
+
+                if (
+                    not self._explain_only_reason
+                    and not self._planning.has_plan
+                    and self._should_require_plan(collected_tool_calls)
+                    and not any(tc.name == "update_plan" for tc in collected_tool_calls)
+                    and self._iteration < self._config.max_iterations
+                ):
+                    self._memory.add_assistant_message(collected_text or None)
+                    self._memory.add_user_message(
+                        "Before using tools for this task, create a short plan "
+                        "with update_plan first. Use 3-5 steps, then continue."
+                    )
+                    continue
                 
                 # 3. Check if done (no tool calls)
                 if stop_reason == StopReason.COMPLETE or not collected_tool_calls:
@@ -332,7 +381,8 @@ class AgentLoop:
 
                     # ── Plan enforcement (mechanism 4): nudge on incomplete plan ──
                     if (
-                        self._planning.has_plan
+                        not self._explain_only_reason
+                        and self._planning.has_plan
                         and self._planning.has_incomplete_steps
                         and self._iteration < self._config.max_iterations
                     ):
@@ -377,7 +427,8 @@ class AgentLoop:
                     content=collected_text if collected_text else None,
                     tool_calls=collected_tool_calls,
                 )
-                
+
+                tool_results: list[tuple[ToolCall, ToolResult]] = []
                 for tool_call in collected_tool_calls:
                     # Intercept update_plan — handled by per-agent PlanningSkill
                     if tool_call.name == "update_plan":
@@ -411,6 +462,15 @@ class AgentLoop:
                                 error=f"Tool execution crashed: {e}",
                             )
                         self._memory.add_tool_result(result, tool_call.name)
+                    tool_results.append((tool_call, result))
+
+                breaker_reason = self._update_failure_loop_state(tool_results)
+                if (
+                    breaker_reason
+                    and self._iteration < self._config.max_iterations
+                ):
+                    self._explain_only_reason = breaker_reason
+                    self._memory.add_user_message(breaker_reason)
                 
                 # 5. OBSERVE — loop continues with tool results in context
             
@@ -568,6 +628,8 @@ class AgentLoop:
         self._memory.clear()
         self._state = AgentState(agent_id="agent")
         self._iteration = 0
+        self._explain_only_reason = None
+        self._failed_tool_signatures = {}
 
     # ━━━ Action verification ━━━
 
@@ -625,3 +687,41 @@ class AgentLoop:
         """
         prefix = text[:500].lower()
         return any(phrase in prefix for phrase in cls._ACTION_PHRASES)
+
+    @staticmethod
+    def _is_meta_turn(text: str) -> bool:
+        prefix = text[:300].lower()
+        return any(pattern.search(prefix) for pattern in _META_TURN_PATTERNS)
+
+    @staticmethod
+    def _tool_signature(tool_call: ToolCall) -> str:
+        try:
+            payload = json.dumps(tool_call.arguments, sort_keys=True, default=str)
+        except TypeError:
+            payload = str(tool_call.arguments)
+        return f"{tool_call.name}:{payload}"
+
+    @classmethod
+    def _should_require_plan(cls, tool_calls: list[ToolCall]) -> bool:
+        return any(tc.name != "update_plan" for tc in tool_calls)
+
+    def _update_failure_loop_state(
+        self,
+        tool_results: list[tuple[ToolCall, ToolResult]],
+    ) -> str | None:
+        for tool_call, result in tool_results:
+            signature = self._tool_signature(tool_call)
+            if result.success:
+                self._failed_tool_signatures.pop(signature, None)
+                continue
+
+            failures = self._failed_tool_signatures.get(signature, 0) + 1
+            self._failed_tool_signatures[signature] = failures
+            if failures >= _REPEATED_FAILURE_THRESHOLD:
+                return (
+                    "Several recent tool attempts failed. Stop using tools for "
+                    "this turn and explain what you tried, what failed, and "
+                    "what should be done next."
+                )
+
+        return None

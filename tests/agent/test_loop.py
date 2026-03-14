@@ -3,10 +3,11 @@
 import pytest
 from arc.core.kernel import Kernel
 from arc.core.config import ArcConfig
-from arc.core.types import ToolResult
+from arc.core.types import Capability, SkillManifest, ToolResult, ToolSpec
 from arc.llm.mock import MockLLMProvider
-from arc.skills.base import tool, FunctionSkill
+from arc.skills.base import tool, FunctionSkill, Skill
 from arc.skills.manager import SkillManager
+from arc.skills.router import SkillRouter, USE_SKILL_TOOL
 from arc.security.engine import SecurityEngine
 from arc.agent.loop import AgentLoop, AgentConfig
 
@@ -36,6 +37,48 @@ async def skill_manager(kernel):
     skill = FunctionSkill("test", "Test skill", [greet, add])
     await manager.register(skill)
     return manager
+
+
+class _OnDemandBrowserSkill(Skill):
+    def manifest(self) -> SkillManifest:
+        return SkillManifest(
+            name="browser_control",
+            version="1.0.0",
+            description="Interactive browser automation",
+            tools=(
+                ToolSpec(
+                    name="browser_go",
+                    description="Navigate browser",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                    required_capabilities=frozenset([Capability.BROWSER]),
+                ),
+            ),
+            always_available=False,
+        )
+
+    async def execute_tool(self, tool_name, arguments):
+        return ToolResult(success=True, output="navigated")
+
+
+class _AlwaysFailSkill(Skill):
+    def manifest(self) -> SkillManifest:
+        return SkillManifest(
+            name="flaky_browser",
+            version="1.0.0",
+            description="Always failing browser-like tool",
+            tools=(
+                ToolSpec(
+                    name="browser_go",
+                    description="Navigate browser",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                    required_capabilities=frozenset(),
+                ),
+            ),
+            always_available=True,
+        )
+
+    async def execute_tool(self, tool_name, arguments):
+        return ToolResult(success=False, output="", error="navigation failed")
 
 
 @pytest.fixture
@@ -310,3 +353,113 @@ class TestActionVerification:
 
         # Should not hang — respects max_iterations
         assert mock_llm.call_count <= 5  # 4 + possible synthesis
+
+
+class TestControlSafeguards:
+    @pytest.mark.asyncio
+    async def test_meta_turn_hides_use_skill(self, kernel, security):
+        mock_llm = MockLLMProvider()
+        manager = SkillManager(kernel)
+        await manager.register(_OnDemandBrowserSkill())
+        router = SkillRouter(manager)
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=3),
+            router=router,
+        )
+
+        mock_llm.set_response("I should have planned before starting.")
+
+        async for _ in agent.run("Why did you not plan before using the browser?"):
+            pass
+
+        names = {t.name for t in (mock_llm.last_tools or [])}
+        assert USE_SKILL_TOOL not in names
+
+    @pytest.mark.asyncio
+    async def test_plan_gate_nudges_before_any_tool(self, kernel, security):
+        mock_llm = MockLLMProvider()
+        manager = SkillManager(kernel)
+
+        @tool(name="greet")
+        async def greet(name: str) -> str:
+            return f"Hello, {name}!"
+
+        await manager.register(FunctionSkill("test", "Test", [greet]))
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=6),
+        )
+
+        mock_llm.set_tool_call("greet", {"name": "World"})
+        mock_llm.set_tool_call(
+            "update_plan",
+            {"plan": [
+                {"step": "Greet user", "status": "in_progress"},
+                {"step": "Respond", "status": "pending"},
+            ]},
+        )
+        mock_llm.set_tool_call("greet", {"name": "World"})
+        mock_llm.set_response("Done after planning first.")
+
+        chunks = []
+        async for chunk in agent.run("Say hello to World."):
+            chunks.append(chunk)
+
+        response = "".join(chunks)
+        assert "Done after planning first." in response
+        msgs = agent.memory.get_messages(include_system=False)
+        nudge_found = any(
+            "create a short plan" in (m.content or "").lower()
+            for m in msgs if m.role == "user"
+        )
+        assert nudge_found
+
+    @pytest.mark.asyncio
+    async def test_repeated_failures_force_explanation_mode(self, kernel, security):
+        mock_llm = MockLLMProvider()
+        manager = SkillManager(kernel)
+        await manager.register(_AlwaysFailSkill())
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=6),
+        )
+
+        mock_llm.set_tool_call(
+            "update_plan",
+            {"plan": [
+                {"step": "Try browser", "status": "in_progress"},
+                {"step": "Explain failure", "status": "pending"},
+            ]},
+        )
+        mock_llm.set_tool_call("browser_go", {})
+        mock_llm.set_tool_call("browser_go", {})
+        mock_llm.set_response("The browser tool kept failing, so I stopped and am explaining.")
+
+        chunks = []
+        async for chunk in agent.run("Open the browser and check flights."):
+            chunks.append(chunk)
+
+        response = "".join(chunks)
+        assert "explaining" in response.lower()
+        msgs = agent.memory.get_messages(include_system=False)
+        breaker_found = any(
+            "recent tool attempts failed" in (m.content or "").lower()
+            for m in msgs if m.role == "user"
+        )
+        assert breaker_found
