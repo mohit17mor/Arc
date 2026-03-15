@@ -879,17 +879,15 @@ class CLIPlatform(Platform):
         
         try:
             async for chunk in handler(user_input):
-                # First text chunk — print agent name header
                 if chunk.strip() and not response_started:
                     response_started = True
                     self._console.print()
                     self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
-                
+
                 if response_started:
                     self._console.print(chunk, end="", highlight=False)
                     response_text += chunk
-            
-            # Ensure newline at end
+
             if response_started:
                 self._console.print()
             elif self._tool_call_count > 0:

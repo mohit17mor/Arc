@@ -143,9 +143,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .mg.system{align-self:center;background:transparent;color:var(--dim);font-size:12px;padding:4px 8px}
 .mg.event{align-self:flex-start;background:transparent;color:var(--yellow);font-size:12px;padding:2px 8px;max-width:90%}
 .stl{align-self:flex-start;background:transparent;color:var(--yellow);font-size:12px;padding:2px 8px;max-width:90%;transition:opacity .15s}
-.pnl{position:fixed;top:54px;right:16px;width:270px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+.pnl{position:fixed;left:236px;bottom:84px;width:270px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
   box-shadow:0 4px 20px rgba(0,0,0,.4);z-index:20;overflow:hidden;transition:transform .2s,opacity .2s}
-.pnl.hid{transform:translateX(310px);opacity:0;pointer-events:none}
+.pnl.hid{transform:translateY(24px);opacity:0;pointer-events:none}
 .pnl-h{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);cursor:default;user-select:none}
 .pnl-h h3{margin:0;font-size:13px;color:var(--accent)}
 .pnl-h .pp{font-size:12px;color:var(--dim)}
@@ -579,8 +579,8 @@ function app(){return{
         if(x.source&&x.source!=='webchat'){this._as(m,x.source,x.user_input,x.response)}
         else{this._am(m,'user',x.user_input);this._am(m,'agent',x.response)}});m.scrollTop=m.scrollHeight}break;
       case'thinking':if(m)this._st(m);break;
-      case'chunk':this._ht();this._xsl();if(m)this._ac(m,d.content);break;
-      case'done':this._ht();this._xsl();this.cMsg=null;break;
+      case'chunk':if(m){this._sp();this._ac(m,d.content)}break;
+      case'done':this._ht();this._xsl();if(m&&d.full_content){if(!this.cMsg)this._am(m,'agent',d.full_content);else if(!this.cMsg.textContent)this.cMsg.textContent=d.full_content}this.cMsg=null;break;
       case'error':this._ht();this._xsl();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
       case'command_result':if(m)this._am(m,'agent',d.content||'');break;
       case'event':if(m)this._he(m,d.event,d.data);
@@ -595,6 +595,7 @@ function app(){return{
   _am(m,c,t){const e=document.createElement('div');e.className='mg '+c;e.textContent=t;m.appendChild(e)},
   _as(m,s,u,r){const l=document.createElement('div');l.className='sl';l.textContent='via '+s;m.appendChild(l);if(u)this._am(m,'user',u);if(r)this._am(m,'agent',r)},
   _st(m){if(this.thEl)return;this.thEl=document.createElement('div');this.thEl.className='thk';this.thEl.textContent='Thinking';m.appendChild(this.thEl)},
+  _sp(){if(!this.thEl)return;this.thEl.textContent='Arc is still processing'},
   _ht(){if(this.thEl){this.thEl.remove();this.thEl=null}},
   _ac(m,t){if(!this.cMsg){this.cMsg=document.createElement('div');this.cMsg.className='mg agent';m.appendChild(this.cMsg)}this.cMsg.textContent+=t},
   _he(m,et,ed){const sl=this._gsl(m);

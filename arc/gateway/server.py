@@ -452,7 +452,9 @@ class GatewayServer(Platform):
         # Signal that we're thinking
         await ws.send_json({"type": "thinking"})
 
-        # Collect full response while streaming chunks
+        # Collect the full response while streaming chunks. The UI keeps a
+        # persistent "thinking" indicator visible until done so users can see
+        # the turn is still active even while text is streaming.
         full_response = ""
         try:
             async for chunk in self._handler(user_input):
@@ -465,14 +467,13 @@ class GatewayServer(Platform):
             logger.error(f"Agent error: {e}")
             error_text = f"\n\nSorry, something went wrong: {e}"
             full_response += error_text
-            # Send the error as a chunk so the user sees it inline
             try:
                 await ws.send_json({
                     "type": "chunk",
                     "content": error_text,
                 })
             except Exception:
-                pass  # WebSocket may have closed
+                pass
 
         # Always signal completion — even after errors.
         # This ensures WebChat exits "thinking" state and the exchange

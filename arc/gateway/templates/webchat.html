@@ -132,8 +132,8 @@
   /* ━━━ Plan panel ━━━ */
   .plan-panel {
     position: fixed;
-    top: 50px;
-    right: 16px;
+    left: 16px;
+    bottom: 84px;
     width: 280px;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -144,7 +144,7 @@
     transition: transform 0.2s, opacity 0.2s;
   }
   .plan-panel.hidden {
-    transform: translateX(320px);
+    transform: translateY(24px);
     opacity: 0;
     pointer-events: none;
   }
@@ -197,7 +197,7 @@
   .plan-step.completed .step-text { text-decoration: line-through; }
   .plan-step.in_progress { color: var(--accent); font-weight: 600; }
   @media (max-width: 600px) {
-    .plan-panel { right: 8px; left: 8px; width: auto; top: 45px; }
+    .plan-panel { right: 8px; left: 8px; width: auto; bottom: 78px; }
   }
   .sync-label {
     font-size: 11px;
@@ -484,14 +484,18 @@
         break;
 
       case 'chunk':
-        hideThinking();
-        clearStatus();
+        setProcessing();
         appendChunk(data.content);
         break;
 
       case 'done':
         hideThinking();
         clearStatus();
+        if (!currentAgentMsg && data.full_content) {
+          addAgent(data.full_content);
+        } else if (currentAgentMsg && data.full_content && !currentAgentMsg.textContent) {
+          currentAgentMsg.textContent = data.full_content;
+        }
         finalizeAgent();
         break;
 
@@ -762,6 +766,10 @@
     thinkingEl.textContent = 'Thinking';
     messagesEl.appendChild(thinkingEl);
     scrollDown();
+  }
+  function setProcessing() {
+    if (!thinkingEl) showThinking();
+    if (thinkingEl) thinkingEl.textContent = 'Arc is still processing';
   }
   function hideThinking() {
     if (thinkingEl) {

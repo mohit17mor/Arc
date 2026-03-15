@@ -163,7 +163,6 @@ async def test_websocket_chat(client):
         thinking = await ws.receive_json()
         assert thinking["type"] == "thinking"
 
-        # Collect chunks
         chunks = []
         while True:
             msg = await ws.receive_json()
@@ -198,7 +197,6 @@ async def test_websocket_plain_text(client):
         thinking = await ws.receive_json()
         assert thinking["type"] == "thinking"
 
-        # Drain chunks until done
         while True:
             msg = await ws.receive_json()
             if msg["type"] == "done":
