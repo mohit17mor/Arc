@@ -75,7 +75,21 @@ async def gateway_app(tmp_path):
     app.router.add_get("/ws", gw._handle_ws)
     app.router.add_get("/health", gw._handle_health)
     app.router.add_get("/status", gw._handle_status)
+    app.router.add_get("/api/tasks", gw._api_list_tasks)
+    app.router.add_post("/api/tasks", gw._api_create_task)
+    app.router.add_get("/api/tasks/{task_id}", gw._api_get_task)
     app.router.add_post("/api/tasks/clear", gw._api_clear_tasks)
+    app.router.add_post("/api/tasks/{task_id}/cancel", gw._api_cancel_task)
+    app.router.add_post("/api/tasks/{task_id}/reply", gw._api_reply_task)
+    app.router.add_get("/api/agents", gw._api_list_agents)
+    app.router.add_post("/api/agents", gw._api_create_agent)
+    app.router.add_delete("/api/agents/{name}", gw._api_delete_agent)
+    app.router.add_get("/api/overview", gw._api_overview)
+    app.router.add_get("/api/scheduler", gw._api_list_jobs)
+    app.router.add_post("/api/scheduler/{job_id}/cancel", gw._api_cancel_job)
+    app.router.add_get("/api/skills", gw._api_list_skills)
+    app.router.add_get("/api/mcp", gw._api_list_mcp)
+    app.router.add_get("/api/logs", gw._api_get_logs)
     gw._running = True
     gw._start_time = time.time()
 
@@ -402,3 +416,716 @@ async def test_api_llm_providers_lists_all_presets():
     assert "codex" in names
     assert "responses" in names
     assert "openai" in names
+
+
+# ━━━ record_event and event ring buffer ━━━
+
+
+def test_record_event_stores_entry():
+    """record_event appends to the event log."""
+    gw = GatewayServer()
+    gw.record_event("test:event", "unit_test", {"key": "value"})
+    assert len(gw._event_log) == 1
+    entry = gw._event_log[0]
+    assert entry["type"] == "test:event"
+    assert entry["source"] == "unit_test"
+    assert entry["data"]["key"] == "value"
+    assert "timestamp" in entry
+
+
+def test_record_event_caps_at_max():
+    """Event log caps at _max_events."""
+    gw = GatewayServer()
+    gw._max_events = 5
+    for i in range(10):
+        gw.record_event("e", "s", {"i": i})
+    assert len(gw._event_log) == 5
+    # Should keep the latest events
+    assert gw._event_log[0]["data"]["i"] == 5
+    assert gw._event_log[-1]["data"]["i"] == 9
+
+
+def test_record_event_filters_large_data():
+    """record_event filters out oversized or non-primitive values."""
+    gw = GatewayServer()
+    gw.record_event("e", "s", {
+        "ok": "small",
+        "big_str": "x" * 600,  # string itself is fine (it's primitive)
+        "func": lambda: None,  # non-primitive, should be filtered
+    })
+    entry = gw._event_log[0]
+    assert "ok" in entry["data"]
+    # lambda is not a primitive type and should be excluded
+    assert "func" not in entry["data"]
+
+
+# ━━━ _record_history ━━━
+
+
+def test_record_history_caps_at_max():
+    """History buffer caps at _max_history."""
+    gw = GatewayServer()
+    gw._max_history = 3
+    for i in range(5):
+        gw._record_history("src", f"q{i}", f"a{i}")
+    assert len(gw._history) == 3
+    assert gw._history[0]["user_input"] == "q2"
+    assert gw._history[-1]["user_input"] == "q4"
+
+
+# ━━━ WebSocket: status message type ━━━
+
+
+async def test_websocket_status_message(client):
+    """Sending type=status returns current status."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "status"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "status"
+        assert "connected_clients" in msg
+        assert "total_messages" in msg
+
+
+# ━━━ WebSocket: history replay on connect ━━━
+
+
+async def test_websocket_history_replay(client):
+    """New connections receive chat history."""
+    c, gw, store = client
+    # Pre-populate history
+    gw._record_history("webchat", "hi", "hello back")
+    async with c.ws_connect("/ws") as ws:
+        welcome = await ws.receive_json()
+        assert welcome["type"] == "connected"
+        history = await ws.receive_json()
+        assert history["type"] == "history"
+        assert len(history["messages"]) == 1
+        assert history["messages"][0]["user_input"] == "hi"
+
+
+# ━━━ WebSocket: agent error during chat ━━━
+
+
+async def test_websocket_chat_agent_error(gateway_app):
+    """Agent errors are sent inline as chunks and a done is still emitted."""
+    app, gw, store = gateway_app
+
+    async def failing_handler(user_input: str):
+        yield "start "
+        raise RuntimeError("boom")
+
+    gw._handler = failing_handler
+
+    async with TestClient(TestServer(app)) as c:
+        async with c.ws_connect("/ws") as ws:
+            await ws.receive_json()  # welcome
+            await ws.send_json({"type": "message", "content": "trigger error"})
+            thinking = await ws.receive_json()
+            assert thinking["type"] == "thinking"
+
+            chunks = []
+            done_msg = None
+            while True:
+                msg = await ws.receive_json()
+                if msg["type"] == "chunk":
+                    chunks.append(msg["content"])
+                elif msg["type"] == "done":
+                    done_msg = msg
+                    break
+
+            full = "".join(chunks)
+            assert "start" in full
+            assert "boom" in full
+            assert done_msg is not None
+    await store.close()
+
+
+# ━━━ REST API: GET /api/tasks ━━━
+
+
+async def test_api_list_tasks_empty(client):
+    """GET /api/tasks returns empty list when no tasks exist."""
+    c, gw, store = client
+    resp = await c.get("/api/tasks")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+async def test_api_list_tasks_with_tasks(client):
+    """GET /api/tasks returns saved tasks."""
+    c, gw, store = client
+    t = Task(title="Test", instruction="Do it", assigned_agent="worker")
+    await store.save(t)
+    resp = await c.get("/api/tasks")
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["title"] == "Test"
+
+
+async def test_api_list_tasks_filter_by_status(client):
+    """GET /api/tasks?status=done filters correctly."""
+    c, gw, store = client
+    t1 = Task(title="Done", instruction="i", status=TaskStatus.DONE, assigned_agent="w")
+    t2 = Task(title="Queued", instruction="i", status=TaskStatus.QUEUED, assigned_agent="w")
+    await store.save(t1)
+    await store.save(t2)
+    resp = await c.get("/api/tasks?status=done")
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["title"] == "Done"
+
+
+# ━━━ REST API: GET /api/tasks/{task_id} ━━━
+
+
+async def test_api_get_task_found(client):
+    """GET /api/tasks/{id} returns task with comments."""
+    c, gw, store = client
+    t = Task(title="Detail", instruction="check", assigned_agent="w")
+    await store.save(t)
+    await store.add_comment(t.id, "worker", "Started work")
+    resp = await c.get(f"/api/tasks/{t.id}")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["title"] == "Detail"
+    assert len(data["comments"]) == 1
+    assert data["comments"][0]["content"] == "Started work"
+
+
+async def test_api_get_task_not_found(client):
+    """GET /api/tasks/{id} returns 404 for missing task."""
+    c, gw, store = client
+    resp = await c.get("/api/tasks/nonexistent")
+    assert resp.status == 404
+
+
+# ━━━ REST API: POST /api/tasks (create) ━━━
+
+
+async def test_api_create_task_with_agent(client):
+    """POST /api/tasks creates a task with assigned_agent."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks", json={
+        "title": "New task",
+        "instruction": "Do something",
+        "assigned_agent": "researcher",
+    })
+    assert resp.status == 201
+    data = await resp.json()
+    assert data["title"] == "New task"
+    assert data["assigned_agent"] == "researcher"
+
+
+async def test_api_create_task_with_steps(client):
+    """POST /api/tasks creates multi-step task."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks", json={
+        "title": "Multi-step",
+        "steps": [
+            {"agent": "writer"},
+            {"agent": "reviewer", "review_by": "human"},
+        ],
+    })
+    assert resp.status == 201
+    data = await resp.json()
+    assert len(data["steps"]) == 2
+    assert data["steps"][1]["review_by"] == "human"
+
+
+async def test_api_create_task_missing_title(client):
+    """POST /api/tasks rejects empty title."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks", json={"instruction": "no title"})
+    assert resp.status == 400
+    data = await resp.json()
+    assert "title" in data["error"]
+
+
+async def test_api_create_task_missing_agent_and_steps(client):
+    """POST /api/tasks rejects when neither agent nor steps given."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks", json={"title": "No agent"})
+    assert resp.status == 400
+    data = await resp.json()
+    assert "agent" in data["error"].lower() or "steps" in data["error"].lower()
+
+
+async def test_api_create_task_invalid_json(client):
+    """POST /api/tasks rejects non-JSON body."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks", data=b"not json",
+                        headers={"Content-Type": "application/json"})
+    assert resp.status == 400
+
+
+# ━━━ REST API: POST /api/tasks/{id}/cancel ━━━
+
+
+async def test_api_cancel_task(client):
+    """POST /api/tasks/{id}/cancel sets status to cancelled."""
+    c, gw, store = client
+    t = Task(title="Cancel me", instruction="i", assigned_agent="w")
+    await store.save(t)
+    resp = await c.post(f"/api/tasks/{t.id}/cancel")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "cancelled"
+    # Verify in store
+    updated = await store.get_by_id(t.id)
+    assert updated.status == TaskStatus.CANCELLED
+
+
+async def test_api_cancel_task_not_found(client):
+    """POST /api/tasks/{id}/cancel returns 404 for unknown task."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks/fake-id/cancel")
+    assert resp.status == 404
+
+
+async def test_api_cancel_already_done_task(client):
+    """POST /api/tasks/{id}/cancel returns 404 for already-done task."""
+    c, gw, store = client
+    t = Task(title="Done", instruction="i", status=TaskStatus.DONE, assigned_agent="w")
+    await store.save(t)
+    resp = await c.post(f"/api/tasks/{t.id}/cancel")
+    assert resp.status == 404
+
+
+# ━━━ REST API: POST /api/tasks/{id}/reply ━━━
+
+
+async def test_api_reply_task_no_processor(client):
+    """POST /api/tasks/{id}/reply returns 503 without task processor."""
+    c, gw, store = client
+    resp = await c.post("/api/tasks/any-id/reply", json={"reply": "ok"})
+    assert resp.status == 503
+
+
+async def test_api_reply_task_missing_reply(client):
+    """POST /api/tasks/{id}/reply rejects empty reply."""
+    c, gw, store = client
+    mock_proc = AsyncMock()
+    gw.set_task_processor(mock_proc)
+    resp = await c.post("/api/tasks/any-id/reply", json={"reply": ""})
+    assert resp.status == 400
+
+
+async def test_api_reply_task_success(client):
+    """POST /api/tasks/{id}/reply forwards to task processor."""
+    c, gw, store = client
+    mock_proc = AsyncMock()
+    mock_proc.handle_human_reply = AsyncMock(return_value="Reply accepted")
+    gw.set_task_processor(mock_proc)
+    resp = await c.post("/api/tasks/t-123/reply", json={"reply": "looks good", "action": "approve"})
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["message"] == "Reply accepted"
+    mock_proc.handle_human_reply.assert_called_once_with("t-123", "looks good", "approve")
+
+
+# ━━━ REST API: GET /api/overview ━━━
+
+
+async def test_api_overview(client):
+    """GET /api/overview returns system overview."""
+    c, gw, store = client
+    t = Task(title="T", instruction="i", status=TaskStatus.DONE, assigned_agent="w")
+    await store.save(t)
+    gw.set_cost_tracker({"total_tokens": 500})
+    resp = await c.get("/api/overview")
+    assert resp.status == 200
+    data = await resp.json()
+    assert "uptime_s" in data
+    assert data["connected_clients"] == 0
+    assert data["tasks"]["total"] == 1
+    assert data["tasks"]["by_status"]["done"] == 1
+    assert data["cost"]["total_tokens"] == 500
+
+
+async def test_api_overview_without_store():
+    """GET /api/overview works without task store."""
+    gw = GatewayServer()
+    gw._start_time = time.time()
+    gw._running = True
+    request = AsyncMock()
+    resp = await gw._api_overview(request)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+    assert "tasks" not in data
+
+
+# ━━━ REST API: GET /api/agents ━━━
+
+
+async def test_api_list_agents(client):
+    """GET /api/agents returns configured agents."""
+    c, gw, store = client
+    from arc.tasks.types import AgentDef
+    gw.set_agent_defs({
+        "writer": AgentDef(name="writer", role="Write content"),
+    })
+    resp = await c.get("/api/agents")
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "writer"
+    assert data[0]["role"] == "Write content"
+
+
+async def test_api_list_agents_empty(client):
+    """GET /api/agents returns empty when no agents defined."""
+    c, gw, store = client
+    resp = await c.get("/api/agents")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+# ━━━ REST API: DELETE /api/agents/{name} ━━━
+
+
+async def test_api_delete_agent(client, tmp_path, monkeypatch):
+    """DELETE /api/agents/{name} removes agent file."""
+    c, gw, store = client
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "test_agent.toml").write_text('[agent]\nname = "test_agent"\nrole = "test"\n')
+    monkeypatch.setattr("arc.tasks.agents._AGENTS_DIR", agents_dir)
+    resp = await c.delete("/api/agents/test_agent")
+    assert resp.status == 200
+    assert not (agents_dir / "test_agent.toml").exists()
+
+
+async def test_api_delete_agent_not_found(client, tmp_path, monkeypatch):
+    """DELETE /api/agents/{name} returns 404 for missing agent."""
+    c, gw, store = client
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    monkeypatch.setattr("arc.tasks.agents._AGENTS_DIR", agents_dir)
+    resp = await c.delete("/api/agents/nonexistent")
+    assert resp.status == 404
+
+
+# ━━━ REST API: GET /api/skills ━━━
+
+
+async def test_api_list_skills_no_manager(client):
+    """GET /api/skills returns empty when no skill manager."""
+    c, gw, store = client
+    resp = await c.get("/api/skills")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+async def test_api_list_skills_with_manager(client):
+    """GET /api/skills returns skill info."""
+    c, gw, store = client
+    mock_mgr = AsyncMock()
+    mock_mgr.skill_names = ["browsing"]
+
+    mock_tool = AsyncMock()
+    mock_tool.name = "web_search"
+    mock_tool.description = "Search the web"
+
+    mock_manifest = AsyncMock()
+    mock_manifest.name = "browsing"
+    mock_manifest.version = "1.0"
+    mock_manifest.description = "Web browsing"
+    mock_manifest.always_available = False
+    mock_manifest.tools = [mock_tool]
+
+    mock_mgr.get_manifest = lambda name: mock_manifest if name == "browsing" else None
+    gw.set_skill_manager(mock_mgr)
+
+    resp = await c.get("/api/skills")
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "browsing"
+    assert data[0]["tools"][0]["name"] == "web_search"
+
+
+# ━━━ REST API: GET /api/mcp ━━━
+
+
+async def test_api_list_mcp_no_manager(client):
+    """GET /api/mcp returns empty when no MCP manager."""
+    c, gw, store = client
+    resp = await c.get("/api/mcp")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+async def test_api_list_mcp_with_manager(client):
+    """GET /api/mcp returns server info."""
+    from unittest.mock import MagicMock
+    c, gw, store = client
+    mock_mgr = MagicMock()
+    mock_mgr.server_info.return_value = [
+        {"name": "github", "transport": "stdio", "connected": False, "tools": 5, "hint": ""},
+    ]
+    gw.set_mcp_manager(mock_mgr)
+    resp = await c.get("/api/mcp")
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "github"
+    assert data[0]["tools"] == 5
+
+
+# ━━━ REST API: GET /api/logs ━━━
+
+
+async def test_api_get_logs_empty(client):
+    """GET /api/logs returns empty array by default."""
+    c, gw, store = client
+    resp = await c.get("/api/logs")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+async def test_api_get_logs_returns_events(client):
+    """GET /api/logs returns recorded events."""
+    c, gw, store = client
+    gw.record_event("skill:call", "agent", {"tool": "web_search"})
+    gw.record_event("memory:store", "memory", {"count": 1})
+    resp = await c.get("/api/logs")
+    data = await resp.json()
+    assert len(data) == 2
+
+
+async def test_api_get_logs_filter_by_source(client):
+    """GET /api/logs?source=memory filters by source."""
+    c, gw, store = client
+    gw.record_event("skill:call", "agent", {})
+    gw.record_event("memory:store", "memory", {})
+    resp = await c.get("/api/logs?source=memory")
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["source"] == "memory"
+
+
+async def test_api_get_logs_respects_limit(client):
+    """GET /api/logs?limit=2 caps results."""
+    c, gw, store = client
+    for i in range(5):
+        gw.record_event("e", "s", {"i": i})
+    resp = await c.get("/api/logs?limit=2")
+    data = await resp.json()
+    assert len(data) == 2
+
+
+# ━━━ REST API: GET /api/scheduler ━━━
+
+
+async def test_api_list_jobs_no_store(client):
+    """GET /api/scheduler returns empty when no scheduler store."""
+    c, gw, store = client
+    resp = await c.get("/api/scheduler")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data == []
+
+
+# ━━━ REST API: POST /api/scheduler/{id}/cancel ━━━
+
+
+async def test_api_cancel_job_no_store(client):
+    """POST /api/scheduler/{id}/cancel returns 503 without store."""
+    c, gw, store = client
+    resp = await c.post("/api/scheduler/job-1/cancel")
+    assert resp.status == 503
+
+
+# ━━━ REST API: 503 when stores are missing ━━━
+
+
+async def test_api_tasks_503_without_store(gateway_app):
+    """Task APIs return 503 when task store not set."""
+    app, gw, store = gateway_app
+    gw._task_store = None  # Remove store
+
+    async with TestClient(TestServer(app)) as c:
+        for endpoint in ["/api/tasks", f"/api/tasks/x"]:
+            resp = await c.get(endpoint)
+            assert resp.status == 503
+
+        resp = await c.post("/api/tasks", json={"title": "t", "assigned_agent": "a"})
+        assert resp.status == 503
+
+        resp = await c.post("/api/tasks/x/cancel")
+        assert resp.status == 503
+
+        resp = await c.post("/api/tasks/clear", json={"task_ids": ["x"]})
+        assert resp.status == 503
+    await store.close()
+
+
+# ━━━ broadcast_notification ━━━
+
+
+async def test_broadcast_notification(client):
+    """broadcast_notification sends to all WS clients."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+
+        mock_notif = AsyncMock()
+        mock_notif.job_name = "daily_report"
+        mock_notif.content = "Report generated"
+        mock_notif.fired_at = 1234567890
+
+        await gw.broadcast_notification(mock_notif)
+        msg = await ws.receive_json()
+        assert msg["type"] == "notification"
+        assert msg["job_name"] == "daily_report"
+        assert msg["content"] == "Report generated"
+
+
+# ━━━ Slash commands: /clear ━━━
+
+
+async def test_slash_clear(client):
+    """/clear clears session memory if available."""
+    from unittest.mock import MagicMock
+    c, gw, store = client
+    mock_session = MagicMock()
+    gw.set_session_memory(mock_session)
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "message", "content": "/clear"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "command_result"
+        assert "cleared" in msg["content"].lower()
+        mock_session.clear.assert_called_once()
+
+
+# ━━━ Slash commands: /memory without manager ━━━
+
+
+async def test_slash_memory_no_manager(client):
+    """/memory without memory manager shows unavailable."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "message", "content": "/memory"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "command_result"
+        assert "not available" in msg["content"].lower()
+
+
+# ━━━ Slash commands: /jobs without store ━━━
+
+
+async def test_slash_jobs_no_store(client):
+    """/jobs without scheduler store shows unavailable."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "message", "content": "/jobs"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "command_result"
+        assert "not available" in msg["content"].lower()
+
+
+# ━━━ Slash commands: /mcp without manager ━━━
+
+
+async def test_slash_mcp_no_manager(client):
+    """/mcp without MCP manager shows not configured."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "message", "content": "/mcp"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "command_result"
+        assert "not configured" in msg["content"].lower() or "no mcp" in msg["content"].lower()
+
+
+# ━━━ Slash commands: /workflow without skill ━━━
+
+
+async def test_slash_workflow_no_skill(client):
+    """/workflow without workflow skill shows unavailable."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws:
+        await ws.receive_json()  # welcome
+        await ws.send_json({"type": "message", "content": "/workflow"})
+        msg = await ws.receive_json()
+        assert msg["type"] == "command_result"
+        assert "not available" in msg["content"].lower()
+
+
+# ━━━ Dependency setters ━━━
+
+
+def test_dependency_setters():
+    """All dependency setters store their values."""
+    gw = GatewayServer()
+    mock = AsyncMock()
+
+    gw.set_skill_manager(mock)
+    assert gw._skill_manager is mock
+
+    gw.set_memory_manager(mock)
+    assert gw._memory_manager is mock
+
+    gw.set_scheduler_store(mock)
+    assert gw._scheduler_store is mock
+
+    gw.set_mcp_manager(mock)
+    assert gw._mcp_manager is mock
+
+    gw.set_session_memory(mock)
+    assert gw._session_memory is mock
+
+    gw.set_workflow_skill(mock)
+    assert gw._workflow_skill is mock
+
+    gw.set_kernel(mock)
+    assert gw._kernel is mock
+
+    gw.set_task_processor(mock)
+    assert gw._task_processor is mock
+
+    gw.set_agent_defs({"a": mock})
+    assert gw._agent_defs == {"a": mock}
+
+
+# ━━━ Multiple WebSocket clients ━━━
+
+
+async def test_multiple_clients_sync(client):
+    """Messages from one client are synced to others."""
+    c, gw, store = client
+    async with c.ws_connect("/ws") as ws1:
+        await ws1.receive_json()  # welcome
+        async with c.ws_connect("/ws") as ws2:
+            await ws2.receive_json()  # welcome
+            assert gw.client_count == 2
+
+            # ws1 sends a message
+            await ws1.send_json({"type": "message", "content": "hello sync"})
+
+            # ws2 should receive the broadcast user message
+            sync_msg = await ws2.receive_json()
+            assert sync_msg["type"] == "sync_user"
+            assert sync_msg["user_input"] == "hello sync"
+
+            # ws1 gets thinking + chunks + done
+            thinking = await ws1.receive_json()
+            assert thinking["type"] == "thinking"
+            while True:
+                msg = await ws1.receive_json()
+                if msg["type"] == "done":
+                    break
+
+            # ws2 gets the sync response
+            sync_resp = await ws2.receive_json()
+            assert sync_resp["type"] == "sync"
+            assert "hello sync" in sync_resp["user_input"]
