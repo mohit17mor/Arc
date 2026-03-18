@@ -75,8 +75,13 @@ class CLIPlatform(Platform):
 
         # Track state for display
         self._printed_thinking = False
+        self._printed_analyzing = False
         self._tool_call_count = 0
         self._waiting_for_approval = False
+        self._interactive_prompt_active = False
+        self._interrupt_stop_event: threading.Event | None = None
+        self._interrupt_task: asyncio.Task | None = None
+        self._terminal_input_lock = asyncio.Lock()
         self._interrupt_requested = False
         
         # Command history
@@ -139,8 +144,9 @@ class CLIPlatform(Platform):
             if iteration == 1 and not self._printed_thinking:
                 self._console.print("[dim]Thinking...[/dim]")
                 self._printed_thinking = True
-            elif iteration > 1:
+            elif iteration > 1 and not self._printed_analyzing:
                 self._console.print("[dim]Analyzing...[/dim]")
+                self._printed_analyzing = True
         
         elif event.type == EventType.SKILL_TOOL_CALL:
             tool_name = event.data.get("tool", "unknown")
@@ -191,6 +197,22 @@ class CLIPlatform(Platform):
             icon = "[green]✓[/green]" if success else "[red]✗[/red]"
             self._console.print(f"{icon} [dim]Worker '[bold]{task_name}[/bold]' done[/dim]")
 
+        elif event.type == EventType.AGENT_PLAN_UPDATE:
+            if event.source != "main":
+                return
+            plan = event.data.get("plan", []) or []
+            if not plan:
+                return
+            lifecycle = event.data.get("lifecycle_status", "active")
+            done = sum(1 for step in plan if step.get("status") == "completed")
+            current = next((step.get("step", "") for step in plan if step.get("status") == "in_progress"), "")
+            if lifecycle == "interrupted":
+                self._console.print(f"[yellow]📋 Interrupted plan[/yellow] [dim][{done}/{len(plan)}][/dim]")
+            elif current:
+                self._console.print(f"[cyan]📋 Plan[/cyan] [dim][{done}/{len(plan)}][/dim] {current}")
+            else:
+                self._console.print(f"[cyan]📋 Plan[/cyan] [dim]{done}/{len(plan)} steps complete[/dim]")
+
         # ── Workflow events ──
 
         elif event.type == EventType.WORKFLOW_START:
@@ -239,6 +261,36 @@ class CLIPlatform(Platform):
                 )
             )
     
+    async def _read_plain_line(self) -> str:
+        """Read one line with plain stdin after exclusive terminal ownership is acquired."""
+        loop = asyncio.get_running_loop()
+        async with self._terminal_input_lock:
+            return await loop.run_in_executor(None, input)
+
+    async def _suspend_interrupt_monitor(self) -> None:
+        stop_event = self._interrupt_stop_event
+        interrupt_task = self._interrupt_task
+        if stop_event is not None:
+            stop_event.set()
+        current = asyncio.current_task()
+        if interrupt_task is not None and interrupt_task is not current and not interrupt_task.done():
+            await asyncio.gather(interrupt_task, return_exceptions=True)
+        if interrupt_task is not None and interrupt_task.done():
+            self._interrupt_task = None
+
+    async def _prompt_line(self, message: str) -> str:
+        """Read one line via prompt_toolkit so terminal ownership stays consistent."""
+        loop = asyncio.get_running_loop()
+        async with self._terminal_input_lock:
+            self._interactive_prompt_active = True
+            try:
+                return await loop.run_in_executor(
+                    None,
+                    lambda: self._session.prompt(message),
+                )
+            finally:
+                self._interactive_prompt_active = False
+
     async def _handle_approval_request(self, event: Event) -> None:
         """Show approval prompt and resolve the request."""
         request_id = event.data.get("request_id", "")
@@ -281,8 +333,8 @@ class CLIPlatform(Platform):
         # terminal ownership.
         self._console.print("[bold]Allow? ([green]y[/green]=once  [green]a[/green]=always  [red]n[/red]=deny  [red]d[/red]=deny always)[/bold] ", end="")
         try:
-            loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(None, input)
+            await self._suspend_interrupt_monitor()
+            raw = await self._read_plain_line()
             response = raw.strip().lower() or "n"
             if response not in ("y", "a", "n", "d"):
                 response = "n"
@@ -334,8 +386,8 @@ class CLIPlatform(Platform):
         self._console.print("[dim]Type your answer and press Enter:[/dim] ", end="")
 
         try:
-            loop = asyncio.get_running_loop()
-            answer = await loop.run_in_executor(None, input)
+            await self._suspend_interrupt_monitor()
+            answer = await self._read_plain_line()
             answer = answer.strip() or "(no answer)"
         except (KeyboardInterrupt, EOFError):
             answer = "(interrupted)"
@@ -348,6 +400,7 @@ class CLIPlatform(Platform):
     def _reset_state(self) -> None:
         """Reset display state for new message."""
         self._printed_thinking = False
+        self._printed_analyzing = False
         self._tool_call_count = 0
 
     def _inject_pending_results(self, user_input: str) -> str:
@@ -541,10 +594,11 @@ class CLIPlatform(Platform):
         """Get input from user."""
         try:
             loop = asyncio.get_running_loop()
-            user_input = await loop.run_in_executor(
-                None,
-                lambda: self._session.prompt(f"\n{self._user_name} > "),
-            )
+            async with self._terminal_input_lock:
+                user_input = await loop.run_in_executor(
+                    None,
+                    lambda: self._session.prompt(f"\n{self._user_name} > "),
+                )
             return user_input.strip() if user_input else None
         except (KeyboardInterrupt, EOFError):
             return None
@@ -906,12 +960,14 @@ class CLIPlatform(Platform):
         response_started = False
         response_text = ""
         interrupt_stop = threading.Event()
+        self._interrupt_stop_event = interrupt_stop
         interrupt_task: asyncio.Task | None = None
         if self._turn_controller is not None:
             interrupt_task = asyncio.create_task(
                 self._monitor_escape_interrupt(interrupt_stop),
                 name="cli-escape-interrupt",
             )
+            self._interrupt_task = interrupt_task
 
         try:
             async for chunk in handler(user_input):
@@ -960,8 +1016,10 @@ class CLIPlatform(Platform):
             self._console.print(f"\n[red]Error: {e}[/red]")
         finally:
             interrupt_stop.set()
+            self._interrupt_stop_event = None
             if interrupt_task is not None:
                 await asyncio.gather(interrupt_task, return_exceptions=True)
+            self._interrupt_task = None
 
     async def _monitor_escape_interrupt(self, stop_event: threading.Event) -> None:
         if self._turn_controller is None:
@@ -979,11 +1037,21 @@ class CLIPlatform(Platform):
     def _wait_for_escape_blocking(self, stop_event: threading.Event) -> bool:
         if termios is None or tty is None or not sys.stdin.isatty():
             return False
+        if self._waiting_for_approval or self._interactive_prompt_active:
+            while not stop_event.is_set():
+                if not self._waiting_for_approval and not self._interactive_prompt_active:
+                    break
+                stop_event.wait(0.05)
+            if stop_event.is_set():
+                return False
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setcbreak(fd)
             while not stop_event.is_set():
+                if self._waiting_for_approval or self._interactive_prompt_active:
+                    stop_event.wait(0.05)
+                    continue
                 ready, _, _ = select.select([fd], [], [], 0.1)
                 if not ready:
                     continue
