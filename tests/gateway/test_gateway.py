@@ -92,6 +92,18 @@ def test_dashboard_template_inline_script_is_valid_javascript(tmp_path):
 
 
 
+
+
+def test_dashboard_template_limits_plan_panel_to_main_agent_and_supports_minimize():
+    """Plan panel should only render main-agent plans and expose a minimize control."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "ed.source!=='main'" in template or 'ed.source !== "main"' in template
+    assert "plan-min" in template
+    assert "planMin" in template
+    assert "@click=\"planMin=!planMin\"" in template
+    assert ":class=\"{min:planMin}\"" in template or ":class=\"{min: planMin}\"" in template
+
+
 def test_dashboard_template_shows_visible_interrupt_message_in_chat():
     """Interrupted runs should show a prominent chat notice, not only a toast."""
     template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")

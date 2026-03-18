@@ -181,7 +181,7 @@ class AgentLoop:
 
         # Initialize planning skill (once, lazy)
         if not self._planning_initialized:
-            await self._planning.initialize(self._kernel, {})
+            await self._planning.initialize(self._kernel, {"agent_id": self._agent_id})
             self._planning_initialized = True
 
         # Reset the router so each user turn starts with a clean slate

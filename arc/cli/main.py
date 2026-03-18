@@ -555,7 +555,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     async def forward_to_gateway(event: Event) -> None:
         if event.source != "main" and event.type in _WORKER_INTERNAL:
             return
-        await gw.broadcast_event(event.type, event.data)
+        await gw.broadcast_event(event.type, {**event.data, "source": event.source})
 
     rt.kernel.on(EventType.AGENT_THINKING, forward_to_gateway)
     rt.kernel.on(EventType.SKILL_TOOL_CALL, forward_to_gateway)

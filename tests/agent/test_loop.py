@@ -195,6 +195,47 @@ async def test_events_emitted(agent, mock_llm, kernel):
     assert "agent:complete" in events
 
 
+
+
+@pytest.mark.asyncio
+async def test_plan_update_event_uses_agent_source(kernel, security):
+    """Plan updates should be tagged with the owning agent id."""
+    mock_llm = MockLLMProvider()
+    manager = SkillManager(kernel)
+    events = []
+
+    async def capture_event(event):
+        if event.type == "agent:plan_update":
+            events.append(event)
+
+    kernel.on("*", capture_event)
+
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=mock_llm,
+        skill_manager=manager,
+        security=security,
+        system_prompt="You are helpful.",
+        config=AgentConfig(max_iterations=4),
+        agent_id="main",
+    )
+
+    mock_llm.set_tool_call(
+        "update_plan",
+        {"plan": [
+            {"step": "Inspect repo", "status": "in_progress"},
+            {"step": "Report findings", "status": "pending"},
+        ]},
+    )
+    mock_llm.set_response("Done.")
+
+    async for _ in agent.run("Check this quickly"):
+        pass
+
+    assert events
+    assert events[-1].source == "main"
+    assert events[-1].data.get("agent_id") == "main"
+
 @pytest.mark.asyncio
 async def test_reset(agent, mock_llm):
     """Agent reset clears memory."""

@@ -177,7 +177,7 @@ class PlanningSkill(Skill):
 
     async def initialize(self, kernel: Any, config: dict[str, Any]) -> None:
         self._kernel = kernel
-        self._config = config
+        self._config = dict(config or {})
 
     async def execute_tool(
         self,
@@ -282,7 +282,7 @@ class PlanningSkill(Skill):
 
         await self._kernel.emit(Event(
             type=EventType.AGENT_PLAN_UPDATE,
-            source="planning",
+            source=str(self._config.get("agent_id", "planning")),
             data={
                 "plan": self._plan,
                 "explanation": explanation,
@@ -292,5 +292,6 @@ class PlanningSkill(Skill):
                 "lifecycle_status": self._lifecycle_status,
                 "interrupted": self.is_interrupted,
                 "reason": self._interruption_reason,
+                "agent_id": self._config.get("agent_id"),
             },
         ))

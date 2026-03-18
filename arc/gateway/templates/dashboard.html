@@ -147,6 +147,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .pnl{position:fixed;left:236px;bottom:84px;width:270px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
   box-shadow:0 4px 20px rgba(0,0,0,.4);z-index:20;overflow:hidden;transition:transform .2s,opacity .2s}
 .pnl.hid{transform:translateY(24px);opacity:0;pointer-events:none}
+.pnl.min .pnl-s{display:none}.pnl.min{width:240px}.pm{cursor:pointer;color:var(--dim);font-size:16px;line-height:1;padding:0 2px}.pm:hover{color:var(--text)}
 .pnl-h{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border);cursor:default;user-select:none}
 .pnl-h h3{margin:0;font-size:13px;color:var(--accent)}
 .pnl-h .pp{font-size:12px;color:var(--dim)}
@@ -261,7 +262,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <div :class="{show:pg==='chat'}" class="pg">
   <div class="tp"><h1>Chat</h1><button class="btn btn-r btn-sm" x-show="turnActive" @click="iT()">Stop</button></div>
   <div class="ms" id="messages"></div>
-  <div id="plan-panel" class="pnl hid"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
+  <div id="plan-panel" class="pnl hid" :class="{min:planMin}"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pm" id="plan-min" @click="planMin=!planMin" x-text="planMin?'+':'—'"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
   <div class="ia"><div class="ir" style="position:relative">
     <div class="cm" id="cmd-menu"></div>
     <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
@@ -536,7 +537,7 @@ function app(){return{
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
-  cMsg:null,thEl:null,hHist:false,turnActive:false,
+  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,
 
   init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
@@ -607,7 +608,7 @@ function app(){return{
     else if(et==='skill:tool_result'){sl.textContent=(ed.success?'✓':'✗')+' '+(ed.output_preview||'').replace(/\n/g,' ').slice(0,60);this._csl(1500)}
     else if(et==='agent:spawned'){sl.textContent='⟳ Worker "'+(ed.task_name||'')+'" started';this._csl(3000)}
     else if(et==='agent:task_complete'){sl.textContent=(ed.success?'✓':'✗')+' Worker "'+(ed.task_name||'')+'" done';this._csl(3000)}
-    else if(et==='agent:plan_update'){const plan=ed.plan||[];const ls=ed.lifecycle_status||'active';const done=plan.filter(s=>s.status==='completed').length;const cur=plan.find(s=>s.status==='in_progress');
+    else if(et==='agent:plan_update'){if(ed.source!=='main')return;const plan=ed.plan||[];const ls=ed.lifecycle_status||'active';const done=plan.filter(s=>s.status==='completed').length;const cur=plan.find(s=>s.status==='in_progress');
       if(ls==='interrupted')sl.textContent='⏸ Interrupted plan ['+done+'/'+plan.length+']';
       else if(cur)sl.textContent='📋 ['+done+'/'+plan.length+'] '+cur.step;
       else if(done===plan.length&&plan.length>0){sl.textContent='📋 ✓ All '+plan.length+' steps done';this._csl(2000)}
