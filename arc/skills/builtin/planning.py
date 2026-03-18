@@ -27,8 +27,9 @@ from arc.skills.base import Skill
 
 logger = logging.getLogger(__name__)
 
-# Valid statuses for plan steps
 _VALID_STATUSES = frozenset({"pending", "in_progress", "completed"})
+_PLAN_ACTIVE = "active"
+_PLAN_INTERRUPTED = "interrupted"
 
 
 class PlanningSkill(Skill):
@@ -42,10 +43,9 @@ class PlanningSkill(Skill):
     def __init__(self) -> None:
         self._kernel: Any = None
         self._config: dict = {}
-        # The current plan — list of {step: str, status: str}
         self._plan: list[dict[str, str]] = []
-
-    # ── Public API for AgentLoop to read ─────────────────────────────────
+        self._lifecycle_status: str = _PLAN_ACTIVE
+        self._interruption_reason: str | None = None
 
     @property
     def plan(self) -> list[dict[str, str]]:
@@ -57,44 +57,70 @@ class PlanningSkill(Skill):
         return bool(self._plan)
 
     @property
+    def has_active_plan(self) -> bool:
+        return bool(self._plan) and self._lifecycle_status == _PLAN_ACTIVE
+
+    @property
+    def lifecycle_status(self) -> str:
+        return self._lifecycle_status
+
+    @property
+    def interruption_reason(self) -> str | None:
+        return self._interruption_reason
+
+    @property
+    def is_interrupted(self) -> bool:
+        return bool(self._plan) and self._lifecycle_status == _PLAN_INTERRUPTED
+
+    @property
     def has_incomplete_steps(self) -> bool:
-        """True if any step is not yet completed."""
-        return any(s["status"] != "completed" for s in self._plan)
+        """True if the active plan still has unfinished work."""
+        return self.has_active_plan and any(
+            step["status"] != "completed" for step in self._plan
+        )
 
     def format_plan_for_context(self) -> str:
         """
         Render the plan as a short text block for injection into context.
 
-        Uses simple icons so every model can parse it:
-          ✅  completed
-          🔄  in_progress
-          ⬚   pending
+        Uses simple icons so every model can parse it.
         """
         if not self._plan:
             return ""
 
-        lines = ["## Your Current Plan"]
+        if self.is_interrupted:
+            lines = [
+                "## Interrupted Previous Plan",
+                (
+                    "This plan was interrupted by the user. Do NOT continue it "
+                    "automatically. Only resume it if the user explicitly asks; "
+                    "otherwise create or update the plan for the new request."
+                ),
+            ]
+            if self._interruption_reason:
+                lines.append(f"Interruption reason: {self._interruption_reason}")
+        else:
+            lines = ["## Your Current Plan"]
+
         for i, step in enumerate(self._plan, 1):
             status = step["status"]
             if status == "completed":
                 icon = "✅"
             elif status == "in_progress":
-                icon = "🔄"
+                icon = "⏸" if self.is_interrupted else "🔄"
             else:
                 icon = "⬚"
-            suffix = "  ← you are here" if status == "in_progress" else ""
+            suffix = "  ← you are here" if status == "in_progress" and not self.is_interrupted else ""
             lines.append(f"{i}. {icon} {step['step']}{suffix}")
         return "\n".join(lines)
-
-    # ── Skill ABC ────────────────────────────────────────────────────────
 
     def manifest(self) -> SkillManifest:
         return SkillManifest(
             name="planning",
             version="1.0.0",
             description="Track execution progress with a structured step-by-step plan",
-            capabilities=frozenset(),  # no permissions needed
-            always_available=True,     # every agent sees this tool
+            capabilities=frozenset(),
+            always_available=True,
             tools=(
                 ToolSpec(
                     name="update_plan",
@@ -166,7 +192,16 @@ class PlanningSkill(Skill):
             error=f"Unknown tool: {tool_name}",
         )
 
-    # ── Implementation ───────────────────────────────────────────────────
+    async def mark_interrupted(self, *, reason: str | None = None) -> bool:
+        if not self._plan:
+            return False
+        if self._lifecycle_status == _PLAN_INTERRUPTED and self._interruption_reason == reason:
+            return False
+
+        self._lifecycle_status = _PLAN_INTERRUPTED
+        self._interruption_reason = reason
+        await self._emit_plan_event(explanation="Plan interrupted")
+        return True
 
     async def _update_plan(self, arguments: dict[str, Any]) -> ToolResult:
         """Validate and store the updated plan."""
@@ -183,7 +218,6 @@ class PlanningSkill(Skill):
                 ),
             )
 
-        # Validate each step
         validated: list[dict[str, str]] = []
         in_progress_count = 0
 
@@ -230,27 +264,33 @@ class PlanningSkill(Skill):
                 ),
             )
 
-        # Store the plan
         self._plan = validated
+        self._lifecycle_status = _PLAN_ACTIVE
+        self._interruption_reason = None
+        await self._emit_plan_event(explanation=explanation)
 
-        # Emit event for UI / worker log
-        if self._kernel:
-            from arc.core.events import Event, EventType
-
-            await self._kernel.emit(Event(
-                type=EventType.AGENT_PLAN_UPDATE,
-                source="planning",
-                data={
-                    "plan": validated,
-                    "explanation": explanation,
-                    "all_completed": all(
-                        s["status"] == "completed" for s in validated
-                    ),
-                },
-            ))
-
-        # Return formatted confirmation (LLM sees this)
         return ToolResult(
             success=True,
             output=self.format_plan_for_context(),
         )
+
+    async def _emit_plan_event(self, *, explanation: str) -> None:
+        if not self._kernel:
+            return
+
+        from arc.core.events import Event, EventType
+
+        await self._kernel.emit(Event(
+            type=EventType.AGENT_PLAN_UPDATE,
+            source="planning",
+            data={
+                "plan": self._plan,
+                "explanation": explanation,
+                "all_completed": bool(self._plan) and all(
+                    step["status"] == "completed" for step in self._plan
+                ),
+                "lifecycle_status": self._lifecycle_status,
+                "interrupted": self.is_interrupted,
+                "reason": self._interruption_reason,
+            },
+        ))

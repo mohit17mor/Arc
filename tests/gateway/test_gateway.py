@@ -11,9 +11,25 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from arc.gateway.server import GatewayServer
+from arc.core.run_control import RunControlManager, RunControlAction, RunStatus
 from arc.tasks.store import TaskStore
 from arc.tasks.types import Task, TaskStatus
 from arc.tasks.agents import load_agent_defs
+
+
+class _FakeTurnController:
+    def __init__(self, *, accepted: bool = True, interrupted: bool = False, active: bool | None = None) -> None:
+        self.accepted = accepted
+        self.is_active = accepted if active is None else active
+        self.active_turn = None
+        self.last_outcome = type("Outcome", (), {"interrupted": interrupted, "reason": "cancel" if interrupted else None})()
+        self.reasons: list[str] = []
+
+    async def interrupt_current(self, *, reason: str) -> bool:
+        self.reasons.append(reason)
+        return self.accepted
+
+
 
 
 # ━━━ Unit tests (no HTTP) ━━━
@@ -52,6 +68,44 @@ def test_dashboard_template_has_multistep_task_controls():
     assert "Reviewer" in template
 
 
+
+
+
+def test_dashboard_template_inline_script_is_valid_javascript(tmp_path):
+    """Dashboard inline script should parse so Alpine can boot."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node is required for dashboard script syntax check"
+
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    start = template.index("<script>") + len("<script>")
+    end = template.rindex("</script>")
+    script = template[start:end]
+
+    script_path = tmp_path / "dashboard-inline.js"
+    script_path.write_text(script, encoding="utf-8")
+
+    proc = subprocess.run([node, "--check", str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+
+def test_dashboard_template_shows_visible_interrupt_message_in_chat():
+    """Interrupted runs should show a prominent chat notice, not only a toast."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "Processing interrupted" in template
+    assert ".mg.interrupt" in template
+
+
+def test_dashboard_template_supports_interrupted_plan_state():
+    """Dashboard plan UI can render interrupted/stale plans."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "lifecycle_status" in template
+    assert "Interrupted plan" in template
+
+
 # ━━━ Integration tests (with aiohttp test server) ━━━
 
 
@@ -81,6 +135,8 @@ async def gateway_app(tmp_path):
     app.router.add_post("/api/tasks/clear", gw._api_clear_tasks)
     app.router.add_post("/api/tasks/{task_id}/cancel", gw._api_cancel_task)
     app.router.add_post("/api/tasks/{task_id}/reply", gw._api_reply_task)
+    app.router.add_get("/api/runs", gw._api_list_runs)
+    app.router.add_post("/api/runs/{run_id}/cancel", gw._api_cancel_run)
     app.router.add_get("/api/agents", gw._api_list_agents)
     app.router.add_post("/api/agents", gw._api_create_agent)
     app.router.add_delete("/api/agents/{name}", gw._api_delete_agent)
@@ -677,6 +733,31 @@ async def test_api_cancel_task(client):
     assert updated.status == TaskStatus.CANCELLED
 
 
+async def test_api_cancel_task_uses_processor_when_available(tmp_path):
+    """POST /api/tasks/{id}/cancel delegates to task processor when available."""
+    gw = GatewayServer()
+    store = TaskStore(db_path=tmp_path / "gateway_tasks.db")
+    await store.initialize()
+    gw.set_task_store(store)
+
+    t = Task(title="Cancel via processor", instruction="i", assigned_agent="w")
+    await store.save(t)
+
+    mock_proc = AsyncMock()
+    mock_proc.cancel_task = AsyncMock(return_value=True)
+    gw.set_task_processor(mock_proc)
+
+    request = AsyncMock()
+    request.match_info = {"task_id": t.id}
+    resp = await gw._api_cancel_task(request)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+    assert data["status"] == "cancelled"
+    mock_proc.cancel_task.assert_called_once_with(t.id)
+
+    await store.close()
+
+
 async def test_api_cancel_task_not_found(client):
     """POST /api/tasks/{id}/cancel returns 404 for unknown task."""
     c, gw, store = client
@@ -723,6 +804,99 @@ async def test_api_reply_task_success(client):
     data = await resp.json()
     assert data["message"] == "Reply accepted"
     mock_proc.handle_human_reply.assert_called_once_with("t-123", "looks good", "approve")
+
+
+# ━━━ REST API: GET/POST /api/runs* ━━━
+
+
+async def test_ws_message_rejected_while_turn_active():
+    """WebSocket chat messages are rejected while a foreground turn is active."""
+    gw = GatewayServer()
+    gw.set_turn_controller(_FakeTurnController(active=True, accepted=True))
+    ws = AsyncMock()
+    gw._ws_sources[ws] = "webchat"
+
+    await gw._process_ws_message(ws, json.dumps({"type": "message", "content": "hello"}))
+
+    ws.send_json.assert_awaited_with({
+        "type": "busy",
+        "message": "A foreground turn is already active. Stop it first.",
+    })
+
+
+async def test_ws_interrupt_requests_active_turn():
+    """WebSocket interrupt messages request foreground interruption."""
+    gw = GatewayServer()
+    controller = _FakeTurnController(accepted=True)
+    gw.set_turn_controller(controller)
+    ws = AsyncMock()
+    gw._ws_sources[ws] = "webchat"
+
+    await gw._process_ws_message(ws, json.dumps({"type": "interrupt"}))
+
+    assert controller.reasons == ["gateway:webchat"]
+    ws.send_json.assert_awaited_with({"type": "interrupt_ack", "accepted": True})
+
+
+async def test_handle_chat_marks_interrupted_done_payload():
+    """Gateway done payload includes interrupted status for the active turn."""
+    gw = GatewayServer()
+    gw.set_turn_controller(_FakeTurnController(interrupted=True))
+
+    async def handler(user_input: str):
+        yield "partial"
+
+    gw._handler = handler
+    ws = AsyncMock()
+
+    await gw._handle_chat(ws, "hello", "webchat")
+
+    done_payload = ws.send_json.await_args_list[-1].args[0]
+    assert done_payload["type"] == "done"
+    assert done_payload["interrupted"] is True
+    assert done_payload["reason"] == "cancel"
+
+
+async def test_api_list_runs():
+    """GET /api/runs returns currently known runtime executions."""
+    gw = GatewayServer()
+    run_control = RunControlManager()
+    gw.set_run_control(run_control)
+    handle = run_control.start_run(
+        kind="agent",
+        source="task:t-123:researcher",
+        metadata={"agent_id": "task:t-123:researcher"},
+    )
+
+    request = AsyncMock()
+    request.query = {}
+    resp = await gw._api_list_runs(request)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+    assert len(data) == 1
+    assert data[0]["run_id"] == handle.run_id
+    assert data[0]["kind"] == "agent"
+    assert data[0]["status"] == "running"
+
+
+async def test_api_cancel_run():
+    """POST /api/runs/{id}/cancel requests cancellation for a live run."""
+    gw = GatewayServer()
+    run_control = RunControlManager()
+    gw.set_run_control(run_control)
+    handle = run_control.start_run(kind="agent", source="main")
+
+    request = AsyncMock()
+    request.match_info = {"run_id": handle.run_id}
+    resp = await gw._api_cancel_run(request)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+    assert data["status"] == "cancelling"
+
+    snapshot = run_control.get_run(handle.run_id)
+    assert snapshot is not None
+    assert snapshot.status == RunStatus.CANCELLING
+    assert snapshot.requested_action == RunControlAction.CANCEL
 
 
 # ━━━ REST API: GET /api/overview ━━━

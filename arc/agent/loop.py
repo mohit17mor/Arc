@@ -34,6 +34,7 @@ from arc.core.types import (
 )
 from arc.llm.base import LLMProvider
 from arc.memory.compaction import CompactionState
+from arc.core.run_control import RunCancelledError, RunControlManager, RunHandle
 from arc.memory.context import ContextComposer
 from arc.memory.session import SessionMemory
 from arc.security.engine import SecurityEngine
@@ -107,6 +108,7 @@ class AgentLoop:
         memory_manager: MemoryManager | None = None,
         agent_id: str = "main",
         router: SkillRouter | None = None,
+        run_control: RunControlManager | None = None,
     ) -> None:
         self._kernel = kernel
         self._llm = llm
@@ -116,6 +118,7 @@ class AgentLoop:
         self._memory_manager = memory_manager
         self._agent_id = agent_id
         self._router = router
+        self._run_control = run_control
         
         # Planning — each agent gets its own PlanningSkill instance
         self._planning = PlanningSkill()
@@ -138,6 +141,9 @@ class AgentLoop:
         self._iteration = 0
         self._explain_only_reason: str | None = None
         self._failed_tool_signatures: dict[str, int] = {}
+        self._active_run_handle: RunHandle | None = None
+        self._current_run_id: str | None = None
+        self._last_run_id: str | None = None
         
         # Compaction — background for main agent, sync for others
         self._compaction = CompactionState()
@@ -149,6 +155,17 @@ class AgentLoop:
         
         This is a streaming generator — chunks are yielded as they arrive.
         """
+        run_handle: RunHandle | None = None
+        if self._run_control is not None:
+            run_handle = self._run_control.start_run(
+                kind="agent",
+                source=self._agent_id,
+                metadata={"input_preview": user_input[:200], "agent_id": self._agent_id},
+            )
+            self._active_run_handle = run_handle
+            self._current_run_id = run_handle.run_id
+            self._last_run_id = run_handle.run_id
+
         # Add user message to memory
         self._memory.add_user_message(user_input)
         self._state.status = AgentStatus.COMPOSING
@@ -175,6 +192,7 @@ class AgentLoop:
         
         try:
             while self._iteration < self._config.max_iterations:
+                await self._run_checkpoint()
                 self._iteration += 1
                 
                 await self._emit(
@@ -265,6 +283,7 @@ class AgentLoop:
                             tools=tool_specs if tool_specs else None,
                             temperature=self._config.temperature,
                         ):
+                            await self._run_checkpoint()
                             # Stream text to caller
                             if chunk.text:
                                 collected_text += chunk.text
@@ -342,7 +361,7 @@ class AgentLoop:
 
                 if (
                     not self._explain_only_reason
-                    and not self._planning.has_plan
+                    and not self._planning.has_active_plan
                     and self._should_require_plan(collected_tool_calls)
                     and not any(tc.name == "update_plan" for tc in collected_tool_calls)
                     and self._iteration < self._config.max_iterations
@@ -382,7 +401,7 @@ class AgentLoop:
                     # ── Plan enforcement (mechanism 4): nudge on incomplete plan ──
                     if (
                         not self._explain_only_reason
-                        and self._planning.has_plan
+                        and self._planning.has_active_plan
                         and self._planning.has_incomplete_steps
                         and self._iteration < self._config.max_iterations
                     ):
@@ -417,6 +436,8 @@ class AgentLoop:
                         EventType.AGENT_COMPLETE,
                         {"iterations": self._iteration},
                     )
+                    if run_handle is not None:
+                        await run_handle.finish_completed()
                     return
                 
                 # 4. ACT — execute tool calls
@@ -430,6 +451,7 @@ class AgentLoop:
 
                 tool_results: list[tuple[ToolCall, ToolResult]] = []
                 for tool_call in collected_tool_calls:
+                    await self._run_checkpoint()
                     # Intercept update_plan — handled by per-agent PlanningSkill
                     if tool_call.name == "update_plan":
                         result = await self._planning.execute_tool(
@@ -490,9 +512,22 @@ class AgentLoop:
                 EventType.AGENT_COMPLETE,
                 {"iterations": self._iteration, "reason": "max_iterations"},
             )
+            if run_handle is not None:
+                await run_handle.finish_completed()
         
+        except RunCancelledError as e:
+            self._state.status = AgentStatus.COMPLETE
+            await self._planning.mark_interrupted(reason=e.action.value)
+            await self._emit(
+                EventType.AGENT_COMPLETE,
+                {"iterations": self._iteration, "reason": e.action.value},
+            )
+            return
+
         except Exception as e:
             self._state.status = AgentStatus.ERROR
+            if run_handle is not None:
+                run_handle.finish_failed()
             await self._emit(EventType.AGENT_ERROR, {"error": str(e)})
             # Store error in memory so conversation state stays consistent
             error_text = f"\n\nSorry, I encountered an unexpected error: {e}"
@@ -500,6 +535,10 @@ class AgentLoop:
             self._memory.add_assistant_message(error_text)
             self._state.status = AgentStatus.COMPLETE
     
+        finally:
+            self._active_run_handle = None
+            self._current_run_id = None
+
     def _fire_memory_tasks(self, user_input: str, assistant_text: str) -> None:
         """Schedule background memory storage tasks (fire-and-forget)."""
         if self._memory_manager is None:
@@ -603,11 +642,24 @@ class AgentLoop:
         
         return result
     
+    async def _run_checkpoint(self) -> None:
+        if self._active_run_handle is None:
+            return
+        await self._active_run_handle.checkpoint()
+
     async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
         """Emit an event tagged with this agent's id."""
         event = Event(type=event_type, source=self._agent_id, data=data)
         await self._kernel.emit(event)
     
+    @property
+    def current_run_id(self) -> str | None:
+        return self._current_run_id
+
+    @property
+    def last_run_id(self) -> str | None:
+        return self._last_run_id
+
     @property
     def memory(self) -> SessionMemory:
         """Access to session memory."""

@@ -11,6 +11,10 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import os
+import select
+import sys
+import threading
 from typing import AsyncIterator, Callable, Any
 
 from rich.console import Console
@@ -18,6 +22,13 @@ from rich.panel import Panel
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from pathlib import Path
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    termios = None
+    tty = None
 
 from arc.platforms.base import Platform, MessageHandler
 from arc.core.events import Event, EventType
@@ -59,11 +70,14 @@ class CLIPlatform(Platform):
         self._mcp_manager: Any = None  # Set via set_mcp_manager()
         self._turn_in_progress: bool = False  # True while agent is generating
         self._workflow_skill: Any = None  # Set via set_workflow_skill()
+        self._turn_controller: Any = None  # Set via set_turn_controller()
+        self._interrupt_requested = False
 
         # Track state for display
         self._printed_thinking = False
         self._tool_call_count = 0
         self._waiting_for_approval = False
+        self._interrupt_requested = False
         
         # Command history
         history_path = Path.home() / ".arc" / "history"
@@ -113,6 +127,10 @@ class CLIPlatform(Platform):
     def set_workflow_skill(self, skill: Any) -> None:
         """Set reference to WorkflowSkill for /workflow command."""
         self._workflow_skill = skill
+
+    def set_turn_controller(self, controller: Any) -> None:
+        """Set shared foreground turn controller for interrupts."""
+        self._turn_controller = controller
     
     def on_event(self, event: Event) -> None:
         """Handle events from the agent for display."""
@@ -560,6 +578,17 @@ class CLIPlatform(Platform):
                 )
             )
         
+        elif cmd in ("/interrupt", "/stop"):
+            if self._turn_controller is None or not self._turn_controller.is_active:
+                self._console.print("[dim]No active foreground turn to interrupt[/dim]")
+            else:
+                accepted = await self._turn_controller.interrupt_current(reason="cli_command")
+                if accepted:
+                    self._interrupt_requested = True
+                    self._console.print("[dim]Interrupt requested...[/dim]")
+                else:
+                    self._console.print("[dim]Unable to interrupt the active turn[/dim]")
+
         elif cmd == "/cost":
             if self._cost_tracker:
                 summary = self._cost_tracker
@@ -873,10 +902,17 @@ class CLIPlatform(Platform):
         """Process a user message and stream the response."""
         self._console.print()
         self._reset_state()
-        
+
         response_started = False
         response_text = ""
-        
+        interrupt_stop = threading.Event()
+        interrupt_task: asyncio.Task | None = None
+        if self._turn_controller is not None:
+            interrupt_task = asyncio.create_task(
+                self._monitor_escape_interrupt(interrupt_stop),
+                name="cli-escape-interrupt",
+            )
+
         try:
             async for chunk in handler(user_input):
                 if chunk.strip() and not response_started:
@@ -895,6 +931,10 @@ class CLIPlatform(Platform):
                 self._console.print(f"[bold cyan]{self._agent_name}[/bold cyan]")
                 self._console.print("[dim]Done.[/dim]")
 
+            outcome = self._turn_controller.last_outcome if self._turn_controller else None
+            if outcome and outcome.interrupted:
+                self._console.print("[yellow]Interrupted.[/yellow] Type your next instruction.")
+
             # Show per-turn token usage
             if self._cost_tracker:
                 t_in = self._cost_tracker.get('turn_input_tokens', 0)
@@ -905,7 +945,6 @@ class CLIPlatform(Platform):
                 ctx_win = self._cost_tracker.get('context_window', 0)
                 if t_total > 0:
                     parts = []
-                    # Context utilization: peak_input / context_window
                     if ctx_win > 0 and t_peak > 0:
                         parts.append(f"{t_peak:,} / {ctx_win:,} ctx")
                     else:
@@ -916,6 +955,44 @@ class CLIPlatform(Platform):
                     self._console.print(
                         f"[dim]└ {' · '.join(parts)}[/dim]"
                     )
-        
+
         except Exception as e:
             self._console.print(f"\n[red]Error: {e}[/red]")
+        finally:
+            interrupt_stop.set()
+            if interrupt_task is not None:
+                await asyncio.gather(interrupt_task, return_exceptions=True)
+
+    async def _monitor_escape_interrupt(self, stop_event: threading.Event) -> None:
+        if self._turn_controller is None:
+            return
+        pressed = await asyncio.get_running_loop().run_in_executor(
+            None,
+            self._wait_for_escape_blocking,
+            stop_event,
+        )
+        if pressed and self._turn_controller is not None and not self._interrupt_requested:
+            self._interrupt_requested = True
+            self._console.print("\n[dim]Interrupt requested...[/dim]")
+            await self._turn_controller.interrupt_current(reason="cli_escape")
+
+    def _wait_for_escape_blocking(self, stop_event: threading.Event) -> bool:
+        if termios is None or tty is None or not sys.stdin.isatty():
+            return False
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while not stop_event.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if not ready:
+                    continue
+                try:
+                    data = os.read(fd, 1)
+                except OSError:
+                    return False
+                if data == b"\x1b":
+                    return True
+            return False
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)

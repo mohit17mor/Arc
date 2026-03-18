@@ -18,6 +18,7 @@ from arc.workflow.loader import (
     match_workflow,
     parse_workflow_from_dict,
 )
+from arc.core.events import EventType
 from arc.workflow.engine import WorkflowEngine
 
 
@@ -773,3 +774,41 @@ async def test_engine_emits_kernel_events():
     # All events sourced as "workflow"
     for e in events:
         assert e.source == "workflow"
+
+
+async def test_engine_run_can_be_cancelled():
+    from arc.core.run_control import RunControlAction, RunControlManager, RunStatus
+
+    class SlowAgent:
+        async def run(self, user_input: str):
+            for part in ["step", " ", "one", " ", "output"]:
+                await asyncio.sleep(0.02)
+                yield part
+
+    kernel = _make_mock_kernel()
+    run_control = RunControlManager()
+    engine = WorkflowEngine(agent=SlowAgent(), kernel=kernel, run_control=run_control)
+    wf = Workflow(
+        name="cancel-me",
+        steps=[WorkflowStep(instruction="first", index=0), WorkflowStep(instruction="second", index=1)],
+    )
+
+    chunks = []
+
+    async def cancel_soon():
+        while engine.current_run_id is None:
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.03)
+        assert run_control.request(engine.current_run_id, RunControlAction.CANCEL)
+
+    cancel_task = asyncio.create_task(cancel_soon())
+    async for chunk in engine.run(wf, user_message="do it"):
+        chunks.append(chunk)
+    await cancel_task
+
+    snapshot = run_control.get_run(engine.last_run_id)
+    assert snapshot is not None
+    assert snapshot.status == RunStatus.CANCELLED
+    assert "step" in "".join(chunks)
+    emitted = [call.args[0].type for call in kernel.emit.await_args_list]
+    assert EventType.WORKFLOW_COMPLETE not in emitted

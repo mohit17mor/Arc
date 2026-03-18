@@ -43,6 +43,8 @@ class ArcRuntime:
     escalation_bus: Any  # EscalationBus
     worker_log: Any  # WorkerActivityLog
     mcp_manager: Any  # MCPManager
+    run_control: Any  # RunControlManager
+    turn_controller: Any  # ForegroundTurnController
     make_sub_agent: Callable  # factory for sub-agents
     system_prompt: str
     env_info: str
@@ -123,6 +125,8 @@ async def bootstrap(
     from arc.mcp.manager import MCPManager
     from arc.mcp.gateway import MCPGatewaySkill
     from arc.skills.builtin.browser_control import BrowserControlSkill
+    from arc.core.run_control import RunControlManager
+    from arc.core.foreground_turns import ForegroundTurnController
 
     arc_home = Path.home() / ".arc"
     config_path = arc_home / "config.toml"
@@ -225,6 +229,8 @@ async def bootstrap(
             f"Configured servers: {', '.join(mcp_manager.server_names)}\n"
         )
 
+    run_control = RunControlManager()
+
     # ── Memory ──
     mem_db_path = arc_home / "memory" / "memory.db"
     memory_manager: MemoryManager | None = MemoryManager(db_path=str(mem_db_path))
@@ -247,6 +253,13 @@ async def bootstrap(
         ),
         memory_manager=memory_manager,
         router=skill_router,
+        run_control=run_control,
+    )
+
+    turn_controller = ForegroundTurnController(
+        agent=agent,
+        run_control=run_control,
+        kernel=kernel,
     )
 
     # ── Sub-agent factory ──
@@ -271,6 +284,7 @@ async def bootstrap(
             ),
             memory_manager=None,
             agent_id=agent_id,
+            run_control=run_control,
         )
 
     # ── Multi-agent infra ──
@@ -346,6 +360,7 @@ async def bootstrap(
         llm_factory=create_llm,
         env_info=env_info,
         soft_skills=soft_skill_text_no_delegation,
+        run_control=run_control,
     ) if agent_defs else None
 
     task_skill = TaskSkill()
@@ -388,6 +403,8 @@ async def bootstrap(
         escalation_bus=escalation_bus,
         worker_log=worker_log,
         mcp_manager=mcp_manager,
+        run_control=run_control,
+        turn_controller=turn_controller,
         make_sub_agent=make_sub_agent,
         system_prompt=system_prompt,
         env_info=env_info,

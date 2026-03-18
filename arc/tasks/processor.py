@@ -22,6 +22,12 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from arc.core.run_control import (
+    RunCancelledError,
+    RunControlAction,
+    RunControlManager,
+    RunStatus,
+)
 from arc.tasks.store import TaskStore
 from arc.tasks.types import AgentDef, Task, TaskComment, TaskStatus
 
@@ -75,6 +81,7 @@ class TaskProcessor:
         llm_factory: "Callable[..., LLMProvider] | None" = None,
         env_info: str = "",
         soft_skills: str = "",
+        run_control: RunControlManager | None = None,
     ) -> None:
         self._store = store
         self._agents = agents
@@ -85,6 +92,7 @@ class TaskProcessor:
         self._llm_factory = llm_factory
         self._env_info = env_info
         self._soft_skills = soft_skills
+        self._run_control = run_control
         self._task: asyncio.Task | None = None
         self._running = False
         # Track in-flight tasks per agent to enforce max_concurrent
@@ -120,6 +128,46 @@ class TaskProcessor:
         """Hot-reload agent definitions without restart."""
         self._agents = agents
         logger.info(f"TaskProcessor reloaded {len(agents)} agent(s)")
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a task in storage and request cancellation for any live run."""
+        ok = await self._store.cancel(task_id)
+        if not ok:
+            return False
+
+        if self._run_control is not None:
+            task_prefix = f"task:{task_id}:"
+            for snapshot in self._run_control.list_runs(active_only=True):
+                source = str(snapshot.source)
+                agent_id = str(snapshot.metadata.get("agent_id", ""))
+                if source.startswith(task_prefix) or agent_id.startswith(task_prefix):
+                    self._run_control.request(snapshot.run_id, RunControlAction.CANCEL)
+
+        return True
+
+    async def _is_task_cancelled(self, task_id: str) -> bool:
+        task = await self._store.get_by_id(task_id)
+        return task is not None and task.status == TaskStatus.CANCELLED
+
+    async def _handle_cancelled(self, task: Task, agent_name: str, reason: str) -> None:
+        message = f"Task cancelled while agent '{agent_name}' was running ({reason})."
+        if await self._is_task_cancelled(task.id):
+            await self._store.add_comment(
+                task.id,
+                "system",
+                message,
+                step_index=task.current_step,
+            )
+            return
+
+        await self._store.update_status_with_comment(
+            task.id,
+            TaskStatus.CANCELLED,
+            "system",
+            message,
+            step_index=task.current_step,
+            extra_updates={"completed_at": int(time.time())},
+        )
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
@@ -204,6 +252,10 @@ class TaskProcessor:
                 task, agent_def, prompt, is_reviewer
             )
 
+            if await self._is_task_cancelled(task.id):
+                await self._handle_cancelled(task, agent_name, "task_cancelled")
+                return
+
             if error:
                 await self._handle_failure(task, agent_name, error)
                 return
@@ -236,6 +288,9 @@ class TaskProcessor:
             else:
                 await self._advance_task(task, agent_name, result)
 
+        except RunCancelledError as e:
+            logger.info(f"Task {task.id} cancelled: {e}")
+            await self._handle_cancelled(task, agent_name, e.action.value)
         except Exception as e:
             logger.error(f"Task {task.id} unexpected error: {e}", exc_info=True)
             await self._handle_failure(task, agent_name, str(e))
@@ -365,14 +420,25 @@ class TaskProcessor:
             memory_manager=None,
             agent_id=f"task:{task.id}:{agent_def.name}",
             router=router,
+            run_control=self._run_control,
         )
 
-        return await run_agent_on_virtual_platform(
+        result, error = await run_agent_on_virtual_platform(
             agent=agent,
             prompt=prompt,
             name=f"task-{task.id}-{agent_def.name}",
             timeout_seconds=3600.0,  # 1 hour — task agents run unattended
         )
+
+        if self._run_control is not None and getattr(agent, "last_run_id", None):
+            snapshot = self._run_control.get_run(agent.last_run_id)
+            if snapshot is not None and snapshot.status == RunStatus.CANCELLED:
+                raise RunCancelledError(
+                    agent.last_run_id,
+                    snapshot.requested_action or RunControlAction.CANCEL,
+                )
+
+        return result, error
 
     def _compute_excluded(self, agent_def: AgentDef) -> frozenset[str]:
         """Compute the set of skills to exclude for this agent."""

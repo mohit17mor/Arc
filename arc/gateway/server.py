@@ -77,6 +77,8 @@ class GatewayServer(Platform):
         self._mcp_manager: Any = None
         self._session_memory: Any = None
         self._workflow_skill: Any = None
+        self._run_control: Any = None
+        self._turn_controller: Any = None
 
         # Task board dependencies
         self._task_store: Any = None
@@ -133,6 +135,12 @@ class GatewayServer(Platform):
 
     def set_workflow_skill(self, skill: Any) -> None:
         self._workflow_skill = skill
+
+    def set_run_control(self, run_control: Any) -> None:
+        self._run_control = run_control
+
+    def set_turn_controller(self, controller: Any) -> None:
+        self._turn_controller = controller
 
     def set_kernel(self, kernel: Any) -> None:
         self._kernel = kernel
@@ -210,6 +218,8 @@ class GatewayServer(Platform):
         app.router.add_post("/api/tasks/clear", self._api_clear_tasks)
         app.router.add_post("/api/tasks/{task_id}/cancel", self._api_cancel_task)
         app.router.add_post("/api/tasks/{task_id}/reply", self._api_reply_task)
+        app.router.add_get("/api/runs", self._api_list_runs)
+        app.router.add_post("/api/runs/{run_id}/cancel", self._api_cancel_run)
         app.router.add_get("/api/agents", self._api_list_agents)
         app.router.add_post("/api/agents", self._api_create_agent)
         app.router.add_delete("/api/agents/{name}", self._api_delete_agent)
@@ -410,12 +420,25 @@ class GatewayServer(Platform):
                 await self._handle_command(ws, content)
                 return
 
+            if self._turn_controller is not None and self._turn_controller.is_active:
+                await ws.send_json({
+                    "type": "busy",
+                    "message": "A foreground turn is already active. Stop it first.",
+                })
+                return
+
             # Run chat in background so WS message loop stays alive
             # for heartbeats during long agent runs
             asyncio.create_task(
                 self._handle_chat(ws, content, source),
                 name="chat-message",
             )
+
+        elif msg_type == "interrupt":
+            accepted = False
+            if self._turn_controller is not None:
+                accepted = await self._turn_controller.interrupt_current(reason=f"gateway:{source}")
+            await ws.send_json({"type": "interrupt_ack", "accepted": accepted})
 
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
@@ -475,12 +498,16 @@ class GatewayServer(Platform):
             except Exception:
                 pass
 
+        outcome = self._turn_controller.last_outcome if self._turn_controller else None
+
         # Always signal completion — even after errors.
         # This ensures WebChat exits "thinking" state and the exchange
         # is recorded in history so the conversation stays coherent.
         await ws.send_json({
             "type": "done",
             "full_content": full_response,
+            "interrupted": bool(outcome and outcome.interrupted),
+            "reason": outcome.reason if outcome else None,
         })
 
         # Record in history so new connections see it
@@ -987,7 +1014,10 @@ class GatewayServer(Platform):
         if not self._task_store:
             return web.json_response({"error": "Task board not available"}, status=503)
         task_id = request.match_info["task_id"]
-        ok = await self._task_store.cancel(task_id)
+        if self._task_processor and hasattr(self._task_processor, "cancel_task"):
+            ok = await self._task_processor.cancel_task(task_id)
+        else:
+            ok = await self._task_store.cancel(task_id)
         if ok:
             return web.json_response({"status": "cancelled"})
         return web.json_response({"error": "Not found or already done"}, status=404)
@@ -1006,6 +1036,44 @@ class GatewayServer(Platform):
             return web.json_response({"error": "reply is required"}, status=400)
         msg = await self._task_processor.handle_human_reply(task_id, reply, action)
         return web.json_response({"message": msg})
+
+    async def _api_list_runs(self, request: web.Request) -> web.Response:
+        if not self._run_control:
+            return web.json_response([])
+
+        active_only = request.query.get("active_only", "false").lower() in {"1", "true", "yes"}
+        runs = self._run_control.list_runs(active_only=active_only)
+        return web.json_response([
+            {
+                "run_id": run.run_id,
+                "kind": run.kind,
+                "source": run.source,
+                "status": run.status.value,
+                "requested_action": run.requested_action.value if run.requested_action else None,
+                "metadata": run.metadata,
+                "created_at": run.created_at,
+                "updated_at": run.updated_at,
+                "completed_at": run.completed_at,
+            }
+            for run in runs
+        ])
+
+    async def _api_cancel_run(self, request: web.Request) -> web.Response:
+        if not self._run_control:
+            return web.json_response({"error": "Run control not available"}, status=503)
+
+        run_id = request.match_info["run_id"]
+        ok = self._run_control.request(run_id, self._run_control_action_cancel())
+        if not ok:
+            return web.json_response({"error": "Not found or already finished"}, status=404)
+
+        snapshot = self._run_control.get_run(run_id)
+        status = snapshot.status.value if snapshot is not None else "cancelling"
+        return web.json_response({"status": status})
+
+    def _run_control_action_cancel(self):
+        from arc.core.run_control import RunControlAction
+        return RunControlAction.CANCEL
 
     # ━━━ REST API: Agents ━━━
 
@@ -1099,6 +1167,16 @@ class GatewayServer(Platform):
             for t in all_tasks:
                 by_status[t.status.value] = by_status.get(t.status.value, 0) + 1
             data["tasks"] = {"total": len(all_tasks), "by_status": by_status}
+        if self._run_control:
+            data["runs"] = {
+                "active": len(self._run_control.list_runs(active_only=True)),
+                "total": len(self._run_control.list_runs()),
+            }
+        if self._turn_controller and self._turn_controller.active_turn:
+            data["active_turn"] = {
+                "source": self._turn_controller.active_turn.source,
+                "user_input_preview": self._turn_controller.active_turn.user_input_preview,
+            }
         if self._cost_tracker:
             data["cost"] = self._cost_tracker
         return web.json_response(data)

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from arc.core.kernel import Kernel
 
 from arc.core.events import Event, EventType
+from arc.core.run_control import RunCancelledError, RunControlManager, RunHandle
 from arc.workflow.types import (
     OnFail,
     StepResult,
@@ -86,19 +87,16 @@ class WorkflowEngine:
             print(chunk, end="", flush=True)
     """
 
-    def __init__(self, agent: "AgentLoop", kernel: "Kernel") -> None:
+    def __init__(self, agent: "AgentLoop", kernel: "Kernel", run_control: RunControlManager | None = None) -> None:
         self._agent = agent
         self._kernel = kernel
+        self._run_control = run_control
         self._input_future: asyncio.Future[str] | None = None
+        self._active_run_handle: RunHandle | None = None
+        self._current_run_id: str | None = None
+        self._last_run_id: str | None = None
 
     def provide_input(self, user_input: str) -> bool:
-        """
-        Resume a paused workflow with user-provided input.
-
-        Called by the platform (CLI, Gateway, WebChat) when the user
-        responds to a workflow's question.  Returns True if a workflow
-        was actually waiting.
-        """
         if self._input_future is not None and not self._input_future.done():
             self._input_future.set_result(user_input)
             return True
@@ -106,20 +104,24 @@ class WorkflowEngine:
 
     @property
     def is_waiting_for_input(self) -> bool:
-        """True if the workflow is paused waiting for user input."""
         return self._input_future is not None and not self._input_future.done()
 
-    async def _wait_for_user_input(
-        self, workflow_name: str, step_num: int, total_steps: int,
-        question: str,
-    ) -> str:
-        """
-        Pause workflow execution and wait for the user to provide input.
+    @property
+    def current_run_id(self) -> str | None:
+        return self._current_run_id
 
-        Emits a ``workflow:waiting_input`` event so platforms can display
-        the question.  No timeout — waits indefinitely until
-        ``provide_input()`` is called.
-        """
+    @property
+    def last_run_id(self) -> str | None:
+        return self._last_run_id
+
+    async def _run_checkpoint(self) -> None:
+        if self._active_run_handle is None:
+            return
+        await self._active_run_handle.checkpoint()
+
+    async def _wait_for_user_input(
+        self, workflow_name: str, step_num: int, total_steps: int, question: str
+    ) -> str:
         loop = asyncio.get_running_loop()
         self._input_future = loop.create_future()
 
@@ -133,34 +135,36 @@ class WorkflowEngine:
         logger.info(f"Workflow '{workflow_name}' waiting for user input at step {step_num}")
 
         try:
-            return await self._input_future
+            while True:
+                await self._run_checkpoint()
+                try:
+                    return await asyncio.wait_for(asyncio.shield(self._input_future), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
         finally:
             self._input_future = None
 
     async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
-        """Emit a workflow event through the kernel bus."""
         event = Event(type=event_type, source="workflow", data=data)
         await self._kernel.emit(event)
 
-    # ━━━ Main execution ━━━
+    async def run(self, workflow: Workflow, user_message: str = "") -> AsyncIterator[str]:
+        run_handle: RunHandle | None = None
+        if self._run_control is not None:
+            run_handle = self._run_control.start_run(
+                kind="workflow",
+                source="workflow",
+                metadata={"workflow": workflow.name},
+            )
+            self._active_run_handle = run_handle
+            self._current_run_id = run_handle.run_id
+            self._last_run_id = run_handle.run_id
 
-    async def run(
-        self,
-        workflow: Workflow,
-        user_message: str = "",
-    ) -> AsyncIterator[str]:
-        """
-        Execute a workflow and yield agent text output.
-
-        The agent's streamed response for each step is yielded so
-        platforms can display it in real-time.  All lifecycle progress
-        (step started, completed, failed) is communicated via kernel
-        events — not via yielded text.
-        """
         total = len(workflow.steps)
         step_results: list[StepResult] = []
         context_parts: list[str] = []
 
+        await self._run_checkpoint()
         await self._emit(EventType.WORKFLOW_START, {
             "workflow": workflow.name,
             "total_steps": total,
@@ -170,132 +174,128 @@ class WorkflowEngine:
         if user_message:
             context_parts.append(f"User request: {user_message}")
 
-        for i, step in enumerate(workflow.steps):
-            step_num = i + 1
+        try:
+            for i, step in enumerate(workflow.steps):
+                step_num = i + 1
 
-            await self._emit(EventType.WORKFLOW_STEP_START, {
-                "workflow": workflow.name,
-                "step": step_num,
-                "total_steps": total,
-                "instruction": step.instruction,
-            })
-
-            # Execute the step — yields agent text, produces a StepResult
-            result: StepResult | None = None
-            async for agent_chunk, step_result in self._execute_step(
-                step=step,
-                step_num=step_num,
-                total_steps=total,
-                context_parts=context_parts,
-                user_message=user_message,
-            ):
-                if agent_chunk is not None:
-                    yield agent_chunk
-                if step_result is not None:
-                    result = step_result
-
-            if result is None:
-                result = StepResult(
-                    step_index=step.index,
-                    status=StepStatus.FAILED,
-                    error="No result produced",
-                )
-            step_results.append(result)
-
-            # ── Handle result ──
-
-            if result.status == StepStatus.COMPLETED:
-                context_parts.append(
-                    f"Step {step_num} ({step.instruction}): {result.output}"
-                )
-                await self._emit(EventType.WORKFLOW_STEP_COMPLETE, {
+                await self._run_checkpoint()
+                await self._emit(EventType.WORKFLOW_STEP_START, {
                     "workflow": workflow.name,
                     "step": step_num,
                     "total_steps": total,
                     "instruction": step.instruction,
-                    "attempts": result.attempts,
                 })
 
-                # ── Human-in-the-loop: pause for user input if needed ──
-                # Two triggers:
-                #   1. Explicit: step has wait_for_input=True in YAML
-                #   2. Implicit: agent's response is a question (ask_if_unclear)
-                needs_input = step.wait_for_input
-                if (
-                    not needs_input
-                    and step.ask_if_unclear
-                    and i < total - 1  # not the last step
-                    and _response_is_question(result.output)
+                result: StepResult | None = None
+                async for agent_chunk, step_result in self._execute_step(
+                    step=step,
+                    step_num=step_num,
+                    total_steps=total,
+                    context_parts=context_parts,
+                    user_message=user_message,
                 ):
-                    needs_input = True
+                    if agent_chunk is not None:
+                        await self._run_checkpoint()
+                        yield agent_chunk
+                    if step_result is not None:
+                        result = step_result
 
-                if needs_input and i < total - 1:  # no point pausing on last step
-                    # Determine the question to show the user
-                    question = result.output.strip()
-                    if not question or not question.endswith("?"):
-                        # LLM didn't ask a clear question — use the step instruction
-                        question = (
-                            f"Workflow is waiting for your input.\n"
-                            f"Step: {step.instruction}\n\n"
-                            f"{result.output.strip()}" if result.output.strip()
-                            else f"Workflow is waiting for your input.\n"
-                            f"Step: {step.instruction}"
+                if result is None:
+                    result = StepResult(
+                        step_index=step.index,
+                        status=StepStatus.FAILED,
+                        error="No result produced",
+                    )
+                step_results.append(result)
+
+                if result.status == StepStatus.COMPLETED:
+                    context_parts.append(
+                        f"Step {step_num} ({step.instruction}): {result.output}"
+                    )
+                    await self._emit(EventType.WORKFLOW_STEP_COMPLETE, {
+                        "workflow": workflow.name,
+                        "step": step_num,
+                        "total_steps": total,
+                        "instruction": step.instruction,
+                        "attempts": result.attempts,
+                    })
+
+                    needs_input = step.wait_for_input
+                    if (
+                        not needs_input
+                        and step.ask_if_unclear
+                        and i < total - 1
+                        and _response_is_question(result.output)
+                    ):
+                        needs_input = True
+
+                    if needs_input and i < total - 1:
+                        question = result.output.strip()
+                        if not question or not question.endswith("?"):
+                            question = (
+                                f"Workflow is waiting for your input.\n"
+                                f"Step: {step.instruction}\n\n"
+                                f"{result.output.strip()}" if result.output.strip()
+                                else f"Workflow is waiting for your input.\n"
+                                f"Step: {step.instruction}"
+                            )
+
+                        yield f"\n\n⏳ **Waiting for your input:**\n{question}\n"
+
+                        user_answer = await self._wait_for_user_input(
+                            workflow.name, step_num, total, question
+                        )
+                        context_parts.append(
+                            f"User response to step {step_num}: {user_answer}"
                         )
 
-                    # Yield a visible prompt so the user sees it in the chat stream
-                    yield f"\n\n⏳ **Waiting for your input:**\n{question}\n"
-
-                    user_answer = await self._wait_for_user_input(
-                        workflow.name, step_num, total, question,
-                    )
-                    context_parts.append(
-                        f"User response to step {step_num}: {user_answer}"
-                    )
-
-            elif result.status == StepStatus.FAILED:
-                await self._emit(EventType.WORKFLOW_STEP_FAILED, {
-                    "workflow": workflow.name,
-                    "step": step_num,
-                    "total_steps": total,
-                    "instruction": step.instruction,
-                    "error": result.error,
-                    "attempts": result.attempts,
-                })
-
-                if step.on_fail == OnFail.CONTINUE:
-                    context_parts.append(
-                        f"Step {step_num} ({step.instruction}): FAILED — {result.error}"
-                    )
-                else:
-                    # Pause and ask user for help
-                    completed = sum(
-                        1 for r in step_results
-                        if r.status == StepStatus.COMPLETED
-                    )
-                    remaining = [s.instruction for s in workflow.steps[i + 1:]]
-
-                    await self._emit(EventType.WORKFLOW_PAUSED, {
+                elif result.status == StepStatus.FAILED:
+                    await self._emit(EventType.WORKFLOW_STEP_FAILED, {
                         "workflow": workflow.name,
                         "step": step_num,
                         "total_steps": total,
                         "instruction": step.instruction,
                         "error": result.error,
-                        "completed_count": completed,
-                        "remaining": remaining,
+                        "attempts": result.attempts,
                     })
-                    return
 
-        # All steps done
-        completed = sum(
-            1 for r in step_results if r.status == StepStatus.COMPLETED
-        )
-        await self._emit(EventType.WORKFLOW_COMPLETE, {
-            "workflow": workflow.name,
-            "total_steps": total,
-            "completed_steps": completed,
-        })
+                    if step.on_fail == OnFail.CONTINUE:
+                        context_parts.append(
+                            f"Step {step_num} ({step.instruction}): FAILED — {result.error}"
+                        )
+                    else:
+                        completed = sum(1 for r in step_results if r.status == StepStatus.COMPLETED)
+                        remaining = [s.instruction for s in workflow.steps[i + 1 :]]
 
-    # ━━━ Step execution ━━━
+                        await self._emit(EventType.WORKFLOW_PAUSED, {
+                            "workflow": workflow.name,
+                            "step": step_num,
+                            "total_steps": total,
+                            "instruction": step.instruction,
+                            "error": result.error,
+                            "completed_count": completed,
+                            "remaining": remaining,
+                        })
+                        return
+
+            completed = sum(1 for r in step_results if r.status == StepStatus.COMPLETED)
+            await self._emit(EventType.WORKFLOW_COMPLETE, {
+                "workflow": workflow.name,
+                "total_steps": total,
+                "completed_steps": completed,
+            })
+            if run_handle is not None:
+                await run_handle.finish_completed()
+
+        except RunCancelledError as e:
+            await self._emit(EventType.WORKFLOW_FAILED, {
+                "workflow": workflow.name,
+                "error": e.action.value,
+            })
+            return
+        finally:
+            self._active_run_handle = None
+            self._current_run_id = None
 
     async def _execute_step(
         self,
@@ -305,17 +305,15 @@ class WorkflowEngine:
         context_parts: list[str],
         user_message: str,
     ) -> AsyncIterator[tuple[str | None, StepResult | None]]:
-        """Execute a single step with retry, yielding agent output."""
         max_attempts = step.retry + 1
-        step_timeout = 600  # 10-minute hard cap per attempt
+        step_timeout = 600
 
         for attempt in range(max_attempts):
             step.attempts = attempt + 1
 
             try:
                 prompt = self._build_step_prompt(
-                    step, step_num, total_steps,
-                    context_parts, user_message, attempt,
+                    step, step_num, total_steps, context_parts, user_message, attempt
                 )
 
                 output = ""
@@ -323,6 +321,7 @@ class WorkflowEngine:
                 async def _stream():
                     nonlocal output
                     async for chunk in self._agent.run(prompt):
+                        await self._run_checkpoint()
                         output += chunk
                         yield chunk
 
@@ -337,6 +336,8 @@ class WorkflowEngine:
                 ))
                 return
 
+            except RunCancelledError:
+                raise
             except asyncio.TimeoutError:
                 error = f"Step timed out after {step_timeout // 60} minutes"
                 logger.warning(f"Step {step_num}: {error}")
@@ -351,9 +352,7 @@ class WorkflowEngine:
                 return
 
             except Exception as e:
-                logger.warning(
-                    f"Step {step_num} attempt {attempt + 1} failed: {e}"
-                )
+                logger.warning(f"Step {step_num} attempt {attempt + 1} failed: {e}")
                 if attempt < max_attempts - 1:
                     continue
                 yield (None, StepResult(
@@ -363,8 +362,6 @@ class WorkflowEngine:
                     attempts=attempt + 1,
                 ))
                 return
-
-    # ━━━ Prompt building ━━━
 
     def _build_step_prompt(
         self,
@@ -417,36 +414,6 @@ class WorkflowEngine:
             )
 
         return prompt
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-
-# Phrases that strongly indicate the agent is asking the user a question
-# (vs. a rhetorical question in a summary).
-_QUESTION_INDICATORS = (
-    "which ",
-    "what ",
-    "could you ",
-    "can you ",
-    "do you ",
-    "would you ",
-    "should i ",
-    "shall i ",
-    "please provide",
-    "please specify",
-    "please confirm",
-    "please let me know",
-    "i need to know",
-    "i need you to",
-    "help me understand",
-    "before i proceed",
-    "before i can",
-    "before continuing",
-    "to proceed",
-    "to continue",
-)
-
 
 def _response_is_question(text: str) -> bool:
     """

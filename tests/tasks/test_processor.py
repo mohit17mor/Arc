@@ -12,6 +12,37 @@ from arc.tasks.store import TaskStore
 from arc.tasks.types import AgentDef, Task, TaskStatus, TaskStep
 
 
+class _FakeTaskAgentLoop:
+    def __init__(self, *args, run_control=None, agent_id="agent", **kwargs):
+        self._run_control = run_control
+        self._agent_id = agent_id
+        self.current_run_id = None
+        self.last_run_id = None
+
+    async def run(self, user_input: str):
+        if self._run_control is not None:
+            handle = self._run_control.start_run(
+                kind="agent",
+                source=self._agent_id,
+                metadata={"agent_id": self._agent_id},
+            )
+            self.current_run_id = handle.run_id
+            self.last_run_id = handle.run_id
+        else:
+            handle = None
+
+        try:
+            for chunk in ["working", " ", "still-working"]:
+                await asyncio.sleep(0.02)
+                if handle is not None:
+                    await handle.checkpoint()
+                yield chunk
+            if handle is not None:
+                await handle.finish_completed()
+        finally:
+            self.current_run_id = None
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 
@@ -307,3 +338,61 @@ class TestTaskProcessorReviewHandling:
         comments = await tmp_store.get_comments(task.id)
         assert any("LLM timeout" in c.content for c in comments)
         await tmp_store.close()
+
+@pytest.mark.asyncio
+async def test_cancel_task_stops_inflight_run(tmp_store, sample_agents, mock_skill_manager,
+                                              mock_llm, mock_notification_router,
+                                              mock_kernel, monkeypatch):
+    from arc.core.run_control import RunControlManager, RunStatus
+
+    await tmp_store.initialize()
+    run_control = RunControlManager()
+    processor = TaskProcessor(
+        store=tmp_store,
+        agents=sample_agents,
+        skill_manager=mock_skill_manager,
+        default_llm=mock_llm,
+        notification_router=mock_notification_router,
+        kernel=mock_kernel,
+        run_control=run_control,
+    )
+
+    task = Task(
+        title="Long task",
+        instruction="Do some long running work",
+        steps=[TaskStep(step_index=0, agent_name="researcher")],
+    )
+    await tmp_store.save(task)
+
+    monkeypatch.setattr("arc.agent.loop.AgentLoop", _FakeTaskAgentLoop)
+    monkeypatch.setattr(processor, "_check_needs_human_input", AsyncMock(return_value=False))
+
+    processing = asyncio.create_task(processor._process_task(task, sample_agents["researcher"]))
+
+    deadline = time.monotonic() + 1.0
+    active_run_id = None
+    while time.monotonic() < deadline:
+        runs = run_control.list_runs(active_only=True)
+        if runs:
+            active_run_id = runs[0].run_id
+            break
+        await asyncio.sleep(0.005)
+
+    assert active_run_id is not None
+    assert await processor.cancel_task(task.id)
+
+    await processing
+
+    found = await tmp_store.get_by_id(task.id)
+    assert found is not None
+    assert found.status == TaskStatus.CANCELLED
+
+    snapshot = run_control.get_run(active_run_id)
+    assert snapshot is not None
+    assert snapshot.status == RunStatus.CANCELLED
+
+    comments = await tmp_store.get_comments(task.id)
+    researcher_comments = [c for c in comments if c.agent_name == "researcher"]
+    assert researcher_comments == []
+
+    await tmp_store.close()

@@ -126,6 +126,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     cli.set_skill_router(rt.skill_router)
     if rt.mcp_manager.has_servers:
         cli.set_mcp_manager(rt.mcp_manager)
+    cli.set_turn_controller(rt.turn_controller)
     if rt.memory_manager is not None:
         cli.set_memory_manager(rt.memory_manager)
 
@@ -181,7 +182,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     async def handle_message(user_input: str):
         rt.cost_tracker.start_turn()
         cli.set_cost_tracker(rt.cost_tracker.summary())
-        async for chunk in rt.agent.run(user_input):
+        async for chunk in rt.turn_controller.stream_message(user_input, source="cli"):
             yield chunk
         cli.set_cost_tracker(rt.cost_tracker.summary())
 
@@ -513,6 +514,8 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     if rt.mcp_manager.has_servers:
         gw.set_mcp_manager(rt.mcp_manager)
     gw.set_session_memory(rt.agent._memory)
+    gw.set_run_control(rt.run_control)
+    gw.set_turn_controller(rt.turn_controller)
 
     # Wire task board dependencies
     if rt.task_store:
@@ -618,7 +621,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
                 f"(if any).\n\n{injected}\n\nUser message: {user_input}"
             )
 
-        async for chunk in rt.agent.run(actual_input):
+        async for chunk in rt.turn_controller.stream_message(actual_input, source="gateway"):
             yield chunk
         gw.set_cost_tracker(rt.cost_tracker.summary())
 

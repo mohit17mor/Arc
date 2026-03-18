@@ -1,9 +1,11 @@
 """Tests for the agent loop."""
 
+import asyncio
+
 import pytest
 from arc.core.kernel import Kernel
 from arc.core.config import ArcConfig
-from arc.core.types import Capability, SkillManifest, ToolResult, ToolSpec
+from arc.core.types import Capability, SkillManifest, StopReason, ToolResult, ToolSpec
 from arc.llm.mock import MockLLMProvider
 from arc.skills.base import tool, FunctionSkill, Skill
 from arc.skills.manager import SkillManager
@@ -425,6 +427,65 @@ class TestControlSafeguards:
         )
         assert nudge_found
 
+
+    @pytest.mark.asyncio
+    async def test_interrupted_plan_requires_replan_before_more_tool_work(self, kernel, security):
+        mock_llm = MockLLMProvider()
+        manager = SkillManager(kernel)
+
+        @tool(name="greet")
+        async def greet(name: str) -> str:
+            return f"Hello, {name}!"
+
+        await manager.register(FunctionSkill("test", "Test", [greet]))
+
+        agent = AgentLoop(
+            kernel=kernel,
+            llm=mock_llm,
+            skill_manager=manager,
+            security=security,
+            system_prompt="You are helpful.",
+            config=AgentConfig(max_iterations=6),
+        )
+
+        await agent._planning.initialize(kernel, {})
+        agent._planning_initialized = True
+        await agent._planning.execute_tool(
+            "update_plan",
+            {"plan": [
+                {"step": "Greet user", "status": "in_progress"},
+                {"step": "Respond", "status": "pending"},
+            ]},
+        )
+        await agent._planning.mark_interrupted(reason="user_interrupt")
+
+        mock_llm.set_tool_call("greet", {"name": "World"})
+        mock_llm.set_tool_call(
+            "update_plan",
+            {"plan": [
+                {"step": "Greet user", "status": "in_progress"},
+                {"step": "Respond", "status": "pending"},
+            ]},
+        )
+        mock_llm.set_tool_call("greet", {"name": "World"})
+        mock_llm.set_response("Done after explicit replan.")
+
+        chunks = []
+        async for chunk in agent.run("Actually say hello to World now."):
+            chunks.append(chunk)
+
+        response = "".join(chunks)
+        assert "Done after explicit replan." in response
+        assert mock_llm.all_calls
+        first_system = mock_llm.all_calls[0]["messages"][0].content or ""
+        assert "interrupted previous plan" in first_system.lower()
+        msgs = agent.memory.get_messages(include_system=False)
+        nudge_found = any(
+            "create a short plan" in (m.content or "").lower()
+            for m in msgs if m.role == "user"
+        )
+        assert nudge_found
+
     @pytest.mark.asyncio
     async def test_repeated_failures_force_explanation_mode(self, kernel, security):
         mock_llm = MockLLMProvider()
@@ -463,3 +524,73 @@ class TestControlSafeguards:
             for m in msgs if m.role == "user"
         )
         assert breaker_found
+
+
+class _SlowMockLLM(MockLLMProvider):
+    def set_slow_response(self, parts: list[str], delay: float = 0.02) -> None:
+        self._responses.append([(parts, delay)])
+
+    async def generate(
+        self,
+        messages,
+        tools=None,
+        temperature: float = 0.7,
+        max_tokens=None,
+        stop_sequences=None,
+    ):
+        self.call_count += 1
+        self.last_messages = list(messages)
+        self.last_tools = tools
+        self.all_calls.append(
+            {
+                "messages": list(messages),
+                "tools": tools,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "call_number": self.call_count,
+            }
+        )
+
+        queued = self._responses.pop(0)
+        parts, delay = queued[0]
+        for part in parts:
+            await asyncio.sleep(delay)
+            yield type("Chunk", (), {"text": part, "tool_calls": None, "stop_reason": None, "input_tokens": 0, "output_tokens": 0})()
+        yield type("Chunk", (), {"text": None, "tool_calls": None, "stop_reason": StopReason.COMPLETE, "input_tokens": 1, "output_tokens": 1})()
+
+
+@pytest.mark.asyncio
+async def test_run_can_be_cancelled_mid_stream(kernel, skill_manager, security):
+    from arc.core.run_control import RunControlAction, RunControlManager, RunStatus
+
+    mock_llm = _SlowMockLLM()
+    mock_llm.set_slow_response(["Hello", " ", "world", "!"])
+    run_control = RunControlManager()
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=mock_llm,
+        skill_manager=skill_manager,
+        security=security,
+        system_prompt="You are a helpful assistant.",
+        config=AgentConfig(max_iterations=5),
+        run_control=run_control,
+    )
+
+    chunks = []
+
+    async def cancel_soon():
+        while agent.current_run_id is None:
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.025)
+        assert run_control.request(agent.current_run_id, RunControlAction.CANCEL)
+
+    cancel_task = asyncio.create_task(cancel_soon())
+    async for chunk in agent.run("Hi"):
+        chunks.append(chunk)
+    await cancel_task
+
+    snapshot = run_control.get_run(agent.last_run_id)
+    assert snapshot is not None
+    assert snapshot.status == RunStatus.CANCELLED
+    assert "Hello" in "".join(chunks)
+    assert agent.state.status.value == "complete"
