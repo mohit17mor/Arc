@@ -6,33 +6,21 @@ You do **not** need to create task agents to get started. The main agent works i
 
 ## 1. Install Arc
 
-Requirements:
-
-- Python 3.11+
-- One model provider you can reach: Ollama locally, or a cloud API
-
-```bash
-git clone https://github.com/mohit17mor/Arc.git
-cd Arc
-python -m venv .venv
-```
-
-=== "Windows"
-
-    ```bash
-    .venv\Scripts\activate
-    ```
+Use the one-command installer. It attempts the full Arc stack on the first pass, including browser support when possible.
 
 === "macOS / Linux"
 
     ```bash
-    source .venv/bin/activate
+    curl -fsSL https://raw.githubusercontent.com/mohit17mor/Arc/main/scripts/install/install.sh | sh
     ```
 
-```bash
-pip install -e ".[dev]"
-playwright install chromium
-```
+=== "Windows PowerShell"
+
+    ```powershell
+    irm https://raw.githubusercontent.com/mohit17mor/Arc/main/scripts/install/install.ps1 | iex
+    ```
+
+The installer may prompt if it needs permission to install required system dependencies such as Python.
 
 ## 2. Run The Setup Wizard
 
@@ -50,6 +38,14 @@ It walks through:
 4. optional extras like Telegram, Tavily, and ngrok
 
 Arc stores this in `~/.arc/config.toml` and `~/.arc/identity.md`.
+
+If the installer reports optional failures, run:
+
+```bash
+arc doctor
+```
+
+This shows whether the Arc runtime is healthy and whether browser support is ready.
 
 ## 3. Start Your First Chat
 
@@ -92,6 +88,33 @@ If you want work to continue without staying in chat, go to [Queue Tasks](multi-
 ### Add more tools
 
 If you want to extend Arc, go to [Skills](capabilities/skills.md) and [MCP](capabilities/mcp.md).
+
+## Developer Install
+
+If you are contributing to Arc itself, use the repo-based setup instead:
+
+```bash
+git clone https://github.com/mohit17mor/Arc.git
+cd Arc
+python -m venv .venv
+```
+
+=== "Windows"
+
+    ```bash
+    .venv\Scripts\activate
+    ```
+
+=== "macOS / Linux"
+
+    ```bash
+    source .venv/bin/activate
+    ```
+
+```bash
+pip install -e ".[dev]"
+playwright install chromium
+```
 
 ## First-Day Mental Model
 

@@ -109,6 +109,23 @@ def test_chat_without_init(runner, tmp_path, monkeypatch):
     assert "not configured" in result.stdout.lower() or "arc init" in result.stdout.lower()
 
 
+def test_doctor_reports_install_health(runner, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    runtime = tmp_path / ".arc" / "runtime" / "current"
+    launcher = tmp_path / ".arc" / "bin" / "arc"
+    python_path = runtime / ".venv" / "bin" / "python"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    python_path.parent.mkdir(parents=True, exist_ok=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    python_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Install Health" in result.stdout
+    assert "OK" in result.stdout
+
+
 def test_init_custom_personality_writes_custom_prompt(runner, tmp_path, monkeypatch):
     """arc init supports custom full system prompt for the main identity."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -238,4 +255,3 @@ async def test_chat_wires_plan_updates_to_cli(monkeypatch, tmp_path):
     await cli_main._run_chat(None, False)
 
     assert EventType.AGENT_PLAN_UPDATE in subscribed
-

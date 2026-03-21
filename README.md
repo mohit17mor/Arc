@@ -15,12 +15,16 @@ That means you can start simple with `arc chat`, then add multi-agent chains, re
 ## Quick Start
 
 ```bash
-git clone https://github.com/mohit17mor/Arc.git
-cd Arc
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-playwright install chromium
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/mohit17mor/Arc/main/scripts/install/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/mohit17mor/Arc/main/scripts/install/install.ps1 | iex
+```
+
+```bash
 arc init
 arc chat
 ```
@@ -32,6 +36,25 @@ arc gateway
 ```
 
 The dashboard runs at `http://localhost:18789`.
+
+If installation succeeds but something optional failed, run:
+
+```bash
+arc doctor
+```
+
+## Developer Setup
+
+If you want to work on Arc itself:
+
+```bash
+git clone https://github.com/mohit17mor/Arc.git
+cd Arc
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+playwright install chromium
+```
 
 ## What Arc Covers
 

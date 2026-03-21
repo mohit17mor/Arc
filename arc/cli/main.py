@@ -43,6 +43,31 @@ def get_identity_path() -> Path:
 
 
 @app.command()
+def doctor() -> None:
+    """Check whether Arc's managed runtime install looks healthy."""
+    from arc.install.health import evaluate_install_health
+
+    report = evaluate_install_health(get_arc_home())
+    status = "OK" if report.ok else "Needs Attention"
+    lines = [f"[bold]Status:[/bold] {status}"]
+
+    if report.blocking_issues:
+        lines.append("\n[bold red]Blocking Issues[/bold red]")
+        lines.extend(f"- {issue}" for issue in report.blocking_issues)
+
+    if report.optional_issues:
+        lines.append("\n[bold yellow]Optional Issues[/bold yellow]")
+        lines.extend(f"- {issue}" for issue in report.optional_issues)
+
+    lines.append("\n[bold]Checked Paths[/bold]")
+    lines.extend(f"- {name}: {path}" for name, path in report.checked_paths.items())
+
+    console.print(Panel("\n".join(lines), title="Install Health", border_style="cyan" if report.ok else "yellow"))
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+@app.command()
 def init() -> None:
     """Initialize or reconfigure Arc — interactive setup wizard."""
     from arc.identity.setup import run_first_time_setup
