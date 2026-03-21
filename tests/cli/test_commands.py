@@ -1,5 +1,6 @@
 """Tests for CLI commands."""
 
+import asyncio
 import pytest
 from pathlib import Path
 from typer.testing import CliRunner
@@ -138,3 +139,103 @@ def test_init_custom_personality_writes_custom_prompt(runner, tmp_path, monkeypa
     assert 'personality = "custom"' in cfg_text
     assert "You are a strict coding assistant." in identity_text
     assert "Be direct and concise." in identity_text
+
+
+@pytest.mark.asyncio
+async def test_chat_wires_plan_updates_to_cli(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from arc.cli import main as cli_main
+    from arc.core.events import EventType
+
+    config_path = tmp_path / 'config.toml'
+    config_path.write_text('ok')
+    monkeypatch.setattr(cli_main, 'get_config_path', lambda: config_path)
+
+    subscribed: list[str] = []
+
+    class FakeKernel:
+        def on(self, event_type, handler):
+            subscribed.append(event_type)
+
+    class FakeCLI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_approval_flow(self, flow):
+            pass
+
+        def set_escalation_bus(self, bus):
+            pass
+
+        def set_skill_manager(self, skill_manager):
+            pass
+
+        def set_skill_router(self, router):
+            pass
+
+        def set_mcp_manager(self, mcp_manager):
+            pass
+
+        def set_turn_controller(self, controller):
+            pass
+
+        def set_memory_manager(self, manager):
+            pass
+
+        def set_workflow_skill(self, skill):
+            pass
+
+        def set_pending_queue(self, queue):
+            pass
+
+        def set_scheduler_store(self, store):
+            pass
+
+        async def run(self, handler):
+            return None
+
+    class FakeRouter:
+        def register(self, channel):
+            pass
+
+    class FakeChannel:
+        def __init__(self, queue):
+            self.queue = queue
+
+        def set_active(self, active):
+            pass
+
+    class FakeWorkflowSkill:
+        pass
+
+    class FakeMCPManager:
+        has_servers = False
+
+    async def fake_bootstrap(**kwargs):
+        return SimpleNamespace(
+            identity={'agent_name': 'Arc', 'user_name': 'You'},
+            agent=SimpleNamespace(security=SimpleNamespace(approval_flow=object())),
+            escalation_bus=object(),
+            skill_manager=SimpleNamespace(get_skill=lambda name: None),
+            skill_router=object(),
+            mcp_manager=FakeMCPManager(),
+            turn_controller=object(),
+            memory_manager=None,
+            notification_router=FakeRouter(),
+            config=SimpleNamespace(scheduler=SimpleNamespace(enabled=False)),
+            sched_store=None,
+            kernel=FakeKernel(),
+            cost_tracker=SimpleNamespace(start_turn=lambda: None, summary=lambda: {}),
+            start=lambda: asyncio.sleep(0),
+            shutdown=lambda: asyncio.sleep(0),
+        )
+
+    monkeypatch.setattr('arc.cli.bootstrap.bootstrap', fake_bootstrap)
+    monkeypatch.setattr('arc.platforms.cli.app.CLIPlatform', FakeCLI)
+    monkeypatch.setattr('arc.notifications.channels.cli.CLIChannel', FakeChannel)
+    monkeypatch.setattr('arc.workflow.skill.WorkflowSkill', FakeWorkflowSkill)
+
+    await cli_main._run_chat(None, False)
+
+    assert EventType.AGENT_PLAN_UPDATE in subscribed
+

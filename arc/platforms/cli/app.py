@@ -34,6 +34,10 @@ from arc.platforms.base import Platform, MessageHandler
 from arc.core.events import Event, EventType
 
 
+class PromptInputInterrupted(Exception):
+    """Raised when the user dismisses a CLI prompt with Esc."""
+
+
 class CLIPlatform(Platform):
     """
     Rich terminal interface for Arc.
@@ -82,6 +86,7 @@ class CLIPlatform(Platform):
         self._interrupt_stop_event: threading.Event | None = None
         self._interrupt_task: asyncio.Task | None = None
         self._terminal_input_lock = asyncio.Lock()
+        self._interrupt_notice_shown = False
         self._interrupt_requested = False
         
         # Command history
@@ -163,6 +168,10 @@ class CLIPlatform(Platform):
             args_str = ", ".join(args_parts)
 
             self._console.print(f"[yellow]⟳[/yellow] [bold]{tool_name}[/bold]({args_str})")
+            if tool_name in {"browser_go", "browser_look", "browser_act"}:
+                self._console.print(
+                    "[bold yellow]⚠ Browser control is running. Press Esc in this terminal window — not in the browser window — to interrupt.[/bold yellow]"
+                )
             self._tool_call_count += 1
         
         elif event.type == EventType.SKILL_TOOL_RESULT:
@@ -196,6 +205,13 @@ class CLIPlatform(Platform):
             success = event.data.get("success", True)
             icon = "[green]✓[/green]" if success else "[red]✗[/red]"
             self._console.print(f"{icon} [dim]Worker '[bold]{task_name}[/bold]' done[/dim]")
+
+        elif event.type == EventType.USER_INTERRUPT:
+            reason = event.data.get("reason", "user_interrupt")
+            source = event.data.get("source", "")
+            if source not in ("", "cli"):
+                return
+            self._render_interrupt_notice(reason)
 
         elif event.type == EventType.AGENT_PLAN_UPDATE:
             if event.source != "main":
@@ -267,6 +283,47 @@ class CLIPlatform(Platform):
         async with self._terminal_input_lock:
             return await loop.run_in_executor(None, input)
 
+    async def _read_approval_response(self) -> str:
+        """Read a single approval choice, supporting Esc to dismiss the prompt."""
+        loop = asyncio.get_running_loop()
+        async with self._terminal_input_lock:
+            return await loop.run_in_executor(None, self._read_approval_response_blocking)
+
+    def _read_approval_response_blocking(self) -> str:
+        """Read one approval key from the terminal without echoing raw escape bytes."""
+        if termios is None or tty is None or not sys.stdin.isatty():
+            return input().strip().lower() or "n"
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+
+        try:
+            tty.setraw(fd)
+            while True:
+                try:
+                    data = os.read(fd, 1)
+                except OSError:
+                    return "n"
+
+                if not data:
+                    raise EOFError
+                if data == b"\x03":
+                    raise KeyboardInterrupt
+                if data == b"\x1b":
+                    raise PromptInputInterrupted
+                if data in (b"\r", b"\n"):
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    return "n"
+
+                char = data.decode("utf-8", errors="ignore").lower()
+                if char in ("y", "a", "n", "d"):
+                    sys.stdout.write(char + "\n")
+                    sys.stdout.flush()
+                    return char
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
     async def _suspend_interrupt_monitor(self) -> None:
         stop_event = self._interrupt_stop_event
         interrupt_task = self._interrupt_task
@@ -277,6 +334,22 @@ class CLIPlatform(Platform):
             await asyncio.gather(interrupt_task, return_exceptions=True)
         if interrupt_task is not None and interrupt_task.done():
             self._interrupt_task = None
+
+    def _resume_interrupt_monitor(self) -> None:
+        if self._interrupt_requested:
+            return
+        if self._turn_controller is None or not self._turn_controller.is_active:
+            return
+        if self._interrupt_task is not None and not self._interrupt_task.done():
+            return
+        stop_event = self._interrupt_stop_event
+        if stop_event is None:
+            return
+        stop_event.clear()
+        self._interrupt_task = asyncio.create_task(
+            self._monitor_escape_interrupt(stop_event),
+            name="cli-escape-interrupt",
+        )
 
     async def _prompt_line(self, message: str) -> str:
         """Read one line via prompt_toolkit so terminal ownership stays consistent."""
@@ -327,17 +400,21 @@ class CLIPlatform(Platform):
         )
         
         # Get user response.
-        # NOTE: We use plain input() in a thread executor rather than
-        # Rich's Prompt.ask() because on Windows, Rich tries to create
-        # its own console reader which deadlocks against prompt_toolkit's
-        # terminal ownership.
+        # On POSIX ttys we read a single raw key so Esc can dismiss the prompt
+        # immediately without leaking `^[` into the terminal. Non-tty fallbacks
+        # still use normal line input.
         self._console.print("[bold]Allow? ([green]y[/green]=once  [green]a[/green]=always  [red]n[/red]=deny  [red]d[/red]=deny always)[/bold] ", end="")
         try:
             await self._suspend_interrupt_monitor()
-            raw = await self._read_plain_line()
+            raw = await self._read_approval_response()
             response = raw.strip().lower() or "n"
             if response not in ("y", "a", "n", "d"):
                 response = "n"
+        except PromptInputInterrupted:
+            response = "n"
+            await self._interrupt_active_turn_from_prompt(
+                "User interrupted. Permission prompt dismissed; cancelling the current turn..."
+            )
         except (KeyboardInterrupt, EOFError):
             response = "n"
         
@@ -358,6 +435,7 @@ class CLIPlatform(Platform):
         
         self._console.print()
         self._waiting_for_approval = False
+        self._resume_interrupt_monitor()
         
         # Resolve the approval request
         if self._approval_flow:
@@ -393,15 +471,35 @@ class CLIPlatform(Platform):
             answer = "(interrupted)"
 
         self._console.print()
+        self._resume_interrupt_monitor()
 
         if self._escalation_bus:
             self._escalation_bus.resolve_escalation(escalation_id, answer)
+
+    def _render_interrupt_notice(self, reason: str) -> None:
+        if self._interrupt_notice_shown:
+            return
+        message = "Interrupt requested — waiting for the current step to yield..."
+        if reason == "cli_command":
+            message = "Interrupt requested via /interrupt — waiting for the current step to yield..."
+        self._console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
+        self._interrupt_notice_shown = True
+
+    async def _interrupt_active_turn_from_prompt(self, message: str) -> None:
+        if not self._interrupt_notice_shown:
+            self._console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
+            self._interrupt_notice_shown = True
+        self._interrupt_requested = True
+        if self._turn_controller is not None and self._turn_controller.is_active:
+            await self._turn_controller.interrupt_current(reason="cli_escape")
 
     def _reset_state(self) -> None:
         """Reset display state for new message."""
         self._printed_thinking = False
         self._printed_analyzing = False
         self._tool_call_count = 0
+        self._interrupt_requested = False
+        self._interrupt_notice_shown = False
 
     def _inject_pending_results(self, user_input: str) -> str:
         """
@@ -521,6 +619,7 @@ class CLIPlatform(Platform):
             Panel(
                 f"[bold]{self._agent_name}[/bold] is ready.\n"
                 f"[dim]Type [bold]/help[/bold] for commands. "
+                f"Press [bold]Esc[/bold] or use [bold]/interrupt[/bold] to stop a running turn. "
                 f"[bold]/exit[/bold] to quit.[/dim]",
                 border_style="cyan",
             )
@@ -614,20 +713,22 @@ class CLIPlatform(Platform):
             self._console.print(
                 Panel(
                     "[bold]Commands[/bold]\n\n"
-                    "  [cyan]/help[/cyan]     \u2014 Show this help\n"
-                    "  [cyan]/skills[/cyan]   \u2014 List available skills and tools\n"
-                    "  [cyan]/memory[/cyan]   \u2014 Show long-term memory (core facts)\n"
-                    "  [cyan]/memory episodic[/cyan] \u2014 Show recent episodic memories\n"
-                    "  [cyan]/memory forget <id>[/cyan] \u2014 Delete a core memory by id\n"
-                    "  [cyan]/jobs[/cyan]     \u2014 List scheduled jobs\n"
-                    "  [cyan]/jobs cancel <name>[/cyan] \u2014 Cancel a scheduled job\n"
-                    "  [cyan]/workflow[/cyan]  \u2014 List or run workflows\n"
-                    "  [cyan]/workflow <name>[/cyan] \u2014 Run a specific workflow\n"
-                    "  [cyan]/mcp[/cyan]      \u2014 Show MCP server status\n"
-                    "  [cyan]/cost[/cyan]     \u2014 Show token usage and cost\n"
-                    "  [cyan]/perms[/cyan]    \u2014 Show remembered permissions\n"
-                    "  [cyan]/clear[/cyan]    \u2014 Clear conversation history\n"
-                    "  [cyan]/exit[/cyan]     \u2014 Exit the chat",
+                    "  [cyan]/help[/cyan]      — Show this help\n"
+                    "  [cyan]/skills[/cyan]    — List available skills and tools\n"
+                    "  [cyan]/memory[/cyan]    — Show long-term memory (core facts)\n"
+                    "  [cyan]/memory episodic[/cyan] — Show recent episodic memories\n"
+                    "  [cyan]/memory forget <id>[/cyan] — Delete a core memory by id\n"
+                    "  [cyan]/jobs[/cyan]      — List scheduled jobs\n"
+                    "  [cyan]/jobs cancel <name>[/cyan] — Cancel a scheduled job\n"
+                    "  [cyan]/workflow[/cyan]  — List or run workflows\n"
+                    "  [cyan]/workflow <name>[/cyan] — Run a specific workflow\n"
+                    "  [cyan]/mcp[/cyan]       — Show MCP server status\n"
+                    "  [cyan]/cost[/cyan]      — Show token usage and cost\n"
+                    "  [cyan]/perms[/cyan]     — Show remembered permissions\n"
+                    "  [cyan]/clear[/cyan]     — Clear conversation history\n"
+                    "  [cyan]/interrupt[/cyan] — Interrupt the active turn\n"
+                    "  [cyan]Esc[/cyan]        — Interrupt the active turn while Arc is working\n"
+                    "  [cyan]/exit[/cyan]      — Exit the chat",
                     border_style="blue",
                 )
             )
@@ -639,7 +740,7 @@ class CLIPlatform(Platform):
                 accepted = await self._turn_controller.interrupt_current(reason="cli_command")
                 if accepted:
                     self._interrupt_requested = True
-                    self._console.print("[dim]Interrupt requested...[/dim]")
+                    self._render_interrupt_notice("cli_command")
                 else:
                     self._console.print("[dim]Unable to interrupt the active turn[/dim]")
 
@@ -1017,8 +1118,18 @@ class CLIPlatform(Platform):
         finally:
             interrupt_stop.set()
             self._interrupt_stop_event = None
-            if interrupt_task is not None:
-                await asyncio.gather(interrupt_task, return_exceptions=True)
+            current = asyncio.current_task()
+            tasks_to_wait: list[asyncio.Task] = []
+            for task in (self._interrupt_task, interrupt_task):
+                if (
+                    task is not None
+                    and task is not current
+                    and not task.done()
+                    and task not in tasks_to_wait
+                ):
+                    tasks_to_wait.append(task)
+            if tasks_to_wait:
+                await asyncio.gather(*tasks_to_wait, return_exceptions=True)
             self._interrupt_task = None
 
     async def _monitor_escape_interrupt(self, stop_event: threading.Event) -> None:
@@ -1031,7 +1142,7 @@ class CLIPlatform(Platform):
         )
         if pressed and self._turn_controller is not None and not self._interrupt_requested:
             self._interrupt_requested = True
-            self._console.print("\n[dim]Interrupt requested...[/dim]")
+            self._render_interrupt_notice("cli_escape")
             await self._turn_controller.interrupt_current(reason="cli_escape")
 
     def _wait_for_escape_blocking(self, stop_event: threading.Event) -> bool:

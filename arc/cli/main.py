@@ -168,6 +168,8 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     rt.kernel.on(EventType.AGENT_ESCALATION, forward_to_cli)
     rt.kernel.on(EventType.AGENT_SPAWNED, forward_to_cli)
     rt.kernel.on(EventType.AGENT_TASK_COMPLETE, forward_to_cli)
+    rt.kernel.on(EventType.AGENT_PLAN_UPDATE, forward_to_cli)
+    rt.kernel.on(EventType.USER_INTERRUPT, forward_to_cli)
 
     # Workflow events
     rt.kernel.on(EventType.WORKFLOW_START, forward_to_cli)
