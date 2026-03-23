@@ -71,6 +71,26 @@ _STEP_PREFIX = (
     "- Do NOT proceed to the next step — the workflow engine handles that.\n"
 )
 
+# Phrases that strongly indicate the agent is asking the user for input,
+# not ending with a rhetorical question.
+_QUESTION_INDICATORS = (
+    "which ",
+    "what ",
+    "when ",
+    "where ",
+    "who ",
+    "why ",
+    "how ",
+    "could you ",
+    "would you ",
+    "can you ",
+    "please provide ",
+    "before i proceed",
+    "do you want ",
+    "do you prefer ",
+    "are you ",
+)
+
 
 class WorkflowEngine:
     """

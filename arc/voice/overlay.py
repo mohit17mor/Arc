@@ -23,6 +23,8 @@ Thread safety:
 from __future__ import annotations
 
 import logging
+import platform
+from os import environ
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,23 @@ except ImportError:
 def is_available() -> bool:
     """Check if PyQt6 is installed."""
     return _HAS_QT
+
+
+def _should_raise_macos_window_level() -> bool:
+    """Only use the native Cocoa window level on interactive macOS Qt backends."""
+    if not _HAS_QT or platform.system() != "Darwin":
+        return False
+
+    platform_name = ""
+    app = QApplication.instance()
+    if app is not None:
+        try:
+            platform_name = app.platformName().lower()
+        except Exception:
+            platform_name = ""
+
+    env_platform = environ.get("QT_QPA_PLATFORM", "").lower()
+    return platform_name not in {"offscreen", "minimal"} and env_platform not in {"offscreen", "minimal"}
 
 
 # ── State → visual mapping ────────────────────────────────────────
@@ -114,9 +133,7 @@ if _HAS_QT:
 
         def __init__(self, screen: QScreen | None = None) -> None:
             super().__init__()
-
-            import platform as _plat
-            is_mac = _plat.system() == "Darwin"
+            is_mac = platform.system() == "Darwin"
 
             # Window flags — platform-specific for best behavior
             if is_mac:
@@ -149,7 +166,7 @@ if _HAS_QT:
                                  avail.width(), _BAR_HEIGHT)
 
             # On macOS, raise window level via native Cocoa API
-            if is_mac:
+            if is_mac and _should_raise_macos_window_level():
                 self._raise_macos_window_level()
 
             # Gradient colors for painting

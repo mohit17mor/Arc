@@ -1,7 +1,12 @@
 """Tests for the ambient edge glow overlay."""
 
-import pytest
+import os
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+# Force a headless-safe Qt backend for tests before importing PyQt6.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 # ── Availability check ───────────────────────────────────────────
@@ -30,6 +35,13 @@ class TestAvailability:
                 assert overlay_mod.is_available() is False
             finally:
                 overlay_mod._HAS_QT = original
+
+    def test_should_raise_macos_window_level_skips_offscreen(self):
+        import arc.voice.overlay as overlay_mod
+
+        with patch("platform.system", return_value="Darwin"):
+            with patch.object(overlay_mod.QApplication, "platformName", return_value="offscreen"):
+                assert overlay_mod._should_raise_macos_window_level() is False
 
 
 # ── State styles ─────────────────────────────────────────────────
