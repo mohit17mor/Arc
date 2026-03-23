@@ -203,6 +203,30 @@ class SkillManager:
     # Alias for backward compatibility
     register_async = register
 
+    async def unregister(self, skill_name: str) -> bool:
+        """Remove a skill and its tool mappings from the manager."""
+        skill = self._skills.pop(skill_name, None)
+        manifest = self._manifests.pop(skill_name, None)
+        if skill is None or manifest is None:
+            return False
+
+        if skill_name in self._activated:
+            try:
+                await skill.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down skill '{skill_name}': {e}")
+            self._activated.discard(skill_name)
+
+        self._initialized.discard(skill_name)
+
+        for tool_spec in manifest.tools:
+            if self._tool_to_skill.get(tool_spec.name) == skill_name:
+                self._tool_to_skill.pop(tool_spec.name, None)
+            self._tool_specs.pop(tool_spec.name, None)
+
+        logger.debug(f"Unregistered skill '{skill_name}'")
+        return True
+
     async def _ensure_activated(self, skill_name: str) -> Skill:
         """Ensure a skill is activated, activating if necessary."""
         skill = self._skills.get(skill_name)

@@ -119,12 +119,11 @@ class TestMCPClientCallTool:
     @pytest.mark.asyncio
     async def test_call_tool_text_content(self):
         """TextContent is extracted properly."""
-        from mcp.types import TextContent
-
         client = MCPClient(name="gh", command="npx")
         client._connected = True
 
-        text_block = TextContent(type="text", text="result data")
+        text_block = MagicMock()
+        text_block.text = "result data"
         mock_result = MagicMock()
         mock_result.content = [text_block]
         mock_result.isError = False
@@ -140,12 +139,11 @@ class TestMCPClientCallTool:
 
     @pytest.mark.asyncio
     async def test_call_tool_error_flag(self):
-        from mcp.types import TextContent
-
         client = MCPClient(name="gh", command="npx")
         client._connected = True
 
-        text_block = TextContent(type="text", text="something went wrong")
+        text_block = MagicMock()
+        text_block.text = "something went wrong"
         mock_result = MagicMock()
         mock_result.content = [text_block]
         mock_result.isError = True

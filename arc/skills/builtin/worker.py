@@ -106,6 +106,10 @@ class WorkerSkill(Skill):
         if system_prompt:
             self._worker_system_prompt = system_prompt
 
+    def set_system_prompt(self, prompt: str) -> None:
+        """Refresh only the worker prompt without re-injecting dependencies."""
+        self._worker_system_prompt = prompt
+
     # ------------------------------------------------------------------ #
     # Skill ABC                                                            #
     # ------------------------------------------------------------------ #

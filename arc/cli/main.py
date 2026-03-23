@@ -149,8 +149,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     cli.set_escalation_bus(rt.escalation_bus)
     cli.set_skill_manager(rt.skill_manager)
     cli.set_skill_router(rt.skill_router)
-    if rt.mcp_manager.has_servers:
-        cli.set_mcp_manager(rt.mcp_manager)
+    cli.set_mcp_manager(rt.mcp_manager)
     cli.set_turn_controller(rt.turn_controller)
     if rt.memory_manager is not None:
         cli.set_memory_manager(rt.memory_manager)
@@ -538,8 +537,9 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
         gw.set_memory_manager(rt.memory_manager)
     if rt.config.scheduler.enabled:
         gw.set_scheduler_store(rt.sched_store)
-    if rt.mcp_manager.has_servers:
-        gw.set_mcp_manager(rt.mcp_manager)
+    gw.set_mcp_manager(rt.mcp_manager)
+    if rt.mcp_config_service is not None:
+        gw.set_mcp_config_service(rt.mcp_config_service)
     gw.set_session_memory(rt.agent._memory)
     gw.set_run_control(rt.run_control)
     gw.set_turn_controller(rt.turn_controller)

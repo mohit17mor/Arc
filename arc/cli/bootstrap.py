@@ -18,6 +18,16 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 
+def _build_mcp_prompt_suffix(server_names: list[str]) -> str:
+    if not server_names:
+        return ""
+    return (
+        "\n\nMCP (Model Context Protocol) Servers:\n"
+        "External tool servers are available via mcp_list_tools and mcp_call.\n"
+        f"Configured servers: {', '.join(server_names)}\n"
+    )
+
+
 @dataclass
 class ArcRuntime:
     """Everything that gets created during bootstrap.
@@ -51,9 +61,21 @@ class ArcRuntime:
     task_store: Any | None = None  # TaskStore
     task_processor: Any | None = None  # TaskProcessor
     agent_defs: dict = field(default_factory=dict)  # name → AgentDef
+    mcp_config_service: Any | None = None
+    build_main_system_prompt: Callable[[], str] | None = None
+    build_worker_system_prompt: Callable[[], str] | None = None
+    mcp_prompt_state: dict[str, Any] = field(default_factory=dict)
 
     async def start(self) -> None:
         """Start kernel + scheduler + task processor."""
+        if self.mcp_config_service is not None:
+            active_names = self.mcp_manager.server_names if self.mcp_manager else []
+            state = self.mcp_config_service.inspect()
+            valid = state["valid"] if isinstance(state, dict) else state.valid
+            text = state["text"] if isinstance(state, dict) else state.text
+            if valid:
+                self.mcp_config_service.mark_applied(text, active_names)
+            await self.mcp_config_service.start()
         await self.kernel.start()
         if self.scheduler_engine:
             await self.scheduler_engine.start()
@@ -62,6 +84,8 @@ class ArcRuntime:
 
     async def shutdown(self) -> None:
         """Shut down everything in the correct order."""
+        if self.mcp_config_service is not None:
+            await self.mcp_config_service.stop()
         self.worker_log.close()
         if self.task_processor:
             await self.task_processor.stop()
@@ -79,6 +103,35 @@ class ArcRuntime:
             await self.worker_llm.close()
         if self.memory_manager is not None:
             await self.memory_manager.close()
+
+    async def apply_mcp_config(
+        self,
+        raw_text: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Apply a validated MCP config to this running runtime."""
+        from arc.mcp.gateway import MCPGatewaySkill
+        from arc.skills.builtin.worker import WorkerSkill
+
+        await self.mcp_manager.reload(data)
+        self.mcp_prompt_state["names"] = self.mcp_manager.server_names
+
+        gateway_skill = self.skill_manager.get_skill("mcp_gateway")
+        if self.mcp_manager.has_servers:
+            if gateway_skill is None:
+                gateway_skill = MCPGatewaySkill(self.mcp_manager)
+            await self.skill_manager.register(gateway_skill)
+        elif gateway_skill is not None:
+            await self.skill_manager.unregister("mcp_gateway")
+
+        if self.build_main_system_prompt is not None:
+            self.system_prompt = self.build_main_system_prompt()
+            self.agent.set_system_prompt(self.system_prompt)
+
+        if self.build_worker_system_prompt is not None:
+            worker_skill = self.skill_manager.get_skill("worker")
+            if worker_skill and isinstance(worker_skill, WorkerSkill):
+                worker_skill.set_system_prompt(self.build_worker_system_prompt())
 
 
 async def bootstrap(
@@ -127,10 +180,12 @@ async def bootstrap(
     from arc.skills.builtin.browser_control import BrowserControlSkill
     from arc.core.run_control import RunControlManager
     from arc.core.foreground_turns import ForegroundTurnController
+    from arc.mcp.config_service import MCPConfigStore, MCPReloadCoordinator
 
     arc_home = Path.home() / ".arc"
     config_path = arc_home / "config.toml"
     identity_path = arc_home / "identity.md"
+    mcp_config_path = arc_home / "mcp.json"
 
     # ── Logging ──
     setup_logging(log_dir=arc_home / "logs", console_level=log_level)
@@ -178,9 +233,6 @@ async def bootstrap(
     # ── MCP ──
     mcp_manager = MCPManager()
     mcp_manager.discover()
-    if mcp_manager.has_servers:
-        mcp_gw = MCPGatewaySkill(mcp_manager)
-        await skill_manager.register(mcp_gw)
 
     # ── Scheduler store ──
     sched_store = SchedulerStore(db_path=Path(config.scheduler.db_path).expanduser())
@@ -221,13 +273,44 @@ async def bootstrap(
         + soft_skill_text
         + get_reliability_block("main")
     )
+    mcp_names_state = {"names": mcp_manager.server_names}
+
+    def build_main_system_prompt() -> str:
+        return (
+            identity["system_prompt"]
+            + env_info
+            + soft_skill_text
+            + get_reliability_block("main")
+            + _build_mcp_prompt_suffix(mcp_names_state["names"])
+        )
+
+    def build_sub_agent_system_prompt() -> str:
+        return (
+            "You are a proactive background assistant completing a scheduled task. "
+            "Use tools as needed to fulfil the task fully and accurately. "
+            "Return a concise, well-structured answer — do not ask follow-up questions."
+            + env_info
+            + soft_skill_text_no_delegation
+            + get_reliability_block("scheduler")
+            + _build_mcp_prompt_suffix(mcp_names_state["names"])
+        )
+
+    def build_worker_system_prompt() -> str:
+        return (
+            "You are a focused background worker completing a specific sub-task. "
+            "Do not ask clarifying questions — make your best effort with the "
+            "information provided. Return a clear, structured result."
+            + env_info
+            + soft_skill_text_no_delegation
+            + get_reliability_block("worker")
+            + _build_mcp_prompt_suffix(mcp_names_state["names"])
+        )
+
+    system_prompt = build_main_system_prompt()
 
     if mcp_manager.has_servers:
-        system_prompt += (
-            "\n\nMCP (Model Context Protocol) Servers:\n"
-            "External tool servers are available via mcp_list_tools and mcp_call.\n"
-            f"Configured servers: {', '.join(mcp_manager.server_names)}\n"
-        )
+        mcp_gw = MCPGatewaySkill(mcp_manager)
+        await skill_manager.register(mcp_gw)
 
     run_control = RunControlManager()
 
@@ -263,20 +346,13 @@ async def bootstrap(
     )
 
     # ── Sub-agent factory ──
-    sub_agent_system_prompt = (
-        "You are a proactive background assistant completing a scheduled task. "
-        "Use tools as needed to fulfil the task fully and accurately. "
-        "Return a concise, well-structured answer — do not ask follow-up questions."
-        + env_info
-        + soft_skill_text_no_delegation        + get_reliability_block("scheduler")    )
-
     def make_sub_agent(agent_id: str = "scheduler") -> AgentLoop:
         return AgentLoop(
             kernel=kernel,
             llm=worker_llm,
             skill_manager=skill_manager,
             security=SecurityEngine.make_permissive(kernel),
-            system_prompt=sub_agent_system_prompt,
+            system_prompt=build_sub_agent_system_prompt(),
             config=AgentConfig(
                 max_iterations=config.agent.max_iterations,
                 temperature=0.5,
@@ -314,12 +390,6 @@ async def bootstrap(
     # ── Inject skill dependencies ──
     worker_skill = skill_manager.get_skill("worker")
     if worker_skill and isinstance(worker_skill, WorkerSkill):
-        worker_system_prompt = (
-            "You are a focused background worker completing a specific sub-task. "
-            "Do not ask clarifying questions — make your best effort with the "
-            "information provided. Return a clear, structured result."
-            + env_info
-            + soft_skill_text_no_delegation            + get_reliability_block("worker")        )
         worker_skill.set_dependencies(
             llm=llm,
             worker_llm=worker_llm,
@@ -327,7 +397,7 @@ async def bootstrap(
             escalation_bus=escalation_bus,
             notification_router=notification_router,
             agent_registry=agent_registry,
-            system_prompt=worker_system_prompt,
+            system_prompt=build_worker_system_prompt(),
         )
 
     browser_skill = skill_manager.get_skill("browser_control")
@@ -384,7 +454,9 @@ async def bootstrap(
     kernel.on(EventType.AGENT_ERROR, worker_log.handle)
     kernel.on(EventType.AGENT_PLAN_UPDATE, worker_log.handle)
 
-    return ArcRuntime(
+    mcp_config_store = MCPConfigStore(mcp_config_path)
+
+    runtime = ArcRuntime(
         config=config,
         identity=identity,
         kernel=kernel,
@@ -411,4 +483,18 @@ async def bootstrap(
         task_store=task_store,
         task_processor=task_processor,
         agent_defs=agent_defs,
+        build_main_system_prompt=build_main_system_prompt,
+        build_worker_system_prompt=build_worker_system_prompt,
+        mcp_prompt_state=mcp_names_state,
     )
+
+    runtime.mcp_config_service = MCPReloadCoordinator(
+        store=mcp_config_store,
+        apply_config=runtime.apply_mcp_config,
+    )
+
+    mcp_config_skill = runtime.skill_manager.get_skill("mcp_config")
+    if mcp_config_skill and hasattr(mcp_config_skill, "set_dependencies"):
+        mcp_config_skill.set_dependencies(config_service=runtime.mcp_config_service)
+
+    return runtime

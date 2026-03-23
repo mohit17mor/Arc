@@ -148,7 +148,11 @@ class AgentLoop:
         # Compaction — background for main agent, sync for others
         self._compaction = CompactionState()
         self._is_main_agent = (agent_id == "main")
-    
+
+    def set_system_prompt(self, prompt: str) -> None:
+        """Update the system prompt used for future LLM calls."""
+        self._memory.set_system_prompt(prompt)
+
     async def run(self, user_input: str) -> AsyncIterator[str]:
         """
         Process user input and yield response chunks.

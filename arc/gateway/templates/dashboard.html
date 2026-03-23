@@ -456,7 +456,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <!-- ═══ SKILLS & MCP ═══ -->
 <div class="pg" :class="{show:pg==='skills'}">
   <div class="tp"><h1>Skills & MCP Servers</h1></div>
-  <div class="ctl"><button class="btn" @click="lS();lM()">↻ Refresh</button></div>
+  <div class="ctl"><button class="btn" @click="lS();lM();lMC()">↻ Refresh</button></div>
   <div class="ct">
     <div class="sec">Skills (<span x-text="sk.length"></span>)</div>
     <template x-if="sk.length===0"><div style="color:var(--dim);font-size:14px">No skills loaded.</div></template>
@@ -477,6 +477,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
         <span class="ch" x-text="m.transport||'stdio'"></span>
         <span class="ch" x-text="m.tools+' tools'"></span>
         <span style="color:var(--dim);font-size:12px;margin-left:auto" x-text="m.connected?'connected':'lazy'"></span></div>
+    </template>
+    <div class="sec" style="margin-top:32px">MCP Config Editor</div>
+    <div style="color:var(--dim);font-size:13px;line-height:1.5;margin-bottom:10px">
+      Edit the shared <span x-text="mcpCfgPath||'~/.arc/mcp.json'"></span> file directly. Manual edits, agent edits, and this editor all use the same hot-reload path.
+      If the JSON is invalid, Arc keeps the last active MCP config running until a valid config is saved.
+    </div>
+    <div class="ctl" style="justify-content:flex-start">
+      <button class="btn" @click="vMC()">Validate</button>
+      <button class="btn pri" @click="sMC()">Save & Apply</button>
+      <span style="font-size:13px;color:var(--dim)" x-show="mcpCfgMsg" x-text="mcpCfgMsg"></span>
+    </div>
+    <textarea
+      x-model="mcpCfgText"
+      @input="mcpCfgDirty=true"
+      spellcheck="false"
+      style="width:100%;min-height:260px;background:#0f1720;color:#d7e0ea;border:1px solid var(--line);border-radius:14px;padding:14px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical"
+      placeholder='{"mcpServers":{}}'
+    ></textarea>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <template x-for="name in mcpCfgActive" :key="name">
+        <span class="ch" x-text="name"></span>
+      </template>
+      <span style="font-size:12px;color:var(--dim)" x-show="mcpCfgActive.length===0">No active MCP servers</span>
+    </div>
+    <template x-if="mcpCfgErrors.length>0">
+      <div style="margin-top:12px;padding:12px 14px;border:1px solid rgba(235,87,87,.35);background:rgba(235,87,87,.08);border-radius:12px">
+        <div style="font-weight:700;color:#ffb2b2;margin-bottom:8px">Validation errors</div>
+        <template x-for="err in mcpCfgErrors" :key="err">
+          <div style="color:#ffd0d0;font-size:13px;line-height:1.5" x-text="err"></div>
+        </template>
+      </div>
     </template>
   </div>
 </div>
@@ -531,6 +562,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 function app(){return{
   pg:'home',wsc:false,ws:null,toasts:[],
   hm:{},ag:[],tk:[],jb:[],sk:[],mp:[],lg:[],prv:[],
+  mcpCfgText:'',mcpCfgValid:true,mcpCfgErrors:[],mcpCfgDirty:false,mcpCfgPath:'',mcpCfgActive:[],mcpCfgMsg:'',
   sT:null,rT:'',sCT:false,sCA:false,fE:'',tSelMode:false,tSel:[],
   logFilter:'',logTypeFilter:'',logLive:true,
   nt:{title:'',instruction:'',agent:'',priority:'1',max_bounces:'3',steps:[]},
@@ -564,7 +596,7 @@ function app(){return{
       miEl.addEventListener('blur',function(){setTimeout(function(){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1},150)})}
     window.addEventListener('keydown',e=>{if(e.key==='Escape'&&this.turnActive){e.preventDefault();this.iT()}})},
   go(p){this.pg=p;this.fE='';if(p==='home')this.lH();if(p==='tasks')this.lT();if(p==='agents'){this.lA();this.lP();}
-    if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM()}
+    if(p==='sched')this.lJ();if(p==='skills'){this.lS();this.lM();this.lMC()}
     if(p==='logs')this.lLg();
     if(p==='chat')this.$nextTick(()=>{const e=document.getElementById('msg-input');if(e)e.focus()})},
   toast(m){const t={id:Date.now(),msg:m,show:true};this.toasts.push(t);setTimeout(()=>{t.show=false;setTimeout(()=>this.toasts=this.toasts.filter(x=>x.id!==t.id),400)},4000)},
@@ -640,6 +672,14 @@ function app(){return{
   async lJ(){this.jb=await fetch('/api/scheduler').then(r=>r.json()).catch(()=>[])},
   async lS(){this.sk=await fetch('/api/skills').then(r=>r.json()).catch(()=>[])},
   async lM(){this.mp=await fetch('/api/mcp').then(r=>r.json()).catch(()=>[])},
+  async lMC(){const d=await fetch('/api/mcp/config').then(r=>r.json()).catch(()=>null);if(!d)return;
+    this.mcpCfgPath=d.path||'';this.mcpCfgText=d.text||'';this.mcpCfgValid=!!d.valid;this.mcpCfgErrors=d.errors||[];
+    this.mcpCfgActive=d.active_server_names||[];this.mcpCfgDirty=false;this.mcpCfgMsg=d.valid?'':'Config on disk is invalid — last active MCP config is still running'},
+  vMC(){try{JSON.parse(this.mcpCfgText||'{}');this.mcpCfgValid=true;this.mcpCfgErrors=[];this.mcpCfgMsg='JSON syntax looks valid'}catch(e){this.mcpCfgValid=false;this.mcpCfgErrors=[e.message||'Invalid JSON'];this.mcpCfgMsg='Fix validation errors before saving'}},
+  async sMC(){const r=await fetch('/api/mcp/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:this.mcpCfgText})});
+    const d=await r.json().catch(()=>({valid:false,errors:['Failed to save MCP config']}));this.mcpCfgValid=!!d.valid;this.mcpCfgErrors=d.errors||[];
+    this.mcpCfgActive=d.active_server_names||[];this.mcpCfgPath=d.path||this.mcpCfgPath;
+    this.mcpCfgMsg=r.ok?'MCP config saved and reloaded':'MCP config was not applied';if(r.ok){this.mcpCfgDirty=false;this.lM()}},
   async lLg(){
     let q='?limit=300';
     if(this.logFilter)q+='&source='+encodeURIComponent(this.logFilter);

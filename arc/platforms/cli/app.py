@@ -878,8 +878,16 @@ class CLIPlatform(Platform):
                     "(Claude Desktop format)[/dim]"
                 )
             else:
+                info_list = self._mcp_manager.server_info()
+                if not info_list:
+                    self._console.print("[dim]No MCP servers configured[/dim]")
+                    self._console.print(
+                        "[dim]Add servers to ~/.arc/mcp.json "
+                        "(Claude Desktop format)[/dim]"
+                    )
+                    return True
                 lines: list[str] = ["[bold]MCP Servers[/bold]\n"]
-                for info in self._mcp_manager.server_info():
+                for info in info_list:
                     status = (
                         "[green]connected[/green]"
                         if info["connected"]

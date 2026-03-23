@@ -18,10 +18,6 @@ import logging
 from contextlib import AsyncExitStack
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
-
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +55,7 @@ class MCPClient:
         self._url = url
 
         self._exit_stack: AsyncExitStack | None = None
-        self._session: ClientSession | None = None
+        self._session: Any | None = None
         self._connected = False
 
     @property
@@ -106,6 +102,9 @@ class MCPClient:
                 f"MCP server '{self.name}': no command specified for stdio transport"
             )
 
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
         server_params = StdioServerParameters(
             command=self._command,
             args=self._args,
@@ -122,6 +121,7 @@ class MCPClient:
 
     async def _connect_sse(self) -> None:
         """Connect via SSE (HTTP streaming)."""
+        from mcp import ClientSession
         from mcp.client.sse import sse_client
 
         sse_transport = await self._exit_stack.enter_async_context(
@@ -175,9 +175,7 @@ class MCPClient:
         # Extract text from content blocks
         parts: list[str] = []
         for block in result.content:
-            if isinstance(block, TextContent):
-                parts.append(block.text)
-            elif hasattr(block, "text"):
+            if hasattr(block, "text"):
                 parts.append(str(block.text))
             else:
                 # Image, audio, resource — describe it

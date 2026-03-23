@@ -79,6 +79,7 @@ class GatewayServer(Platform):
         self._workflow_skill: Any = None
         self._run_control: Any = None
         self._turn_controller: Any = None
+        self._mcp_config_service: Any = None
 
         # Task board dependencies
         self._task_store: Any = None
@@ -129,6 +130,9 @@ class GatewayServer(Platform):
 
     def set_mcp_manager(self, mgr: Any) -> None:
         self._mcp_manager = mgr
+
+    def set_mcp_config_service(self, service: Any) -> None:
+        self._mcp_config_service = service
 
     def set_session_memory(self, mem: Any) -> None:
         self._session_memory = mem
@@ -229,6 +233,8 @@ class GatewayServer(Platform):
         app.router.add_post("/api/scheduler/{job_id}/cancel", self._api_cancel_job)
         app.router.add_get("/api/skills", self._api_list_skills)
         app.router.add_get("/api/mcp", self._api_list_mcp)
+        app.router.add_get("/api/mcp/config", self._api_get_mcp_config)
+        app.router.add_put("/api/mcp/config", self._api_put_mcp_config)
         app.router.add_get("/api/logs", self._api_get_logs)
 
         self._runner = web.AppRunner(app)
@@ -757,8 +763,12 @@ class GatewayServer(Platform):
             if not self._mcp_manager:
                 await self._send_system(ws, "No MCP servers configured")
             else:
+                info_list = self._mcp_manager.server_info()
+                if not info_list:
+                    await self._send_system(ws, "No MCP servers configured")
+                    return
                 lines = ["MCP Servers:\n"]
-                for info in self._mcp_manager.server_info():
+                for info in info_list:
                     status = "connected" if info["connected"] else "not connected (lazy)"
                     lines.append(f"  {info['name']} — {status} — {info['tools']} tools")
                 await self._send_system(ws, "\n".join(lines))
@@ -1248,6 +1258,37 @@ class GatewayServer(Platform):
                 "hint": info.get("hint", ""),
             })
         return web.json_response(servers)
+
+    async def _api_get_mcp_config(self, request: web.Request) -> web.Response:
+        if not self._mcp_config_service:
+            return web.json_response(
+                {"error": "MCP config service not available"},
+                status=503,
+            )
+        state = self._mcp_config_service.inspect()
+        if hasattr(state, "to_dict"):
+            state = state.to_dict()
+        return web.json_response(state)
+
+    async def _api_put_mcp_config(self, request: web.Request) -> web.Response:
+        if not self._mcp_config_service:
+            return web.json_response(
+                {"error": "MCP config service not available"},
+                status=503,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return web.json_response({"error": "'text' must be a string"}, status=400)
+
+        result = await self._mcp_config_service.save_and_reload(text)
+        if hasattr(result, "to_dict"):
+            result = result.to_dict()
+        status = 200 if result.get("valid", False) else 400
+        return web.json_response(result, status=status)
 
     # ━━━ REST API: Logs ━━━
 

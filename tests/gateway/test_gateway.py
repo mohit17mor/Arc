@@ -120,6 +120,15 @@ def test_dashboard_template_supports_interrupted_plan_state():
     assert "Interrupted plan" in template
 
 
+def test_dashboard_template_includes_mcp_json_editor():
+    """Skills & MCP page should expose an MCP JSON editor with validation/save controls."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "MCP Config Editor" in template
+    assert "/api/mcp/config" in template
+    assert "Save & Apply" in template
+    assert "Validate" in template
+
+
 # ━━━ Integration tests (with aiohttp test server) ━━━
 
 
@@ -159,6 +168,8 @@ async def gateway_app(tmp_path):
     app.router.add_post("/api/scheduler/{job_id}/cancel", gw._api_cancel_job)
     app.router.add_get("/api/skills", gw._api_list_skills)
     app.router.add_get("/api/mcp", gw._api_list_mcp)
+    app.router.add_get("/api/mcp/config", gw._api_get_mcp_config)
+    app.router.add_put("/api/mcp/config", gw._api_put_mcp_config)
     app.router.add_get("/api/logs", gw._api_get_logs)
     gw._running = True
     gw._start_time = time.time()
@@ -1211,6 +1222,75 @@ async def test_api_list_mcp_with_manager(client):
     assert len(data) == 1
     assert data[0]["name"] == "github"
     assert data[0]["tools"] == 5
+
+
+async def test_api_get_mcp_config_without_service(client):
+    c, gw, store = client
+    resp = await c.get("/api/mcp/config")
+    assert resp.status == 503
+
+
+async def test_api_get_mcp_config_returns_editor_state(client):
+    from unittest.mock import MagicMock
+
+    c, gw, store = client
+    mock_service = MagicMock()
+    mock_service.inspect.return_value = {
+        "path": "/tmp/mcp.json",
+        "text": '{"mcpServers":{}}',
+        "valid": True,
+        "errors": [],
+    }
+    gw.set_mcp_config_service(mock_service)
+
+    resp = await c.get("/api/mcp/config")
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["valid"] is True
+    assert '"mcpServers"' in data["text"]
+
+
+async def test_api_put_mcp_config_validates_and_applies_changes(client):
+    c, gw, store = client
+
+    class _Service:
+        async def save_and_reload(self, text: str):
+            assert '"github"' in text
+            return {
+                "path": "/tmp/mcp.json",
+                "text": text,
+                "valid": True,
+                "applied": True,
+                "errors": [],
+                "active_server_names": ["github"],
+            }
+
+    gw.set_mcp_config_service(_Service())
+
+    resp = await c.put(
+        "/api/mcp/config",
+        json={"text": '{"mcpServers":{"github":{"command":"npx"}}}'},
+    )
+
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["applied"] is True
+    assert data["active_server_names"] == ["github"]
+
+
+async def test_api_put_mcp_config_rejects_invalid_body(client):
+    c, gw, store = client
+
+    class _Service:
+        async def save_and_reload(self, text: str):
+            raise AssertionError("service should not be called")
+
+    gw.set_mcp_config_service(_Service())
+
+    resp = await c.put("/api/mcp/config", json={"text": 123})
+
+    assert resp.status == 400
 
 
 # ━━━ REST API: GET /api/logs ━━━

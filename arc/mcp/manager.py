@@ -66,34 +66,15 @@ class MCPManager:
         self._skills: dict[str, MCPServerSkill] = {}
         self._server_configs: dict[str, dict[str, Any]] = {}  # raw config per server
 
-    def discover(self) -> list[MCPServerSkill]:
-        """
-        Load mcp.json and create one MCPServerSkill per server.
+    def _extract_server_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        return data.get("mcpServers", data.get("servers", {}))
 
-        Does NOT connect — skills are lazily activated on first tool use.
-        Returns an empty list if the config file doesn't exist or is invalid.
-        """
-        if not self._config_path.exists():
-            logger.debug(f"No MCP config at {self._config_path}")
-            return []
-
-        try:
-            data = json.loads(
-                self._config_path.read_text(encoding="utf-8")
-            )
-        except Exception as e:
-            logger.warning(f"Failed to parse {self._config_path}: {e}")
-            return []
-
-        # Support Claude Desktop format ("mcpServers") and flat ("servers")
-        raw_servers: dict[str, Any] = data.get(
-            "mcpServers", data.get("servers", {})
-        )
-
-        if not raw_servers:
-            logger.debug("No MCP servers configured")
-            return []
-
+    def _build_skills(
+        self,
+        raw_servers: dict[str, Any],
+    ) -> tuple[dict[str, MCPServerSkill], dict[str, dict[str, Any]], list[MCPServerSkill]]:
+        skills_by_name: dict[str, MCPServerSkill] = {}
+        configs_by_name: dict[str, dict[str, Any]] = {}
         skills: list[MCPServerSkill] = []
 
         for name, cfg in raw_servers.items():
@@ -101,7 +82,6 @@ class MCPManager:
                 logger.warning(f"MCP server '{name}': invalid config, skipping")
                 continue
 
-            # Validate: need either command or url
             command = cfg.get("command", "")
             url = cfg.get("url", "")
             if not command and not url:
@@ -117,15 +97,70 @@ class MCPManager:
                 env=cfg.get("env", {}),
                 url=url,
             )
-            self._skills[name] = skill
-            self._server_configs[name] = cfg
+            skills_by_name[name] = skill
+            configs_by_name[name] = cfg
             skills.append(skill)
 
             transport = "SSE" if url else f"stdio ({command})"
             logger.info(f"MCP server '{name}' configured — {transport}")
 
+        return skills_by_name, configs_by_name, skills
+
+    def discover(self, data: dict[str, Any] | None = None) -> list[MCPServerSkill]:
+        """
+        Load mcp.json and create one MCPServerSkill per server.
+
+        Does NOT connect — skills are lazily activated on first tool use.
+        Returns an empty list if the config file doesn't exist or is invalid.
+        """
+        if data is None:
+            if not self._config_path.exists():
+                logger.debug(f"No MCP config at {self._config_path}")
+                self._skills = {}
+                self._server_configs = {}
+                return []
+
+            try:
+                data = json.loads(
+                    self._config_path.read_text(encoding="utf-8")
+                )
+            except Exception as e:
+                logger.warning(f"Failed to parse {self._config_path}: {e}")
+                self._skills = {}
+                self._server_configs = {}
+                return []
+
+        raw_servers: dict[str, Any] = self._extract_server_data(data)
+
+        if not raw_servers:
+            logger.debug("No MCP servers configured")
+            self._skills = {}
+            self._server_configs = {}
+            return []
+
+        self._skills, self._server_configs, skills = self._build_skills(raw_servers)
+
         logger.info(
             f"Discovered {len(skills)} MCP server(s) from {self._config_path}"
+        )
+        return skills
+
+    async def reload(self, data: dict[str, Any]) -> list[MCPServerSkill]:
+        """Replace the configured server set in-place while preserving this manager object."""
+        raw_servers: dict[str, Any] = self._extract_server_data(data)
+        new_skills, new_configs, skills = self._build_skills(raw_servers)
+        old_skills = list(self._skills.values())
+        self._skills = new_skills
+        self._server_configs = new_configs
+
+        for skill in old_skills:
+            try:
+                await skill.shutdown()
+            except Exception as e:
+                logger.debug(f"Error shutting down old MCP server '{skill.server_name}': {e}")
+
+        logger.info(
+            f"Reloaded {len(skills)} MCP server(s) from {self._config_path}"
         )
         return skills
 
