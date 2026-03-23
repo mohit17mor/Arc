@@ -1,7 +1,10 @@
 """Tests for the voice daemon."""
 
 import asyncio
+import builtins
 import json
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,6 +13,65 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from arc.voice.daemon import VoiceDaemon
 from arc.voice.listener import VoiceEvent, VoiceState
 from arc.voice.transcriber import TranscriptionResult
+
+
+class _AsyncIterator:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+
+class _FakeWebSocket(_AsyncIterator):
+    def __init__(self, items=None):
+        super().__init__(items or [])
+        self.closed = False
+        self.sent_json: list[dict] = []
+        self.close_calls = 0
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent_json.append(payload)
+
+    async def close(self) -> None:
+        self.closed = True
+        self.close_calls += 1
+
+
+class _FakeSession:
+    def __init__(self, ws=None, exc: Exception | None = None):
+        self._ws = ws
+        self._exc = exc
+        self.closed = False
+        self.connected_url: str | None = None
+        self.close_calls = 0
+
+    async def ws_connect(self, url: str):
+        self.connected_url = url
+        if self._exc is not None:
+            raise self._exc
+        return self._ws
+
+    async def close(self) -> None:
+        self.closed = True
+        self.close_calls += 1
+
+
+async def _iter_events(items):
+    for item in items:
+        yield item
+
+
+def _fake_aiohttp(session: _FakeSession):
+    return SimpleNamespace(
+        ClientSession=lambda: session,
+        WSMsgType=SimpleNamespace(TEXT="text", CLOSED="closed", ERROR="error"),
+    )
 
 
 # ── Construction ─────────────────────────────────────────────────
@@ -173,6 +235,62 @@ class TestStatusCallback:
         assert events[-1] == (VoiceState.LISTENING, "listen")
 
 
+@pytest.mark.asyncio
+class TestDaemonLifecycle:
+
+    async def test_run_initializes_connects_and_cleans_up(self, monkeypatch):
+        statuses: list[tuple[VoiceState, str]] = []
+        ws = _FakeWebSocket([])
+        session = _FakeSession(ws=ws)
+        daemon = VoiceDaemon(status_callback=lambda state, event: statuses.append((state, event)))
+        daemon._transcriber = SimpleNamespace(initialize=AsyncMock())
+        daemon._listener = SimpleNamespace(
+            initialize=AsyncMock(),
+            run=lambda: _iter_events([]),
+            stop=AsyncMock(),
+            state=VoiceState.SLEEPING,
+            notify_response_done=AsyncMock(),
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(session))
+
+        await daemon.run()
+
+        daemon._transcriber.initialize.assert_called_once()
+        daemon._listener.initialize.assert_called_once()
+        daemon._listener.stop.assert_called_once()
+        assert session.connected_url == daemon._gateway_url
+        assert ws.closed is True
+        assert session.closed is True
+        assert statuses[0] == (VoiceState.SLEEPING, "sleep")
+
+    async def test_run_raises_connection_error_when_gateway_is_unavailable(self, monkeypatch):
+        session = _FakeSession(exc=RuntimeError("boom"))
+        daemon = VoiceDaemon()
+        daemon._transcriber = SimpleNamespace(initialize=AsyncMock())
+        daemon._listener = SimpleNamespace(initialize=AsyncMock(), stop=AsyncMock())
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(session))
+
+        with pytest.raises(ConnectionError, match="Cannot connect to Arc Gateway"):
+            await daemon.run()
+
+        assert session.closed is True
+
+    async def test_stop_shuts_down_listener_and_emits_sleep(self):
+        statuses: list[tuple[VoiceState, str]] = []
+        daemon = VoiceDaemon(status_callback=lambda state, event: statuses.append((state, event)))
+        daemon._running = True
+        daemon._listener = SimpleNamespace(stop=AsyncMock())
+        daemon._sleep_watch_task = asyncio.create_task(asyncio.sleep(10))
+
+        await daemon.stop()
+        await asyncio.sleep(0)
+
+        daemon._listener.stop.assert_called_once()
+        assert daemon._running is False
+        assert daemon.current_state == VoiceState.SLEEPING
+        assert statuses[-1] == (VoiceState.SLEEPING, "sleep")
+
+
 # ── Gateway message format ───────────────────────────────────────
 
 
@@ -204,11 +322,77 @@ class TestGatewayProtocol:
         assert call_args["type"] == "message"
         assert call_args["content"] == "search for flights"
 
+    @pytest.mark.asyncio
+    async def test_response_loop_handles_done_messages_and_closed_socket(self, monkeypatch):
+        daemon = VoiceDaemon()
+        daemon._running = True
+        daemon._listener = SimpleNamespace(notify_response_done=AsyncMock(), state=VoiceState.LISTENING)
+        daemon._ws = _FakeWebSocket([
+            SimpleNamespace(type="text", data=json.dumps({"type": "done", "full_content": "Completed"})),
+            SimpleNamespace(type="closed", data=""),
+        ])
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(_FakeSession()))
+
+        with patch.object(daemon, "_notify") as mock_notify, patch.object(daemon, "_start_sleep_watch") as mock_sleep_watch:
+            await daemon._response_loop()
+
+        mock_notify.assert_any_call("Completed")
+        daemon._listener.notify_response_done.assert_called_once()
+        mock_sleep_watch.assert_called_once()
+        assert daemon._running is False
+        assert daemon.current_state == VoiceState.SLEEPING
+
+    @pytest.mark.asyncio
+    async def test_response_loop_handles_error_messages(self, monkeypatch):
+        daemon = VoiceDaemon()
+        daemon._listener = SimpleNamespace(notify_response_done=AsyncMock(), state=VoiceState.LISTENING)
+        daemon._ws = _FakeWebSocket([
+            SimpleNamespace(type="text", data=json.dumps({"type": "error", "message": "Gateway failed"})),
+        ])
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(_FakeSession()))
+
+        with patch.object(daemon, "_notify") as mock_notify, patch.object(daemon, "_start_sleep_watch") as mock_sleep_watch:
+            await daemon._response_loop()
+
+        mock_notify.assert_called_once_with("Error: Gateway failed")
+        daemon._listener.notify_response_done.assert_called_once()
+        mock_sleep_watch.assert_called_once()
+        assert daemon.current_state == VoiceState.LISTENING
+
+    @pytest.mark.asyncio
+    async def test_response_loop_swallows_cancellation(self, monkeypatch):
+        daemon = VoiceDaemon()
+        daemon._ws = _FakeWebSocket()
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(_FakeSession()))
+
+        async def endless_messages():
+            while True:
+                await asyncio.sleep(10)
+                yield None
+
+        daemon._ws = endless_messages()
+        task = asyncio.create_task(daemon._response_loop())
+        await asyncio.sleep(0)
+        task.cancel()
+
+        await task
+
 
 # ── Notification ─────────────────────────────────────────────────
 
 
 class TestNotification:
+
+    def test_notify_calls_plyer_and_truncates_long_text(self, monkeypatch):
+        calls: list[dict[str, object]] = []
+        notification = SimpleNamespace(notify=lambda **kwargs: calls.append(kwargs))
+        monkeypatch.setitem(sys.modules, "plyer", SimpleNamespace(notification=notification))
+
+        VoiceDaemon._notify("x" * 400)
+
+        assert calls[0]["title"] == "Arc"
+        assert calls[0]["message"] == ("x" * 300) + "…"
+        assert calls[0]["timeout"] == 10
 
     def test_notify_with_plyer(self):
         with patch("arc.voice.daemon.logger"):
@@ -219,6 +403,30 @@ class TestNotification:
         """Long responses are truncated for the notification."""
         # Just verify it doesn't crash — plyer may not be installed
         VoiceDaemon._notify("x" * 500)
+
+    def test_notify_suppresses_import_error(self, monkeypatch):
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "plyer":
+                raise ImportError("missing")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.delitem(sys.modules, "plyer", raising=False)
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        VoiceDaemon._notify("no desktop notifier")
+
+    def test_notify_logs_debug_when_notifier_fails(self, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("notify failed")
+
+        monkeypatch.setitem(sys.modules, "plyer", SimpleNamespace(notification=SimpleNamespace(notify=boom)))
+
+        with patch("arc.voice.daemon.logger") as mock_logger:
+            VoiceDaemon._notify("test response")
+
+        mock_logger.debug.assert_called_once()
 
 
 # ── Chime ────────────────────────────────────────────────────────
@@ -235,6 +443,44 @@ class TestChime:
         with patch.dict("sys.modules", {"sounddevice": None}):
             # Should not raise
             VoiceDaemon._play_chime()
+
+
+@pytest.mark.asyncio
+class TestSleepWatch:
+
+    async def test_start_sleep_watch_ignores_inactive_daemon(self):
+        daemon = VoiceDaemon()
+        daemon._running = False
+
+        daemon._start_sleep_watch()
+
+        assert daemon._sleep_watch_task is None
+
+    async def test_start_sleep_watch_emits_sleep_when_listener_returns_to_sleeping(self, monkeypatch):
+        events: list[tuple[VoiceState, str]] = []
+        daemon = VoiceDaemon(status_callback=lambda state, event: events.append((state, event)))
+        daemon._running = True
+        daemon._listener = SimpleNamespace(state=VoiceState.ACTIVE)
+
+        async def fake_sleep(_delay):
+            daemon._listener.state = VoiceState.SLEEPING
+
+        monkeypatch.setattr("arc.voice.daemon.asyncio.sleep", fake_sleep)
+
+        daemon._start_sleep_watch()
+        await daemon._sleep_watch_task
+
+        assert events[-1] == (VoiceState.SLEEPING, "sleep")
+        assert daemon.current_state == VoiceState.SLEEPING
+
+    async def test_cancel_sleep_watch_clears_pending_task(self):
+        daemon = VoiceDaemon()
+        daemon._sleep_watch_task = asyncio.create_task(asyncio.sleep(10))
+
+        daemon._cancel_sleep_watch()
+        await asyncio.sleep(0)
+
+        assert daemon._sleep_watch_task is None
 
 
 # ── VoiceConfig integration ──────────────────────────────────────

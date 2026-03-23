@@ -2,10 +2,12 @@
 
 import asyncio
 import json
-import pytest
-from unittest.mock import AsyncMock
 import time
+import types
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -318,6 +320,156 @@ def test_attach_channel():
     type(mock_channel2).name = PropertyMock(return_value="discord")
     gw.attach_channel(mock_channel2)
     assert gw.active_channels == ["telegram", "discord"]
+
+
+class _FakeWebSocket:
+    def __init__(self, *, closed: bool = False, fail_on_send: bool = False, fail_on_close: bool = False):
+        self.closed = closed
+        self.fail_on_send = fail_on_send
+        self.fail_on_close = fail_on_close
+        self.messages: list[dict] = []
+        self.close_calls: list[tuple[int, bytes]] = []
+
+    async def send_json(self, payload: dict) -> None:
+        if self.fail_on_send:
+            raise RuntimeError("send failed")
+        self.messages.append(payload)
+
+    async def close(self, *, code: int, message: bytes) -> None:
+        if self.fail_on_close:
+            raise RuntimeError("close failed")
+        self.close_calls.append((code, message))
+        self.closed = True
+
+
+async def test_gateway_run_starts_server_and_attached_channels():
+    async def handler(user_input: str):
+        yield f"echo:{user_input}"
+
+    channel_started = asyncio.Event()
+
+    class _Channel:
+        name = "telegram"
+
+        def __init__(self) -> None:
+            self.stop = AsyncMock()
+
+        async def run(self, synced_handler):
+            channel_started.set()
+            await asyncio.Event().wait()
+
+    gw = GatewayServer(host="127.0.0.1", port=0)
+    channel = _Channel()
+    gw.attach_channel(channel)
+
+    run_task = asyncio.create_task(gw.run(handler))
+    await asyncio.wait_for(channel_started.wait(), timeout=1.0)
+
+    assert gw._running is True
+    assert gw._runner is not None
+    assert gw._site is not None
+    assert len(gw._channel_tasks) == 1
+
+    await gw.stop()
+    await asyncio.wait_for(run_task, timeout=1.0)
+
+    channel.stop.assert_awaited_once()
+    assert gw._runner is None
+    assert gw._site is None
+    assert gw._stop_event.is_set()
+
+
+async def test_gateway_stop_cleans_up_even_when_components_fail():
+    gw = GatewayServer()
+
+    class _Channel:
+        def __init__(self, name: str, *, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+            self.stop = AsyncMock(side_effect=RuntimeError("boom") if fail else None)
+
+    good_channel = _Channel("telegram")
+    bad_channel = _Channel("discord", fail=True)
+    gw._channels = [good_channel, bad_channel]
+
+    blocker = asyncio.create_task(asyncio.sleep(30))
+    gw._channel_tasks = [blocker]
+
+    ws_ok = _FakeWebSocket()
+    ws_bad = _FakeWebSocket(fail_on_close=True)
+    gw._clients = {ws_ok, ws_bad}
+    gw._site = types.SimpleNamespace(stop=AsyncMock())
+    gw._runner = types.SimpleNamespace(cleanup=AsyncMock())
+
+    await gw.stop()
+
+    good_channel.stop.assert_awaited_once()
+    bad_channel.stop.assert_awaited_once()
+    assert gw._channel_tasks == []
+    assert gw._clients == set()
+    assert ws_ok.close_calls == [(1001, b"Gateway shutting down")]
+    assert blocker.cancelled()
+    assert gw._site is None
+    assert gw._runner is None
+    assert gw._stop_event.is_set()
+
+
+async def test_run_channel_syncs_history_and_drops_failed_clients():
+    gw = GatewayServer()
+    ws_ok = _FakeWebSocket()
+    ws_bad = _FakeWebSocket(fail_on_send=True)
+    gw._clients = {ws_ok, ws_bad}
+
+    class _Channel:
+        name = "telegram"
+        streamed_chunks: list[str]
+
+        async def run(self, synced_handler):
+            self.streamed_chunks = []
+            async for chunk in synced_handler("status update"):
+                self.streamed_chunks.append(chunk)
+
+    async def handler(user_input: str):
+        yield "chunk-1 "
+        yield user_input.upper()
+
+    channel = _Channel()
+    await gw._run_channel(channel, handler)
+
+    assert channel.streamed_chunks == ["chunk-1 ", "STATUS UPDATE"]
+    assert ws_ok.messages == [
+        {
+            "type": "sync",
+            "source": "telegram",
+            "user_input": "status update",
+            "response": "chunk-1 STATUS UPDATE",
+        }
+    ]
+    assert ws_bad not in gw._clients
+    assert gw._history[-1] == {
+        "source": "telegram",
+        "user_input": "status update",
+        "response": "chunk-1 STATUS UPDATE",
+    }
+
+
+async def test_run_channel_logs_channel_crashes(caplog):
+    gw = GatewayServer()
+
+    class _Channel:
+        name = "telegram"
+
+        async def run(self, synced_handler):
+            raise RuntimeError("channel exploded")
+
+    async def handler(_user_input: str):
+        if False:  # pragma: no cover
+            yield ""
+
+    with caplog.at_level("ERROR"):
+        await gw._run_channel(_Channel(), handler)
+
+    assert "Channel telegram crashed: channel exploded" in caplog.text
 
 
 async def test_status_shows_channels(client):

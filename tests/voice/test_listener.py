@@ -74,6 +74,27 @@ class TestListenerConstruction:
         assert listener._silence_duration == 2.0
         assert listener._listen_timeout == 60.0
 
+    @pytest.mark.asyncio
+    async def test_initialize_runs_wake_word_load_in_executor(self):
+        listener = VoiceListener()
+
+        class FakeLoop:
+            def __init__(self):
+                self.calls = []
+
+            async def run_in_executor(self, executor, func):
+                self.calls.append((executor, func))
+                return func()
+
+        fake_loop = FakeLoop()
+        listener._init_wake_word = MagicMock()
+
+        with patch("arc.voice.listener.asyncio.get_running_loop", return_value=fake_loop):
+            await listener.initialize()
+
+        listener._init_wake_word.assert_called_once()
+        assert fake_loop.calls
+
 
 # ── Silence detection ────────────────────────────────────────────
 
@@ -258,6 +279,121 @@ class TestStateTransitions:
         await asyncio.sleep(0.2)  # wait for timeout
 
         assert listener.state == VoiceState.SLEEPING
+
+    @pytest.mark.asyncio
+    async def test_listening_follow_up_transitions_back_to_active(self):
+        listener = VoiceListener(silence_threshold=0.01)
+        listener._start_mic = MagicMock()
+        listener._stop_mic = MagicMock()
+        events = []
+
+        async def consume():
+            async for event in listener.run():
+                events.append(event)
+                if event.type == "state_change" and event.state == VoiceState.SLEEPING:
+                    listener._state = VoiceState.LISTENING
+                    loud_chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.5
+                    await listener._audio_queue.put(loud_chunk)
+                elif event.type == "state_change" and event.state == VoiceState.ACTIVE:
+                    listener._running = False
+                    break
+
+        await asyncio.wait_for(consume(), timeout=2.0)
+
+        assert listener.state == VoiceState.ACTIVE
+        assert listener._recording_buffer
+        assert np.array_equal(listener._recording_buffer[0], np.ones(CHUNK_SIZE, dtype=np.float32) * 0.5)
+
+
+class TestWakeModelInit:
+
+    def test_init_wake_word_downloads_models_and_creates_model(self):
+        listener = VoiceListener(wake_model="hey_arc")
+        fake_utils = MagicMock()
+        fake_openwakeword = MagicMock(utils=fake_utils)
+        fake_model_cls = MagicMock(return_value="model-instance")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "openwakeword": fake_openwakeword,
+                "openwakeword.model": MagicMock(Model=fake_model_cls),
+            },
+        ):
+            listener._init_wake_word()
+
+        fake_utils.download_models.assert_called_once()
+        fake_model_cls.assert_called_once_with(
+            wakeword_models=["hey_arc"],
+            inference_framework="onnx",
+        )
+        assert listener._oww_model == "model-instance"
+
+
+class TestMicrophoneHelpers:
+
+    def test_pause_mic_stops_stream_and_drains_queue(self):
+        listener = VoiceListener()
+        listener._stream = MagicMock()
+        listener._stream.active = True
+        listener._audio_queue.put_nowait(np.ones(CHUNK_SIZE, dtype=np.float32))
+
+        listener._pause_mic()
+
+        listener._stream.stop.assert_called_once()
+        assert listener._audio_queue.empty()
+
+    def test_resume_mic_restarts_inactive_stream(self):
+        listener = VoiceListener()
+        listener._stream = MagicMock()
+        listener._stream.active = False
+
+        listener._resume_mic()
+
+        listener._stream.start.assert_called_once()
+
+    def test_stop_mic_closes_stream_and_clears_reference(self):
+        listener = VoiceListener()
+        stream = MagicMock()
+        listener._stream = stream
+
+        listener._stop_mic()
+
+        stream.close.assert_called_once()
+        assert listener._stream is None
+
+    def test_audio_callback_logs_status_and_schedules_chunk(self):
+        listener = VoiceListener()
+        captured = []
+
+        class FakeLoop:
+            def call_soon_threadsafe(self, func, audio):
+                captured.append(audio)
+
+        listener._loop = FakeLoop()
+        indata = np.arange(CHUNK_SIZE, dtype=np.float32).reshape(-1, 1)
+
+        with patch("arc.voice.listener.logger.debug") as debug:
+            listener._audio_callback(indata, CHUNK_SIZE, None, status="overflow")
+
+        debug.assert_called_once()
+        assert len(captured) == 1
+        assert np.array_equal(captured[0], indata[:, 0])
+
+    @pytest.mark.asyncio
+    async def test_stop_handles_queue_put_failure(self):
+        listener = VoiceListener()
+        listener._running = True
+        listener._audio_queue = MagicMock()
+        listener._audio_queue.put_nowait.side_effect = RuntimeError("queue closed")
+        listener._stop_mic = MagicMock()
+        listener._cancel_listen_timeout = MagicMock()
+
+        await listener.stop()
+
+        assert listener._running is False
+        listener._stop_mic.assert_called_once()
+        listener._cancel_listen_timeout.assert_called_once()
 
 
 # ── Audio constants ──────────────────────────────────────────────

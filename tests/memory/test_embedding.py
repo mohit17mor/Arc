@@ -1,7 +1,7 @@
 """Tests for EmbeddingProvider implementations."""
 
 import pytest
-from arc.memory.embedding import MockEmbeddingProvider
+from arc.memory.embedding import FastEmbedProvider, MockEmbeddingProvider
 
 
 @pytest.fixture
@@ -53,3 +53,65 @@ async def test_mock_embed_one_matches_batch(embedder):
     single = await embedder.embed_one(text)
     batch = await embedder.embed([text])
     assert single == batch[0]
+
+
+@pytest.mark.asyncio
+async def test_mock_vectors_are_normalized(embedder):
+    vec = await embedder.embed_one("normalized")
+    norm = sum(v * v for v in vec) ** 0.5
+    assert norm == pytest.approx(1.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_fastembed_initialize_raises_helpful_error_when_dependency_missing(monkeypatch):
+    provider = FastEmbedProvider()
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "fastembed":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    with pytest.raises(ImportError, match="fastembed is not installed"):
+        await provider.initialize()
+
+
+@pytest.mark.asyncio
+async def test_fastembed_embed_initializes_once_and_returns_lists(monkeypatch):
+    provider = FastEmbedProvider()
+    embedded_inputs = []
+
+    class FakeVector:
+        def __init__(self, values):
+            self._values = values
+
+        def tolist(self):
+            return list(self._values)
+
+    class FakeTextEmbedding:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        def embed(self, texts):
+            embedded_inputs.append(list(texts))
+            return [FakeVector([1.0, 2.0]), FakeVector([3.0, 4.0])]
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "fastembed":
+            return type("FakeModule", (), {"TextEmbedding": FakeTextEmbedding})
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    vectors = await provider.embed(["hello", "world"])
+    second = await provider.embed(["again"])
+
+    assert vectors == [[1.0, 2.0], [3.0, 4.0]]
+    assert second == [[1.0, 2.0], [3.0, 4.0]]
+    assert embedded_inputs == [["hello", "world"], ["again"]]
+    assert provider.dimension == 384

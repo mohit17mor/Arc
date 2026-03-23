@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from arc.tasks.processor import TaskProcessor, _ALWAYS_EXCLUDED
 from arc.tasks.store import TaskStore
-from arc.tasks.types import AgentDef, Task, TaskStatus, TaskStep
+from arc.tasks.types import AgentDef, Task, TaskComment, TaskStatus, TaskStep
 
 
 class _FakeTaskAgentLoop:
@@ -41,6 +42,20 @@ class _FakeTaskAgentLoop:
                 await handle.finish_completed()
         finally:
             self.current_run_id = None
+
+
+class _FakeClassifierLLM:
+    def __init__(self, chunks=None, error: Exception | None = None):
+        self._chunks = list(chunks or [])
+        self._error = error
+        self.calls: list[dict] = []
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        for text in self._chunks:
+            yield SimpleNamespace(text=text)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -128,6 +143,20 @@ class TestTaskProcessorUnit:
         assert "new_agent" in processor._agents
         assert "researcher" not in processor._agents
 
+    async def test_stop_closes_cached_agent_llms(self, processor):
+        closable = SimpleNamespace(close=AsyncMock())
+        processor._running = True
+        processor._task = asyncio.create_task(asyncio.sleep(10))
+        processor._agent_llms = {
+            "writer": closable,
+            "reviewer": SimpleNamespace(),
+        }
+
+        await processor.stop()
+
+        closable.close.assert_awaited_once()
+        assert processor._agent_llms == {}
+
     async def test_compute_excluded_default(self, processor, sample_agents):
         """Default exclusion includes worker, scheduler, task_board."""
         excluded = processor._compute_excluded(sample_agents["researcher"])
@@ -197,6 +226,107 @@ class TestTaskProcessorUnit:
         task = Task(title="T", instruction="i", steps=steps, current_step=0)
         assert not processor._is_review_step(task, "writer")
 
+    async def test_is_review_step_false_without_steps(self, processor):
+        task = Task(title="T", instruction="i")
+        assert not processor._is_review_step(task, "writer")
+
+    async def test_agent_needs_human_input_placeholder_returns_false(self, processor):
+        assert processor._agent_needs_human_input("Should I continue?") is False
+
+    async def test_check_needs_human_input_skips_short_responses(self, processor, sample_agents):
+        processor._get_agent_llm = AsyncMock()
+
+        result = await processor._check_needs_human_input("too short", sample_agents["researcher"])
+
+        assert result is False
+        processor._get_agent_llm.assert_not_awaited()
+
+    async def test_check_needs_human_input_returns_classifier_verdict(self, processor, sample_agents):
+        llm = _FakeClassifierLLM(["yes"])
+        processor._get_agent_llm = AsyncMock(return_value=llm)
+
+        result = await processor._check_needs_human_input(
+            "I cannot continue until you confirm which provider to use.",
+            sample_agents["researcher"],
+        )
+
+        assert result is True
+        assert llm.calls
+
+    async def test_check_needs_human_input_falls_back_to_false_on_llm_error(self, processor, sample_agents):
+        processor._get_agent_llm = AsyncMock(return_value=_FakeClassifierLLM(error=RuntimeError("boom")))
+
+        result = await processor._check_needs_human_input(
+            "Please choose between option A and option B before I proceed.",
+            sample_agents["researcher"],
+        )
+
+        assert result is False
+
+    async def test_get_agent_llm_uses_default_without_override(self, processor, sample_agents, mock_llm):
+        assert await processor._get_agent_llm(sample_agents["researcher"]) is mock_llm
+
+    async def test_get_agent_llm_uses_default_when_factory_is_missing(self, processor, mock_llm):
+        agent = AgentDef(name="writer", role="Drafts", llm_provider="openai", llm_model="gpt-4.1")
+
+        assert await processor._get_agent_llm(agent) is mock_llm
+
+    async def test_get_agent_llm_caches_factory_instances(self, processor):
+        created: list[tuple[str, dict[str, str | None]]] = []
+
+        def factory(provider, **kwargs):
+            llm = SimpleNamespace(provider=provider, kwargs=kwargs)
+            created.append((provider, kwargs))
+            return llm
+
+        processor._llm_factory = factory
+        agent = AgentDef(
+            name="writer",
+            role="Drafts",
+            llm_provider="openai",
+            llm_model="gpt-4.1",
+            llm_base_url="https://example.test",
+            llm_api_key="secret",
+        )
+
+        llm1 = await processor._get_agent_llm(agent)
+        llm2 = await processor._get_agent_llm(agent)
+
+        assert llm1 is llm2
+        assert created == [
+            (
+                "openai",
+                {
+                    "model": "gpt-4.1",
+                    "base_url": "https://example.test",
+                    "api_key": "secret",
+                },
+            )
+        ]
+
+    async def test_build_context_summarizes_old_comments(self, processor):
+        comments = [
+            TaskComment(id=i, task_id="t-1", step_index=0, agent_name=f"agent{i}", content=f"line {i}")
+            for i in range(6)
+        ]
+
+        text = processor._build_context(Task(title="T", instruction="i"), comments)
+
+        assert "(... 2 earlier entries summarized ...)" in text
+        assert "  [agent0] line 0..." in text
+        assert "[agent5] line 5" in text
+
+    async def test_build_context_truncates_long_history(self, processor):
+        comments = [
+            TaskComment(id=i, task_id="t-1", step_index=0, agent_name=f"agent{i}", content="x" * 80)
+            for i in range(4)
+        ]
+
+        with patch("arc.tasks.processor._MAX_CONTEXT_CHARS", 60):
+            text = processor._build_context(Task(title="T", instruction="i"), comments)
+
+        assert text.startswith("(... truncated ...)\n")
+
 
 @pytest.mark.asyncio
 class TestTaskProcessorHandleHumanReply:
@@ -257,6 +387,15 @@ class TestTaskProcessorHandleHumanReply:
         msg = await processor.handle_human_reply("t-ghost", "hello", "approve")
         assert "not waiting" in msg.lower()
         await tmp_store.close()
+
+    async def test_reply_to_unexpected_state(self, processor):
+        processor._store.get_blocked_task = AsyncMock(
+            return_value=Task(title="Done", instruction="i", status=TaskStatus.DONE)
+        )
+
+        msg = await processor.handle_human_reply("t-done", "hello", "approve")
+
+        assert "unexpected state" in msg.lower()
 
     async def test_reply_revise_at_max_bounces(self, processor, tmp_store):
         await tmp_store.initialize()
@@ -339,6 +478,194 @@ class TestTaskProcessorReviewHandling:
         assert any("LLM timeout" in c.content for c in comments)
         await tmp_store.close()
 
+    async def test_handle_cancelled_marks_task_cancelled_when_store_is_not_already_cancelled(self, processor):
+        processor._store.update_status_with_comment = AsyncMock()
+        processor._is_task_cancelled = AsyncMock(return_value=False)
+        task = Task(
+            title="Cancelled",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="researcher")],
+        )
+
+        with patch("arc.tasks.processor.time.time", return_value=123):
+            await processor._handle_cancelled(task, "researcher", "cancel")
+
+        processor._store.update_status_with_comment.assert_awaited_once_with(
+            task.id,
+            TaskStatus.CANCELLED,
+            "system",
+            "Task cancelled while agent 'researcher' was running (cancel).",
+            step_index=task.current_step,
+            extra_updates={"completed_at": 123},
+        )
+
+    async def test_advance_task_routes_to_agent_reviewer(self, processor):
+        processor._store.update_status_with_comment = AsyncMock()
+        processor._notify = AsyncMock()
+        task = Task(
+            title="Review me",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer", review_by="reviewer")],
+        )
+
+        await processor._advance_task(task, "writer", "draft")
+
+        processor._store.update_status_with_comment.assert_awaited_once_with(
+            task.id,
+            TaskStatus.IN_REVIEW,
+            "system",
+            "Submitted for review by 'reviewer'.",
+            step_index=task.current_step,
+        )
+        processor._notify.assert_not_called()
+
+    async def test_advance_task_routes_to_human_review(self, processor):
+        processor._store.update_status_with_comment = AsyncMock()
+        processor._notify = AsyncMock()
+        task = Task(
+            title="Review me",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer", review_by="human")],
+        )
+
+        await processor._advance_task(task, "writer", "draft result")
+
+        processor._store.update_status_with_comment.assert_awaited_once_with(
+            task.id,
+            TaskStatus.AWAITING_HUMAN,
+            "system",
+            "Awaiting human review.",
+            step_index=task.current_step,
+        )
+        processor._notify.assert_awaited_once()
+
+    async def test_advance_task_moves_directly_to_next_step_without_reviewer(self, processor):
+        processor._move_to_next_step = AsyncMock()
+        task = Task(
+            title="Ship it",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer")],
+        )
+
+        await processor._advance_task(task, "writer", "final")
+
+        processor._move_to_next_step.assert_awaited_once_with(task, "final")
+
+    async def test_move_to_next_step_queues_following_workflow_step(self, processor):
+        processor._store.update_status_with_comment = AsyncMock()
+        task = Task(
+            title="Pipeline",
+            instruction="i",
+            steps=[
+                TaskStep(step_index=0, agent_name="researcher"),
+                TaskStep(step_index=1, agent_name="writer"),
+            ],
+            current_step=0,
+        )
+
+        await processor._move_to_next_step(task, "research complete")
+
+        processor._store.update_status_with_comment.assert_awaited_once_with(
+            task.id,
+            TaskStatus.QUEUED,
+            "system",
+            "Step 1 complete. Moving to step 2.",
+            step_index=task.current_step,
+            extra_updates={"current_step": 1, "bounce_count": 0},
+        )
+
+    async def test_move_to_next_step_completes_task_and_notifies(self, processor):
+        processor._store.update_status_with_comment = AsyncMock()
+        processor._emit = AsyncMock()
+        processor._notify = AsyncMock()
+        task = Task(
+            title="Pipeline",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="researcher")],
+            current_step=0,
+        )
+
+        with patch("arc.tasks.processor.time.time", return_value=456):
+            await processor._move_to_next_step(task, "finished output")
+
+        processor._store.update_status_with_comment.assert_awaited_once_with(
+            task.id,
+            TaskStatus.DONE,
+            "system",
+            "Task completed successfully.",
+            step_index=task.current_step,
+            extra_updates={"result": "finished output", "completed_at": 456},
+        )
+        processor._emit.assert_awaited_once_with(
+            "task:complete",
+            {"task_id": task.id, "task_title": task.title},
+        )
+        processor._notify.assert_awaited_once()
+
+    async def test_tick_reviews_dispatches_available_reviewer(self, processor, sample_agents, monkeypatch):
+        task = Task(
+            title="Needs review",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer", review_by="reviewer")],
+            status=TaskStatus.IN_REVIEW,
+        )
+        processor._store.get_all = AsyncMock(return_value=[task])
+        created: list[str] = []
+        real_create_task = asyncio.create_task
+
+        def fake_create_task(coro, name=None):
+            created.append(name)
+            coro.close()
+            return real_create_task(asyncio.sleep(0))
+
+        monkeypatch.setattr("arc.tasks.processor.asyncio.create_task", fake_create_task)
+
+        await processor._tick_reviews()
+
+        assert created == [f"review:{task.id}:reviewer"]
+        assert processor._in_flight["reviewer"] == 1
+
+    async def test_process_review_routes_successful_reviewer_output(self, processor):
+        reviewer = AgentDef(name="reviewer", role="Reviews")
+        task = Task(
+            title="Needs review",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer", review_by="reviewer")],
+        )
+        processor._in_flight["reviewer"] = 1
+        processor._store.get_comments = AsyncMock(return_value=[])
+        processor._store.add_comment = AsyncMock()
+        processor._run_agent = AsyncMock(return_value=("VERDICT: APPROVED", None))
+        processor._handle_review_result = AsyncMock()
+
+        await processor._process_review(task, reviewer)
+
+        processor._store.add_comment.assert_awaited_once_with(
+            task.id,
+            reviewer.name,
+            "VERDICT: APPROVED",
+            step_index=task.current_step,
+        )
+        processor._handle_review_result.assert_awaited_once_with(task, reviewer.name, "VERDICT: APPROVED")
+        assert processor._in_flight["reviewer"] == 0
+
+    async def test_process_review_handles_agent_errors(self, processor):
+        reviewer = AgentDef(name="reviewer", role="Reviews")
+        task = Task(
+            title="Needs review",
+            instruction="i",
+            steps=[TaskStep(step_index=0, agent_name="writer", review_by="reviewer")],
+        )
+        processor._in_flight["reviewer"] = 1
+        processor._store.get_comments = AsyncMock(return_value=[])
+        processor._run_agent = AsyncMock(return_value=("", "review failed"))
+        processor._handle_failure = AsyncMock()
+
+        await processor._process_review(task, reviewer)
+
+        processor._handle_failure.assert_awaited_once_with(task, reviewer.name, "review failed")
+        assert processor._in_flight["reviewer"] == 0
+
 @pytest.mark.asyncio
 async def test_cancel_task_stops_inflight_run(tmp_store, sample_agents, mock_skill_manager,
                                               mock_llm, mock_notification_router,
@@ -396,3 +723,10 @@ async def test_cancel_task_stops_inflight_run(tmp_store, sample_agents, mock_ski
     assert researcher_comments == []
 
     await tmp_store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_returns_false_when_store_rejects(processor):
+    processor._store.cancel = AsyncMock(return_value=False)
+
+    assert await processor.cancel_task("t-missing") is False

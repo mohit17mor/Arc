@@ -64,6 +64,15 @@ class TestTelegramPlatformBasic:
         assert lock1 is lock2  # same chat_id → same lock
         assert lock1 is not lock3  # different chat_id → different lock
 
+    @pytest.mark.asyncio
+    async def test_stop_marks_platform_not_running(self):
+        tp = TelegramPlatform(token="test-token")
+        tp._running = True
+
+        await tp.stop()
+
+        assert tp._running is False
+
 
 class TestSplitText:
     """Test the _split_text helper."""
@@ -309,6 +318,108 @@ class TestMessageHandling:
         assert "still working" in text.lower() or "please wait" in text.lower()
 
         lock.release()
+
+    @pytest.mark.asyncio
+    async def test_process_message_appends_context_window_footer(self):
+        tp = TelegramPlatform(token="t")
+        tp._handler = echo_handler
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
+        tp.set_cost_tracker(
+            type(
+                "Tracker",
+                (),
+                {
+                    "turn_peak_input": 1200,
+                    "turn_output_tokens": 80,
+                    "context_window": 4000,
+                },
+            )()
+        )
+        update = _make_update(chat_id=123, text="world")
+        ctx = _make_context()
+
+        await tp._process_message(update, ctx, "world")
+
+        sent_text = tp._application.bot.send_message.call_args[1]["text"]
+        assert "1,200 / 4,000 ctx" in sent_text
+        assert "80 out" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_process_message_appends_in_out_footer_without_context_window(self):
+        tp = TelegramPlatform(token="t")
+        tp._handler = echo_handler
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
+        tp.set_cost_tracker(
+            type(
+                "Tracker",
+                (),
+                {
+                    "turn_peak_input": 0,
+                    "turn_input_tokens": 50,
+                    "turn_output_tokens": 25,
+                    "context_window": 0,
+                },
+            )()
+        )
+        update = _make_update(chat_id=123, text="world")
+        ctx = _make_context()
+
+        await tp._process_message(update, ctx, "world")
+
+        sent_text = tp._application.bot.send_message.call_args[1]["text"]
+        assert "75 tokens" in sent_text
+        assert "50 in" in sent_text
+        assert "25 out" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_response_retries_parse_errors_and_continues(self):
+        tp = TelegramPlatform(token="t")
+        tp._application = MagicMock()
+        bot = tp._application.bot
+        bot.send_message = AsyncMock(side_effect=[RuntimeError("400 parse error"), None])
+
+        await tp._send_response(123, "hello")
+
+        assert bot.send_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_response_logs_when_retry_also_fails(self):
+        tp = TelegramPlatform(token="t")
+        tp._application = MagicMock()
+        bot = tp._application.bot
+        bot.send_message = AsyncMock(side_effect=[RuntimeError("400 parse error"), RuntimeError("still bad")])
+
+        with patch("arc.platforms.telegram.app.logger.warning") as warning:
+            await tp._send_response(123, "hello")
+
+        warning.assert_called_once()
+        assert "Failed to send message chunk" in warning.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_send_response_splits_large_messages(self):
+        tp = TelegramPlatform(token="t")
+        tp._application = MagicMock()
+        tp._application.bot.send_message = AsyncMock()
+        long_text = ("A" * 3000) + "\n\n" + ("B" * 3000)
+
+        await tp._send_response(123, long_text)
+
+        assert tp._application.bot.send_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_keep_typing_exits_cleanly_on_cancellation(self):
+        tp = TelegramPlatform(token="t")
+        chat = MagicMock()
+        chat.send_action = AsyncMock()
+
+        task = asyncio.create_task(tp._keep_typing(chat))
+        await asyncio.sleep(0)
+        task.cancel()
+        await task
+
+        chat.send_action.assert_called()
 
 
 # ---------------------------------------------------------------------------
