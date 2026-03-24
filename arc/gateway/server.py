@@ -516,8 +516,9 @@ class GatewayServer(Platform):
             "reason": outcome.reason if outcome else None,
         })
 
-        # Record in history so new connections see it
-        self._record_history("webchat", user_input, full_response)
+        # Record in history so new connections see it, preserving the
+        # original channel source (webchat, voice, telegram, etc.).
+        self._record_history(source, user_input, full_response)
 
         # Broadcast to other connected clients (sync)
         await self._broadcast_response(

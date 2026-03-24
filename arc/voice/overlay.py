@@ -137,16 +137,18 @@ if _HAS_QT:
 
             # Window flags — platform-specific for best behavior
             if is_mac:
-                # On macOS, Tool windows can hide behind other apps.
-                # SplashScreen + StaysOnTop works more reliably.
+                # Avoid SplashScreen windows on macOS because they can steal
+                # focus or pull the user to a different Space/Desktop.
+                # Use a non-activating tool window instead.
                 self.setWindowFlags(
                     Qt.WindowType.FramelessWindowHint
                     | Qt.WindowType.WindowStaysOnTopHint
-                    | Qt.WindowType.SplashScreen
+                    | Qt.WindowType.Tool
                 )
                 # Make it non-focusable so it doesn't steal keyboard
                 self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
                 self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             else:
                 self.setWindowFlags(
                     Qt.WindowType.FramelessWindowHint
@@ -196,7 +198,8 @@ if _HAS_QT:
             self.hide()
 
             # Startup flash — brief green glow to confirm overlay is active
-            QTimer.singleShot(200, self._startup_flash)
+            if not is_mac:
+                QTimer.singleShot(200, self._startup_flash)
 
         def _startup_flash(self) -> None:
             """Show a brief green flash on startup, then fade to hidden."""
@@ -318,7 +321,8 @@ if _HAS_QT:
             self.setWindowOpacity(1.0)
             self._opacity = 1.0
             self.show()
-            self.raise_()  # ensure on top (especially macOS)
+            if platform.system() != "Darwin":
+                self.raise_()  # ensure on top without stealing Spaces on macOS
             self.update()  # trigger repaint with new colors
 
             # Pulse animation

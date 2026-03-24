@@ -180,3 +180,24 @@ class TestGlowBarWidget:
         assert flags & Qt.WindowType.FramelessWindowHint
         assert flags & Qt.WindowType.WindowStaysOnTopHint
         assert flags & Qt.WindowType.Tool
+
+    def test_macos_uses_tool_window_not_splashscreen(self):
+        """macOS overlay should avoid SplashScreen windows that can pull focus/spaces."""
+        from PyQt6.QtCore import Qt
+        from arc.voice.overlay import create_overlay
+
+        with patch("platform.system", return_value="Darwin"):
+            bar, _ = create_overlay()
+            flags = bar.windowFlags()
+            assert flags & Qt.WindowType.Tool
+            assert not (flags & Qt.WindowType.SplashScreen)
+
+    def test_macos_state_change_does_not_raise_window(self):
+        """macOS overlay updates should not force the window to the front on every voice state change."""
+        from arc.voice.overlay import create_overlay
+
+        with patch("platform.system", return_value="Darwin"):
+            bar, _ = create_overlay()
+            with patch.object(bar, "raise_") as mock_raise:
+                bar.set_voice_state("active")
+            mock_raise.assert_not_called()

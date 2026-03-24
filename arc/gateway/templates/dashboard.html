@@ -569,7 +569,7 @@ function app(){return{
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
-  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,
+  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,pendingSyncUsers:new Set(),
 
   init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
@@ -622,15 +622,15 @@ function app(){return{
         if(this.logLive&&this.pg==='logs'){this.lg.push({timestamp:Date.now()/1000,type:d.event,source:d.data?.source||'system',data:d.data||{}});
           if(this.lg.length>500)this.lg=this.lg.slice(-500);this.$nextTick(()=>{const el=document.getElementById('log-scroll');if(el)el.scrollTop=el.scrollHeight})}break;
       case'notification':this._ht();if(m)this._am(m,'system','🔔 '+(d.job_name||'Task')+': '+d.content);this.toast('🔔 '+(d.job_name||'Task completed'));break;
-      case'sync':if(m)this._as(m,d.source||'',d.user_input||'',d.response||'');break;
-      case'sync_user':if(m&&d.user_input){const l=document.createElement('div');l.className='sl';l.textContent='via '+d.source;m.appendChild(l);this._am(m,'user',d.user_input)}break;
+      case'sync':if(m){const sk=d.message_id&&this.pendingSyncUsers.has(d.message_id);if(sk)this.pendingSyncUsers.delete(d.message_id);this._as(m,d.source||'',sk?'':(d.user_input||''),d.response||'',sk)}break;
+      case'sync_user':if(m&&d.user_input){if(d.message_id)this.pendingSyncUsers.add(d.message_id);const l=document.createElement('div');l.className='sl';l.textContent='via '+d.source;m.appendChild(l);this._am(m,'user',d.user_input)}break;
       case'interrupt_ack':if(!d.accepted)this.toast('No active turn to interrupt');break;
       case'busy':this.toast(d.message||'Stop the current turn first');break;
     }
     if(m)m.scrollTop=m.scrollHeight},
 
   _am(m,c,t){const e=document.createElement('div');e.className='mg '+c;e.textContent=t;m.appendChild(e)},
-  _as(m,s,u,r){const l=document.createElement('div');l.className='sl';l.textContent='via '+s;m.appendChild(l);if(u)this._am(m,'user',u);if(r)this._am(m,'agent',r)},
+  _as(m,s,u,r,skipLabel=false){if(!skipLabel){const l=document.createElement('div');l.className='sl';l.textContent='via '+s;m.appendChild(l)}if(u)this._am(m,'user',u);if(r)this._am(m,'agent',r)},
   _st(m){if(this.thEl)return;this.thEl=document.createElement('div');this.thEl.className='thk';this.thEl.textContent='Thinking';m.appendChild(this.thEl)},
   _sp(){if(!this.thEl)return;this.thEl.textContent='Arc is still processing'},
   _ht(){if(this.thEl){this.thEl.remove();this.thEl=null}},

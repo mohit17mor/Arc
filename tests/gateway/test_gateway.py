@@ -129,6 +129,16 @@ def test_dashboard_template_includes_mcp_json_editor():
     assert "Validate" in template
 
 
+def test_dashboard_template_dedupes_remote_sync_user_from_sync():
+    """Remote turns should not render the same user message twice when sync_user is followed by sync."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "pendingSyncUsers" in template
+    assert "message_id" in template
+    assert "this.pendingSyncUsers.add(d.message_id)" in template
+    assert "this.pendingSyncUsers.has(d.message_id)" in template
+    assert "this.pendingSyncUsers.delete(d.message_id)" in template
+
+
 # ━━━ Integration tests (with aiohttp test server) ━━━
 
 
