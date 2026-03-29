@@ -109,25 +109,24 @@ class ResponsesAPIProvider(LLMProvider):
     ) -> AsyncIterator[LLMChunk]:
         client = await self._get_client()
 
-        # Separate system prompt (→ instructions) from conversation (→ input)
-        instructions, input_items = self._convert_messages(messages)
-
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "input": input_items,
-            "stream": True,
-            "temperature": temperature,
-        }
-
-        if instructions:
-            payload["instructions"] = instructions
-
-        if max_tokens:
-            payload["max_output_tokens"] = max_tokens
-
-        if tools:
-            payload["tools"] = [self._convert_tool_spec(t) for t in tools]
-            payload["tool_choice"] = "auto"
+        payload = self._build_payload(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        await self._log_request(
+            {
+                "provider": self._provider_name,
+                "model": self._model,
+                "endpoint": "/responses",
+                "request_format": "responses",
+                "input_item_count": len(payload["input"]),
+                "tool_count": len(payload.get("tools", [])),
+                "tool_names": [tool["name"] for tool in payload.get("tools", [])],
+                "payload": payload,
+            }
+        )
 
         try:
             async with client.stream(
@@ -156,6 +155,7 @@ class ResponsesAPIProvider(LLMProvider):
                 func_calls: dict[int, dict[str, Any]] = {}
                 input_tokens = 0
                 output_tokens = 0
+                cached_input_tokens = 0
 
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -196,6 +196,12 @@ class ResponsesAPIProvider(LLMProvider):
                         usage = response_obj.get("usage", {})
                         input_tokens = usage.get("input_tokens", 0)
                         output_tokens = usage.get("output_tokens", 0)
+                        details = (
+                            usage.get("input_tokens_details")
+                            or usage.get("prompt_tokens_details")
+                            or {}
+                        )
+                        cached_input_tokens = details.get("cached_tokens", 0)
 
                         if func_calls:
                             yield LLMChunk(
@@ -203,12 +209,14 @@ class ResponsesAPIProvider(LLMProvider):
                                 stop_reason=StopReason.TOOL_USE,
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
+                                cached_input_tokens=cached_input_tokens,
                             )
                         else:
                             yield LLMChunk(
                                 stop_reason=StopReason.COMPLETE,
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
+                                cached_input_tokens=cached_input_tokens,
                             )
                         return
 
@@ -230,12 +238,14 @@ class ResponsesAPIProvider(LLMProvider):
                         stop_reason=StopReason.TOOL_USE,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        cached_input_tokens=cached_input_tokens,
                     )
                 else:
                     yield LLMChunk(
                         stop_reason=StopReason.COMPLETE,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        cached_input_tokens=cached_input_tokens,
                     )
 
         except httpx.ConnectError as e:
@@ -261,6 +271,36 @@ class ResponsesAPIProvider(LLMProvider):
                 model=self._model,
                 retryable=False,
             ) from e
+
+    def _build_payload(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolSpec] | None,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        # Separate system prompt (→ instructions) from conversation (→ input)
+        instructions, input_items = self._convert_messages(messages)
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "input": input_items,
+            "stream": True,
+            "temperature": temperature,
+        }
+
+        if instructions:
+            payload["instructions"] = instructions
+
+        if max_tokens:
+            payload["max_output_tokens"] = max_tokens
+
+        if tools:
+            payload["tools"] = [self._convert_tool_spec(t) for t in tools]
+            payload["tool_choice"] = "auto"
+
+        return payload
 
     # ── count_tokens ───────────────────────────────────────────
 

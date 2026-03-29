@@ -535,16 +535,33 @@ async def test_slash_cost_no_tracker(client):
 async def test_slash_cost_with_tracker(client):
     """/cost with tracker shows token counts."""
     c, gw, store = client
-    gw.set_cost_tracker({"requests": 5, "input_tokens": 1000, "output_tokens": 200,
-                          "total_tokens": 1200, "cost_usd": 0.01,
-                          "worker_total_tokens": 0, "grand_total_tokens": 1200})
+    gw.set_cost_tracker({
+        "requests": 5,
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "total_tokens": 1200,
+        "cost_usd": 0.01,
+        "worker_total_tokens": 0,
+        "grand_total_tokens": 1200,
+        "last_input_tokens": 3456,
+        "last_cached_input_tokens": 2048,
+        "cached_input_tokens": 2500,
+        "uncached_input_tokens": 7500,
+        "context_window": 128000,
+        "turn_peak_input": 4000,
+    })
     async with c.ws_connect("/ws") as ws:
         await ws.receive_json()  # welcome
         await ws.send_json({"type": "message", "content": "/cost"})
         msg = await ws.receive_json()
         assert msg["type"] == "command_result"
-        assert "1,200" in msg["content"]
-        assert "$0.01" in msg["content"]
+        assert "Current Context" in msg["content"]
+        assert "3,456" in msg["content"]
+        assert "2,048" in msg["content"]
+        assert "128,000" in msg["content"]
+        assert "Grand Total" not in msg["content"]
+        assert "Session Cost" not in msg["content"]
+        assert "Cost:" not in msg["content"]
 
 
 async def test_slash_skills_no_manager(client):

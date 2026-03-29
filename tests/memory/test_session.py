@@ -151,3 +151,34 @@ def test_conversation_flow():
     assert messages[2].role == "assistant"
     assert messages[3].role == "tool"
     assert messages[4].role == "assistant"
+
+
+def test_prune_tool_history_removes_matching_calls_and_results():
+    """Pruning a tool removes its call/result history but keeps other context."""
+    memory = SessionMemory()
+    memory.add_user_message("Do work")
+    memory.add_assistant_message(
+        content="Planning and acting",
+        tool_calls=[
+            ToolCall(id="p1", name="update_plan", arguments={"plan": []}),
+            ToolCall(id="g1", name="greet", arguments={"name": "World"}),
+        ],
+    )
+    memory.add_tool_result(
+        ToolResult(tool_call_id="p1", success=True, output="plan state"),
+        tool_name="update_plan",
+    )
+    memory.add_tool_result(
+        ToolResult(tool_call_id="g1", success=True, output="Hello, World!"),
+        tool_name="greet",
+    )
+
+    memory.prune_tool_history("update_plan")
+
+    messages = memory.get_messages(include_system=False)
+    assert len(messages) == 3
+    assert messages[0].role == "user"
+    assert messages[1].role == "assistant"
+    assert [tc.name for tc in messages[1].tool_calls] == ["greet"]
+    assert messages[2].role == "tool"
+    assert messages[2].name == "greet"

@@ -16,7 +16,7 @@ async def test_cost_tracker_tracks_tokens():
     # Simulate LLM response event
     event = Event(
         type=EventType.LLM_RESPONSE,
-        data={"input_tokens": 100, "output_tokens": 50},
+        data={"input_tokens": 100, "output_tokens": 50, "cached_input_tokens": 40},
         source="main",
     )
 
@@ -26,6 +26,8 @@ async def test_cost_tracker_tracks_tokens():
     assert tracker.output_tokens == 50
     assert tracker.main_total_tokens == 150
     assert tracker.request_count == 1
+    assert tracker.cached_input_tokens == 40
+    assert tracker.last_cached_input_tokens == 40
 
 
 @pytest.mark.asyncio
@@ -123,6 +125,8 @@ def test_cost_tracker_summary():
     tracker.worker_input_tokens = 400
     tracker.worker_output_tokens = 200
     tracker.worker_request_count = 5
+    tracker.cached_input_tokens = 60
+    tracker.last_cached_input_tokens = 20
 
     summary = tracker.summary()
 
@@ -135,6 +139,9 @@ def test_cost_tracker_summary():
     assert summary["worker_output_tokens"] == 200
     assert summary["worker_total_tokens"] == 600
     assert summary["grand_total_tokens"] == 750
+    assert summary["cached_input_tokens"] == 60
+    assert summary["uncached_input_tokens"] == 40
+    assert summary["last_cached_input_tokens"] == 20
     assert summary["context_window"] == 0  # not set in this test
     assert "cost_usd" in summary
 
@@ -322,12 +329,47 @@ async def test_turn_peak_input_tracks_largest_call():
     assert tracker.turn_peak_input == 0
 
 
+@pytest.mark.asyncio
+async def test_last_input_tokens_tracks_latest_main_call():
+    """last_input_tokens reflects the latest main-agent LLM prompt size."""
+    tracker = CostTracker()
+
+    async def noop(event):
+        return event
+
+    await tracker.middleware(
+        Event(type=EventType.LLM_RESPONSE,
+              data={"input_tokens": 2000, "output_tokens": 100},
+              source="main"),
+        noop,
+    )
+    assert tracker.last_input_tokens == 2000
+
+    await tracker.middleware(
+        Event(type=EventType.LLM_RESPONSE,
+              data={"input_tokens": 3500, "output_tokens": 200},
+              source="main"),
+        noop,
+    )
+    assert tracker.last_input_tokens == 3500
+
+    await tracker.middleware(
+        Event(type=EventType.LLM_RESPONSE,
+              data={"input_tokens": 500, "output_tokens": 50},
+              source="worker:task_abc"),
+        noop,
+    )
+    assert tracker.last_input_tokens == 3500
+
+
 def test_context_window_in_summary():
     """Context window appears in summary when set."""
     tracker = CostTracker()
     tracker.context_window = 128_000
     tracker.turn_peak_input = 5_000
+    tracker.last_input_tokens = 4_200
 
     summary = tracker.summary()
     assert summary["context_window"] == 128_000
     assert summary["turn_peak_input"] == 5_000
+    assert summary["last_input_tokens"] == 4_200

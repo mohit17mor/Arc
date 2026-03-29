@@ -285,13 +285,14 @@ async def test_cli_handle_command_renders_help_cost_skills_and_mcp():
 
     text = console.export_text()
     assert "Commands" in text
-    assert "Session Cost" in text
-    assert "Context Window" in text
+    assert "Current Context" in text
+    assert "Latest request" in text
     assert "Tier 1" in text
     assert "Tier 2" in text
     assert "MCP Servers" in text
     assert "Conversation cleared" in text
     assert "Permission memory" in text
+    assert "Grand Total" not in text
 
 
 @pytest.mark.asyncio

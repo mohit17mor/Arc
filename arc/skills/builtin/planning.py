@@ -79,6 +79,15 @@ class PlanningSkill(Skill):
             step["status"] != "completed" for step in self._plan
         )
 
+    @property
+    def is_completed(self) -> bool:
+        """True when the current active plan exists and all steps are complete."""
+        return (
+            bool(self._plan)
+            and self._lifecycle_status == _PLAN_ACTIVE
+            and all(step["status"] == "completed" for step in self._plan)
+        )
+
     def format_plan_for_context(self) -> str:
         """
         Render the plan as a short text block for injection into context.
@@ -201,6 +210,15 @@ class PlanningSkill(Skill):
         self._lifecycle_status = _PLAN_INTERRUPTED
         self._interruption_reason = reason
         await self._emit_plan_event(explanation="Plan interrupted")
+        return True
+
+    def clear_completed(self) -> bool:
+        """Drop completed plan state so it is not carried into later turns."""
+        if not self.is_completed:
+            return False
+        self._plan = []
+        self._lifecycle_status = _PLAN_ACTIVE
+        self._interruption_reason = None
         return True
 
     async def _update_plan(self, arguments: dict[str, Any]) -> ToolResult:

@@ -723,7 +723,7 @@ class CLIPlatform(Platform):
                     "  [cyan]/workflow[/cyan]  — List or run workflows\n"
                     "  [cyan]/workflow <name>[/cyan] — Run a specific workflow\n"
                     "  [cyan]/mcp[/cyan]       — Show MCP server status\n"
-                    "  [cyan]/cost[/cyan]      — Show token usage and cost\n"
+                    "  [cyan]/cost[/cyan]      — Show current context size\n"
                     "  [cyan]/perms[/cyan]     — Show remembered permissions\n"
                     "  [cyan]/clear[/cyan]     — Clear conversation history\n"
                     "  [cyan]/interrupt[/cyan] — Interrupt the active turn\n"
@@ -747,44 +747,30 @@ class CLIPlatform(Platform):
         elif cmd == "/cost":
             if self._cost_tracker:
                 summary = self._cost_tracker
-                main_total = summary.get('total_tokens', 0)
-                worker_total = summary.get('worker_total_tokens', 0)
-                grand_total = summary.get('grand_total_tokens', 0)
-
                 ctx_win = summary.get('context_window', 0)
+                latest = summary.get('last_input_tokens', 0) or summary.get('turn_peak_input', 0)
+                cached = summary.get('last_cached_input_tokens', 0)
+                last_out = summary.get('last_output_tokens', 0)
+                turn_reqs = summary.get('turn_requests', 0)
                 peak = summary.get('turn_peak_input', 0)
 
-                lines = (
-                    f"[bold]Session Cost[/bold]\n\n"
-                    f"  [bold]Main Agent[/bold]\n"
-                    f"  Requests:      {summary.get('requests', 0)}\n"
-                    f"  Input tokens:  {summary.get('input_tokens', 0):,}\n"
-                    f"  Output tokens: {summary.get('output_tokens', 0):,}\n"
-                    f"  Total tokens:  {main_total:,}\n"
-                )
-
-                if ctx_win > 0:
-                    pct = (peak / ctx_win * 100) if peak > 0 else 0
-                    lines += (
-                        f"\n  [bold]Context Window[/bold]\n"
-                        f"  Model limit:   {ctx_win:,} tokens\n"
-                        f"  Last turn:     {peak:,} / {ctx_win:,} ({pct:.0f}%)\n"
-                    )
-
-                if worker_total > 0:
-                    lines += (
-                        f"\n  [bold]Workers (combined)[/bold]\n"
-                        f"  Requests:      {summary.get('worker_requests', 0)}\n"
-                        f"  Input tokens:  {summary.get('worker_input_tokens', 0):,}\n"
-                        f"  Output tokens: {summary.get('worker_output_tokens', 0):,}\n"
-                        f"  Total tokens:  {worker_total:,}\n"
-                    )
-
-                lines += (
-                    f"\n  [bold]Grand Total[/bold]\n"
-                    f"  Total tokens:  {grand_total:,}\n"
-                    f"  Cost:          ${summary.get('cost_usd', 0):.4f}"
-                )
+                lines = "[bold]Current Context[/bold]\n"
+                if latest > 0:
+                    lines += f"\n  [bold]Latest request[/bold]\n  Size:          {latest:,} tokens\n"
+                    if ctx_win > 0:
+                        pct = (latest / ctx_win * 100) if latest > 0 else 0
+                        lines += f"  Context use:   {latest:,} / {ctx_win:,} ({pct:.0f}%)\n"
+                    if cached > 0:
+                        lines += (
+                            f"  Cached input:  {cached:,}\n"
+                            f"  Uncached in:   {max(latest - cached, 0):,}\n"
+                        )
+                    if last_out > 0:
+                        lines += f"  Last output:   {last_out:,}\n"
+                if turn_reqs > 0:
+                    lines += f"\n  [bold]This Turn[/bold]\n  Requests:      {turn_reqs}\n"
+                    if peak > 0 and peak != latest:
+                        lines += f"  Peak request:  {peak:,}\n"
 
                 self._console.print(
                     Panel(lines, border_style="yellow")

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from arc.core.kernel import Kernel
 from arc.core.config import ArcConfig
-from arc.core.types import Capability, SkillManifest, StopReason, ToolResult, ToolSpec
+from arc.core.types import Capability, LLMChunk, SkillManifest, StopReason, ToolResult, ToolSpec
 from arc.llm.mock import MockLLMProvider
 from arc.skills.base import tool, FunctionSkill, Skill
 from arc.skills.manager import SkillManager
@@ -565,6 +565,142 @@ class TestControlSafeguards:
             for m in msgs if m.role == "user"
         )
         assert breaker_found
+
+
+@pytest.mark.asyncio
+async def test_completed_plan_prunes_update_plan_history(kernel, security):
+    mock_llm = MockLLMProvider()
+    manager = SkillManager(kernel)
+
+    @tool(name="greet")
+    async def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    await manager.register(FunctionSkill("test", "Test", [greet]))
+
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=mock_llm,
+        skill_manager=manager,
+        security=security,
+        system_prompt="You are helpful.",
+        config=AgentConfig(max_iterations=6),
+    )
+
+    mock_llm.set_tool_call(
+        "update_plan",
+        {"plan": [
+            {"step": "Greet user", "status": "in_progress"},
+            {"step": "Wrap up", "status": "pending"},
+        ]},
+    )
+    mock_llm.set_tool_call("greet", {"name": "World"})
+    mock_llm.set_tool_call(
+        "update_plan",
+        {"plan": [
+            {"step": "Greet user", "status": "completed"},
+            {"step": "Wrap up", "status": "completed"},
+        ]},
+    )
+    mock_llm.set_response("Done.")
+
+    async for _ in agent.run("Say hello to World and finish."):
+        pass
+
+    messages = agent.memory.get_messages(include_system=False)
+    assert all(m.name != "update_plan" for m in messages if m.role == "tool")
+    assert all(
+        not m.tool_calls or all(tc.name != "update_plan" for tc in m.tool_calls)
+        for m in messages
+        if m.role == "assistant"
+    )
+    assert any(m.name == "greet" for m in messages if m.role == "tool")
+
+
+@pytest.mark.asyncio
+async def test_completed_plan_not_injected_on_next_turn(kernel, security):
+    mock_llm = MockLLMProvider()
+    manager = SkillManager(kernel)
+
+    @tool(name="greet")
+    async def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    await manager.register(FunctionSkill("test", "Test", [greet]))
+
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=mock_llm,
+        skill_manager=manager,
+        security=security,
+        system_prompt="You are helpful.",
+        config=AgentConfig(max_iterations=6),
+    )
+
+    mock_llm.set_tool_call(
+        "update_plan",
+        {"plan": [
+            {"step": "Greet user", "status": "in_progress"},
+            {"step": "Wrap up", "status": "pending"},
+        ]},
+    )
+    mock_llm.set_tool_call("greet", {"name": "World"})
+    mock_llm.set_tool_call(
+        "update_plan",
+        {"plan": [
+            {"step": "Greet user", "status": "completed"},
+            {"step": "Wrap up", "status": "completed"},
+        ]},
+    )
+    mock_llm.set_response("Done.")
+
+    async for _ in agent.run("Say hello to World and finish."):
+        pass
+
+    mock_llm.set_response("Plain follow-up.")
+    async for _ in agent.run("Just answer normally"):
+        pass
+
+    last_call = mock_llm.all_calls[-1]
+    system_content = last_call["messages"][0].content or ""
+    assert "## Your Current Plan" not in system_content
+
+
+@pytest.mark.asyncio
+async def test_main_agent_compaction_uses_provider_prompt_size(kernel, security):
+    mock_llm = MockLLMProvider(context_window=1000)
+    manager = SkillManager(kernel)
+    agent = AgentLoop(
+        kernel=kernel,
+        llm=mock_llm,
+        skill_manager=manager,
+        security=security,
+        system_prompt="You are helpful.",
+        config=AgentConfig(max_iterations=4),
+    )
+
+    captured: list[tuple[int, int]] = []
+
+    def fake_check_and_start_background(session, token_count, token_budget, llm):
+        captured.append((token_count, token_budget))
+
+    agent._compaction.check_and_start_background = fake_check_and_start_background
+
+    mock_llm.set_chunks(
+        [
+            LLMChunk(text="Done."),
+            LLMChunk(
+                stop_reason=StopReason.COMPLETE,
+                input_tokens=800,
+                output_tokens=5,
+            ),
+        ]
+    )
+
+    async for _ in agent.run("Hi"):
+        pass
+
+    assert captured == [(800, 1000)]
 
 
 class _SlowMockLLM(MockLLMProvider):

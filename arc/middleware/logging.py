@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -78,13 +79,18 @@ class EventLogger:
         self,
         log_dir: Path | None = None,
         log_events: bool = True,
+        log_raw_llm_requests: bool | None = None,
     ) -> None:
         self._log_dir = (log_dir or Path.home() / ".arc" / "logs").expanduser()
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._log_events = log_events
+        if log_raw_llm_requests is None:
+            log_raw_llm_requests = _env_flag_enabled("ARC_LOG_RAW_LLM_REQUESTS")
+        self._log_raw_llm_requests = log_raw_llm_requests
         
         # Events log file (JSON lines format)
         self._events_file = self._log_dir / f"events_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        self._llm_requests_file = self._log_dir / f"llm_requests_{datetime.now().strftime('%Y%m%d')}.jsonl"
         
         self._logger = logging.getLogger("arc.events")
     
@@ -120,6 +126,21 @@ class EventLogger:
                 
         except Exception as e:
             self._logger.warning(f"Failed to write event log: {e}")
+
+    async def log_llm_request(self, record: dict[str, Any]) -> None:
+        """Write raw outbound LLM request payloads to a separate debug log."""
+        if not self._log_raw_llm_requests:
+            return
+
+        try:
+            payload = {
+                "timestamp": datetime.now().isoformat(),
+                **self._safe_serialize(record),
+            }
+            with open(self._llm_requests_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception as e:
+            self._logger.warning(f"Failed to write LLM request log: {e}")
     
     @staticmethod
     def _safe_serialize(data: dict) -> dict:
@@ -133,3 +154,9 @@ class EventLogger:
             except (TypeError, ValueError):
                 result[key] = str(value)
         return result
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """Interpret common truthy env var values."""
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}

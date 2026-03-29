@@ -213,6 +213,7 @@ async def bootstrap(
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
     )
+    llm.set_request_logger(event_logger.log_llm_request)
     cost_tracker.context_window = llm.get_model_info().context_window
 
     if config.llm.has_worker_override:
@@ -222,6 +223,7 @@ async def bootstrap(
             base_url=config.llm.worker_base_url or config.llm.base_url,
             api_key=config.llm.worker_api_key or config.llm.api_key,
         )
+        worker_llm.set_request_logger(event_logger.log_llm_request)
     else:
         worker_llm = llm
 

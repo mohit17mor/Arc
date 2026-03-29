@@ -87,10 +87,14 @@ class TestSummariseMessages:
         summary = await summarise_messages(messages, llm)
 
         assert summary == "- decision\n- next step"
+        system_prompt = llm.calls[0]["messages"][0].content
         prompt = llm.calls[0]["messages"][1].content
+        assert "latest known state" in system_prompt.lower()
+        assert "what succeeded, failed, changed, or remains blocked" in system_prompt.lower()
         assert "User: Need a deployment plan" in prompt
         assert "Assistant: [called tools: search]" in prompt
         assert ("Assistant: " + ("x" * 1000) + "...") in prompt
+        assert llm.calls[0]["max_tokens"] == 1200
 
     async def test_returns_empty_when_only_system_messages_exist(self):
         llm = _FakeLLM(chunks=["unused"])

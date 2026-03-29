@@ -628,7 +628,7 @@ class GatewayServer(Platform):
                 "Commands:\n"
                 "  /help     — Show this help\n"
                 "  /skills   — List available skills and tools\n"
-                "  /cost     — Show token usage and cost\n"
+                "  /cost     — Show current context size\n"
                 "  /memory   — Show core facts (long-term memory)\n"
                 "  /jobs     — List scheduled jobs\n"
                 "  /workflow — List or run workflows\n"
@@ -642,22 +642,30 @@ class GatewayServer(Platform):
                 await self._send_system(ws, "Cost tracking not available")
             else:
                 s = self._cost_tracker
-                text = (
-                    f"Session Cost\n"
-                    f"  Requests:      {s.get('requests', 0)}\n"
-                    f"  Input tokens:  {s.get('input_tokens', 0):,}\n"
-                    f"  Output tokens: {s.get('output_tokens', 0):,}\n"
-                    f"  Total tokens:  {s.get('total_tokens', 0):,}\n"
-                    f"  Cost:          ${s.get('cost_usd', 0):.4f}"
-                )
-                worker_total = s.get("worker_total_tokens", 0)
-                if worker_total > 0:
-                    text += (
-                        f"\n\nWorkers\n"
-                        f"  Requests:      {s.get('worker_requests', 0)}\n"
-                        f"  Total tokens:  {worker_total:,}"
-                    )
-                text += f"\n\nGrand Total:   {s.get('grand_total_tokens', 0):,} tokens"
+                ctx_win = s.get("context_window", 0)
+                last_in = s.get("last_input_tokens", 0) or s.get("turn_peak_input", 0)
+                last_cached = s.get("last_cached_input_tokens", 0)
+                peak_in = s.get("turn_peak_input", 0)
+                last_out = s.get("last_output_tokens", 0)
+                turn_reqs = s.get("turn_requests", 0)
+
+                text = "Current Context"
+                if last_in > 0:
+                    text += f"\n  Latest request: {last_in:,} tokens"
+                    if ctx_win > 0:
+                        pct = (last_in / ctx_win * 100) if ctx_win else 0
+                        text += f"\n  Context use:    {last_in:,} / {ctx_win:,} ({pct:.0f}%)"
+                    if last_cached > 0:
+                        text += (
+                            f"\n  Cached input:   {last_cached:,}"
+                            f"\n  Uncached input: {max(last_in - last_cached, 0):,}"
+                        )
+                    if last_out > 0:
+                        text += f"\n  Last output:    {last_out:,}"
+                if turn_reqs > 0:
+                    text += f"\n\nThis Turn\n  Requests:       {turn_reqs}"
+                    if peak_in > 0 and peak_in != last_in:
+                        text += f"\n  Peak request:   {peak_in:,}"
                 await self._send_system(ws, text)
 
         elif cmd in ("/skills", "/skill"):

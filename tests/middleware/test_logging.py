@@ -97,3 +97,36 @@ class TestEventLogger:
 
         warning.assert_called_once()
         assert "Failed to write event log" in warning.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_log_llm_request_writes_separate_jsonl_file_when_enabled(self, tmp_path):
+        event_logger = EventLogger(log_dir=tmp_path, log_raw_llm_requests=True)
+
+        await event_logger.log_llm_request(
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "payload": {"messages": [{"role": "user", "content": "hello"}]},
+            }
+        )
+
+        request_files = list(tmp_path.glob("llm_requests_*.jsonl"))
+        assert len(request_files) == 1
+        lines = request_files[0].read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+
+        record = json.loads(lines[0])
+        assert record["provider"] == "openai"
+        assert record["model"] == "gpt-4o"
+        assert record["payload"]["messages"][0]["content"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_log_llm_request_is_noop_when_disabled(self, tmp_path):
+        event_logger = EventLogger(log_dir=tmp_path, log_raw_llm_requests=False)
+
+        await event_logger.log_llm_request(
+            {"provider": "openai", "model": "gpt-4o", "payload": {"messages": []}}
+        )
+
+        request_files = list(tmp_path.glob("llm_requests_*.jsonl"))
+        assert request_files == []

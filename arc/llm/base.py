@@ -9,9 +9,13 @@ one config line.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+import logging
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from arc.core.types import LLMChunk, Message, ModelInfo, ToolSpec
+
+LLMRequestLogger = Callable[[dict[str, Any]], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 class LLMProvider(ABC):
@@ -29,6 +33,19 @@ class LLMProvider(ABC):
         OpenAIProvider — GPT (future)
         MockProvider — for testing
     """
+
+    def set_request_logger(self, request_logger: LLMRequestLogger | None) -> None:
+        """Attach an optional async logger for outbound request payloads."""
+        self._request_logger = request_logger
+
+    async def _log_request(self, record: dict[str, Any]) -> None:
+        """Emit a raw request record when debug logging is enabled."""
+        request_logger = getattr(self, "_request_logger", None)
+        if request_logger is not None:
+            try:
+                await request_logger(record)
+            except Exception as e:
+                logger.warning(f"Failed to emit raw LLM request log: {e}")
 
     @abstractmethod
     async def generate(

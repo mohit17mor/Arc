@@ -574,7 +574,7 @@ function app(){return{
   init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
     // Slash command autocomplete
-    const CMDS=[{n:'/help',d:'Show available commands'},{n:'/skills',d:'List skills and tools'},{n:'/cost',d:'Token usage and cost'},{n:'/memory',d:'Core facts (long-term memory)'},{n:'/memory episodic',d:'Recent episodic memories'},{n:'/jobs',d:'List scheduled jobs'},{n:'/workflow',d:'List or run workflows'},{n:'/mcp',d:'MCP server status'},{n:'/clear',d:'Clear conversation'},{n:'/status',d:'Gateway status'}];
+    const CMDS=[{n:'/help',d:'Show available commands'},{n:'/skills',d:'List skills and tools'},{n:'/cost',d:'Current context size'},{n:'/memory',d:'Core facts (long-term memory)'},{n:'/memory episodic',d:'Recent episodic memories'},{n:'/jobs',d:'List scheduled jobs'},{n:'/workflow',d:'List or run workflows'},{n:'/mcp',d:'MCP server status'},{n:'/clear',d:'Clear conversation'},{n:'/status',d:'Gateway status'}];
     const cmEl=document.getElementById('cmd-menu');const miEl=document.getElementById('msg-input');
     let cmIdx=-1;
     function showCm(f){const mt=CMDS.filter(c=>c.n.startsWith(f));if(!mt.length||f===''){cmEl.classList.remove('vis');cmEl.innerHTML='';cmIdx=-1;return}

@@ -58,6 +58,51 @@ class TestConstruction:
         )
         assert p._extra_headers == {"client": "codex-cli"}
 
+    @pytest.mark.asyncio
+    async def test_generate_logs_raw_request_payload_when_logger_attached(self):
+        class _FakeResponse:
+            status_code = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def aread(self):
+                return b""
+
+            async def aiter_lines(self):
+                yield 'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":1}}}'
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = []
+                self.is_closed = False
+
+            def stream(self, method, url, json):
+                self.calls.append((method, url, json))
+                return _FakeResponse()
+
+        provider = ResponsesAPIProvider(
+            base_url="https://corp.example.com/v1",
+            model="codex-mini",
+        )
+        provider._client = _FakeClient()
+        request_logger = AsyncMock()
+        provider.set_request_logger(request_logger)
+
+        [chunk async for chunk in provider.generate(
+            [Message.system("Rules"), Message.user("Hi")],
+        )]
+
+        request_logger.assert_awaited_once()
+        record = request_logger.await_args.args[0]
+        assert record["provider"] == "codex"
+        assert record["model"] == "codex-mini"
+        assert record["payload"]["instructions"] == "Rules"
+        assert record["payload"]["input"][0]["content"] == "Hi"
+
 
 # ── Token counting ───────────────────────────────────────────────
 
@@ -396,7 +441,11 @@ class TestStreaming:
             {
                 "type": "response.completed",
                 "response": {
-                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "input_tokens_details": {"cached_tokens": 6},
+                    },
                 },
             },
         ]
@@ -410,6 +459,7 @@ class TestStreaming:
         assert final.stop_reason == StopReason.COMPLETE
         assert final.input_tokens == 10
         assert final.output_tokens == 5
+        assert final.cached_input_tokens == 6
 
     @pytest.mark.asyncio
     async def test_tool_call_streaming(self):

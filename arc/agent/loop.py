@@ -135,6 +135,7 @@ class AgentLoop:
             max_tokens=model_info.context_window,
             reserve_output=model_info.max_output_tokens,
         )
+        self._context_window = model_info.context_window
         
         # State
         self._state = AgentState(agent_id="agent")
@@ -277,6 +278,7 @@ class AgentLoop:
                 stop_reason: StopReason | None = None
                 input_tokens = 0
                 output_tokens = 0
+                cached_input_tokens = 0
                 
                 # ── LLM call with retry ──────────────────────────────────
                 llm_error: Exception | None = None
@@ -301,6 +303,7 @@ class AgentLoop:
                                 stop_reason = chunk.stop_reason
                                 input_tokens = chunk.input_tokens
                                 output_tokens = chunk.output_tokens
+                                cached_input_tokens = chunk.cached_input_tokens
 
                         llm_error = None
                         break  # success — exit retry loop
@@ -349,6 +352,7 @@ class AgentLoop:
                     {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
+                        "cached_input_tokens": cached_input_tokens,
                         "stop_reason": stop_reason.value if stop_reason else None,
                         "has_tool_calls": len(collected_tool_calls) > 0,
                     },
@@ -420,6 +424,7 @@ class AgentLoop:
                         )
                         continue
 
+                    self._cleanup_completed_plan_state()
                     self._memory.add_assistant_message(collected_text)
                     self._state.status = AgentStatus.COMPLETE
 
@@ -431,8 +436,8 @@ class AgentLoop:
                     if self._is_main_agent:
                         self._compaction.check_and_start_background(
                             session=self._memory,
-                            token_count=context.token_count,
-                            token_budget=self._composer.token_budget,
+                            token_count=input_tokens,
+                            token_budget=self._context_window,
                             llm=self._llm,
                         )
 
@@ -509,6 +514,7 @@ class AgentLoop:
                 yield chunk
 
             # Store synthesis turn in memory (background)
+            self._cleanup_completed_plan_state()
             self._fire_memory_tasks(user_input, synthesis_text)
 
             self._state.status = AgentStatus.COMPLETE
@@ -563,6 +569,13 @@ class AgentLoop:
                     llm=self._llm,
                 )
             )
+
+    def _cleanup_completed_plan_state(self) -> None:
+        """Drop completed plan chatter after a run has fully finished."""
+        if not self._planning.is_completed:
+            return
+        self._memory.prune_tool_history("update_plan")
+        self._planning.clear_completed()
 
     async def _synthesise_on_limit(self) -> AsyncIterator[str]:
         """

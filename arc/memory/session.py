@@ -56,6 +56,35 @@ class SessionMemory:
             )
         )
 
+    def prune_tool_history(self, tool_name: str) -> None:
+        """Remove stored call/result history for a specific tool."""
+        kept: list[Message] = []
+
+        for msg in self.messages:
+            if msg.role == "tool" and msg.name == tool_name:
+                continue
+
+            if msg.role == "assistant" and msg.tool_calls:
+                remaining_calls = [tc for tc in msg.tool_calls if tc.name != tool_name]
+                if not remaining_calls and not msg.content:
+                    continue
+                if len(remaining_calls) != len(msg.tool_calls):
+                    kept.append(
+                        Message(
+                            role=msg.role,
+                            content=msg.content,
+                            name=msg.name,
+                            tool_calls=remaining_calls or None,
+                            tool_call_id=msg.tool_call_id,
+                            timestamp=msg.timestamp,
+                        )
+                    )
+                    continue
+
+            kept.append(msg)
+
+        self.messages = kept
+
     def get_messages(self, include_system: bool = True) -> list[Message]:
         """Get all messages, optionally including system prompt."""
         result = []

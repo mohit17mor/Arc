@@ -34,18 +34,24 @@ class CostTracker:
     # Session-wide totals (main agent only)
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_input_tokens: int = 0
     request_count: int = 0
 
     # Worker/sub-agent totals (aggregated)
     worker_input_tokens: int = 0
     worker_output_tokens: int = 0
+    worker_cached_input_tokens: int = 0
     worker_request_count: int = 0
 
     # Per-turn counters — reset before each user turn
     turn_input_tokens: int = 0
     turn_output_tokens: int = 0
+    turn_cached_input_tokens: int = 0
     turn_request_count: int = 0
     turn_peak_input: int = 0  # largest single-call input_tokens this turn
+    last_input_tokens: int = 0  # latest main-agent prompt size
+    last_output_tokens: int = 0  # latest main-agent completion size
+    last_cached_input_tokens: int = 0  # latest main-agent cached prompt tokens
 
     # Model context window — set once at startup
     context_window: int = 0
@@ -90,8 +96,10 @@ class CostTracker:
         """Reset per-turn counters. Call at the start of each user message."""
         self.turn_input_tokens = 0
         self.turn_output_tokens = 0
+        self.turn_cached_input_tokens = 0
         self.turn_request_count = 0
         self.turn_peak_input = 0
+        self.last_cached_input_tokens = 0
 
     async def middleware(self, event: Event, next_handler: MiddlewareNext) -> Event:
         """Middleware that tracks LLM response costs."""
@@ -100,6 +108,7 @@ class CostTracker:
         if event.type == EventType.LLM_RESPONSE:
             inp = event.data.get("input_tokens", 0)
             out = event.data.get("output_tokens", 0)
+            cached = event.data.get("cached_input_tokens", 0)
             source = event.source or ""
 
             is_worker = source.startswith("worker:") or source.startswith("scheduler")
@@ -108,14 +117,20 @@ class CostTracker:
                 self.worker_request_count += 1
                 self.worker_input_tokens += inp
                 self.worker_output_tokens += out
+                self.worker_cached_input_tokens += cached
             else:
                 self.request_count += 1
                 self.input_tokens += inp
                 self.output_tokens += out
+                self.cached_input_tokens += cached
+                self.last_input_tokens = inp
+                self.last_output_tokens = out
+                self.last_cached_input_tokens = cached
                 # Per-turn (main agent only)
                 self.turn_request_count += 1
                 self.turn_input_tokens += inp
                 self.turn_output_tokens += out
+                self.turn_cached_input_tokens += cached
                 if inp > self.turn_peak_input:
                     self.turn_peak_input = inp
 
@@ -131,14 +146,20 @@ class CostTracker:
         """Reset all counters."""
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cached_input_tokens = 0
         self.request_count = 0
         self.worker_input_tokens = 0
         self.worker_output_tokens = 0
+        self.worker_cached_input_tokens = 0
         self.worker_request_count = 0
         self.turn_input_tokens = 0
         self.turn_output_tokens = 0
+        self.turn_cached_input_tokens = 0
         self.turn_request_count = 0
         self.turn_peak_input = 0
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
+        self.last_cached_input_tokens = 0
 
     def summary(self) -> dict[str, Any]:
         """Get summary of usage."""
@@ -146,21 +167,28 @@ class CostTracker:
             "requests": self.request_count,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "uncached_input_tokens": max(self.input_tokens - self.cached_input_tokens, 0),
             "total_tokens": self.main_total_tokens,
             "cost_usd": self.session_cost,
             # Worker breakdown
             "worker_requests": self.worker_request_count,
             "worker_input_tokens": self.worker_input_tokens,
             "worker_output_tokens": self.worker_output_tokens,
+            "worker_cached_input_tokens": self.worker_cached_input_tokens,
             "worker_total_tokens": self.worker_total_tokens,
             # Grand total
             "grand_total_tokens": self.total_tokens,
             # Per-turn (most recent)
             "turn_input_tokens": self.turn_input_tokens,
             "turn_output_tokens": self.turn_output_tokens,
+            "turn_cached_input_tokens": self.turn_cached_input_tokens,
             "turn_total_tokens": self.turn_total_tokens,
             "turn_requests": self.turn_request_count,
             "turn_peak_input": self.turn_peak_input,
+            "last_input_tokens": self.last_input_tokens,
+            "last_output_tokens": self.last_output_tokens,
+            "last_cached_input_tokens": self.last_cached_input_tokens,
             # Model info
             "context_window": self.context_window,
         }

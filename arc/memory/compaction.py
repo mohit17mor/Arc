@@ -35,18 +35,19 @@ logger = logging.getLogger(__name__)
 # Compaction triggers when token usage exceeds this fraction of the budget.
 COMPACTION_THRESHOLD = 0.75
 
-# System prompt for the summarisation call — terse, factual, cheap.
+# System prompt for the summarisation call — terse, factual, but state-aware.
 _COMPACT_SYSTEM = (
     "You are a conversation summariser. Condense the following conversation "
-    "into a concise summary that preserves:\n"
-    "- Key decisions and conclusions\n"
-    "- Important facts and data discovered\n"
-    "- Current task status and progress\n"
-    "- User preferences and requirements stated\n"
-    "- File paths, URLs, names, and other specifics mentioned\n\n"
+    "into a short, information-dense summary that preserves:\n"
+    "- Key decisions, conclusions, and explicit user requests\n"
+    "- Important facts, data, numbers, file paths, URLs, names, and identifiers\n"
+    "- The latest known state of ongoing work, selections, configurations, and parameters\n"
+    "- Concrete outcomes of actions and tool results, including what succeeded, failed, changed, or remains blocked\n"
+    "- User preferences, constraints, and follow-up commitments\n\n"
+    "When details repeat, keep the newest canonical state and omit superseded versions. "
+    "Keep any detail that would change how the assistant should behave on the next turn. "
     "Do NOT include greetings, filler, or per-message attribution. "
-    "Write in bullet points. Be specific — keep numbers, names, paths. "
-    "Keep it under 400 words."
+    "Write in compact bullet points. Be specific and preserve concrete details, but compress aggressively."
 )
 
 
@@ -86,7 +87,7 @@ async def summarise_messages(
     """
     Ask the LLM to summarise a list of messages into a concise block.
 
-    This is a single, cheap, no-tools LLM call (~500 token output).
+    This is a single, no-tools LLM call with a moderate output budget.
     """
     # Build plain-text conversation for the summariser
     parts: list[str] = []
@@ -116,7 +117,7 @@ async def summarise_messages(
             ],
             tools=None,
             temperature=0.1,  # factual
-            max_tokens=800,
+            max_tokens=1200,
         ):
             if chunk.text:
                 summary_parts.append(chunk.text)

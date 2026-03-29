@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -80,7 +81,7 @@ class TestOpenAICompatibleProviderStreaming:
         response = _FakeResponse(
             lines=[
                 'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
-                'data: {"usage":{"prompt_tokens":3,"completion_tokens":5},"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                'data: {"usage":{"prompt_tokens":3,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2}},"choices":[{"delta":{},"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
         )
@@ -94,6 +95,7 @@ class TestOpenAICompatibleProviderStreaming:
         assert chunks[1].stop_reason == StopReason.COMPLETE
         assert chunks[1].input_tokens == 3
         assert chunks[1].output_tokens == 5
+        assert chunks[1].cached_input_tokens == 2
         assert client.calls[0][0:2] == ("POST", "/chat/completions")
 
     @pytest.mark.asyncio
@@ -120,6 +122,26 @@ class TestOpenAICompatibleProviderStreaming:
         assert payload["tool_choice"] == "auto"
         assert payload["max_tokens"] == 200
         assert payload["stop"] == ["DONE"]
+
+    @pytest.mark.asyncio
+    async def test_generate_logs_raw_request_payload_when_logger_attached(self):
+        response = _FakeResponse(lines=['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'])
+        client = _FakeClient(response=response)
+        provider = OpenAICompatibleProvider(model="gpt-4o")
+        provider._client = client
+        request_logger = AsyncMock()
+        provider.set_request_logger(request_logger)
+
+        [chunk async for chunk in provider.generate(
+            [Message.system("You are helpful."), Message.user("Hi")],
+        )]
+
+        request_logger.assert_awaited_once()
+        record = request_logger.await_args.args[0]
+        assert record["provider"] == "openai"
+        assert record["model"] == "gpt-4o"
+        assert record["payload"]["messages"][0]["role"] == "system"
+        assert record["payload"]["messages"][1]["content"] == "Hi"
 
     @pytest.mark.asyncio
     async def test_generate_emits_tool_calls_on_finish_reason(self):

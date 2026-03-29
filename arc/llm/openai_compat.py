@@ -106,24 +106,25 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> AsyncIterator[LLMChunk]:
         client = await self._get_client()
 
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": [self._convert_message(m) for m in messages],
-            "stream": True,
-            "temperature": temperature,
-            # Request usage stats in stream (OpenAI extension, ignored by others)
-            "stream_options": {"include_usage": True},
-        }
-
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-
-        if stop_sequences:
-            payload["stop"] = stop_sequences
-
-        if tools:
-            payload["tools"] = [self._convert_tool_spec(t) for t in tools]
-            payload["tool_choice"] = "auto"
+        payload = self._build_payload(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop_sequences=stop_sequences,
+        )
+        await self._log_request(
+            {
+                "provider": self._provider_name,
+                "model": self._model,
+                "endpoint": "/chat/completions",
+                "request_format": "chat_completions",
+                "message_count": len(payload["messages"]),
+                "tool_count": len(payload.get("tools", [])),
+                "tool_names": [tool["function"]["name"] for tool in payload.get("tools", [])],
+                "payload": payload,
+            }
+        )
 
         try:
             async with client.stream(
@@ -153,6 +154,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 tool_call_accum: dict[int, dict[str, Any]] = {}
                 input_tokens = 0
                 output_tokens = 0
+                cached_input_tokens = 0
                 got_content = False
 
                 async for line in response.aiter_lines():
@@ -174,6 +176,12 @@ class OpenAICompatibleProvider(LLMProvider):
                     if usage:
                         input_tokens = usage.get("prompt_tokens", input_tokens)
                         output_tokens = usage.get("completion_tokens", output_tokens)
+                        details = (
+                            usage.get("prompt_tokens_details")
+                            or usage.get("input_tokens_details")
+                            or {}
+                        )
+                        cached_input_tokens = details.get("cached_tokens", cached_input_tokens)
 
                     choices = data.get("choices", [])
                     if not choices:
@@ -229,6 +237,7 @@ class OpenAICompatibleProvider(LLMProvider):
                                 stop_reason=StopReason.TOOL_USE,
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
+                                cached_input_tokens=cached_input_tokens,
                             )
                             return
 
@@ -237,6 +246,7 @@ class OpenAICompatibleProvider(LLMProvider):
                             stop_reason=StopReason.COMPLETE,
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
+                            cached_input_tokens=cached_input_tokens,
                         )
                         return
 
@@ -255,12 +265,14 @@ class OpenAICompatibleProvider(LLMProvider):
                         stop_reason=StopReason.TOOL_USE,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        cached_input_tokens=cached_input_tokens,
                     )
                 else:
                     yield LLMChunk(
                         stop_reason=StopReason.COMPLETE,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        cached_input_tokens=cached_input_tokens,
                     )
 
         except httpx.ConnectError as e:
@@ -286,6 +298,36 @@ class OpenAICompatibleProvider(LLMProvider):
                 model=self._model,
                 retryable=False,
             ) from e
+
+    def _build_payload(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolSpec] | None,
+        temperature: float,
+        max_tokens: int | None,
+        stop_sequences: list[str] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [self._convert_message(m) for m in messages],
+            "stream": True,
+            "temperature": temperature,
+            # Request usage stats in stream (OpenAI extension, ignored by others)
+            "stream_options": {"include_usage": True},
+        }
+
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+
+        if stop_sequences:
+            payload["stop"] = stop_sequences
+
+        if tools:
+            payload["tools"] = [self._convert_tool_spec(t) for t in tools]
+            payload["tool_choice"] = "auto"
+
+        return payload
 
     # ── count_tokens ───────────────────────────────────────────────
 
