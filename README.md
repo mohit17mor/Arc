@@ -5,6 +5,23 @@
   <img src="public/assets/arc.png" width="320" alt="Arc" />
 </p>
 
+## Demo
+
+**Watch Arc perform multiple tasks in parallel while recording itself**
+
+[Watch the demo video](https://github.com/user-attachments/assets/43c69201-c885-40d4-8928-77ba39438685)
+
+This demo shows Arc coordinating multiple agents at once. It is:
+
+1. recording the session
+2. searching for flights
+3. checking the weather
+4. finding tourist spots
+5. scheduling a water reminder
+6. working on a simple coding task
+
+While those tasks are running in the background, the main agent remains free to keep talking to you.
+
 Arc gives you two layers in one system:
 
 - a **main agent** you talk to directly in chat
