@@ -189,8 +189,9 @@ class TestGlowBarWidget:
         with patch("platform.system", return_value="Darwin"):
             bar, _ = create_overlay()
             flags = bar.windowFlags()
-            assert flags & Qt.WindowType.Tool
-            assert not (flags & Qt.WindowType.SplashScreen)
+            window_type = flags & Qt.WindowType.WindowType_Mask
+            assert window_type == Qt.WindowType.Tool
+            assert window_type != Qt.WindowType.SplashScreen
 
     def test_macos_state_change_does_not_raise_window(self):
         """macOS overlay updates should not force the window to the front on every voice state change."""
