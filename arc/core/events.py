@@ -94,6 +94,9 @@ class EventType:
     WORKFLOW_PAUSED = "workflow:paused"        # waiting for user input
     WORKFLOW_WAITING_INPUT = "workflow:waiting_input"  # step needs user response to continue
 
+    # Workspace rendering
+    WORKSPACE_UPDATE = "workspace:update"
+
     # Wildcard
     ALL = "*"
 

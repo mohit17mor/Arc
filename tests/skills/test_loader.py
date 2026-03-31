@@ -239,6 +239,7 @@ def test_discover_skills_includes_builtins():
     assert "filesystem" in names
     assert "terminal" in names
     assert "browsing" in names
+    assert "workspace" in names
 
 
 def test_discover_skills_includes_user_skill(tmp_path):

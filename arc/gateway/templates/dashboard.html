@@ -132,7 +132,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .fa{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
 
 /* Chat */
-.cw{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.chat-shell{display:flex;flex:1;min-height:0}
+.cw{display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden}
 .ms{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
 .ms::-webkit-scrollbar{width:5px}.ms::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 .mg{max-width:78%;padding:10px 14px;border-radius:var(--r);line-height:1.55;font-size:14px;
@@ -178,6 +179,68 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .ci:hover,.ci.act{background:var(--bg)}
 .ci .cn{color:var(--accent);font-weight:600;font-size:13px}
 .ci .cd{color:var(--dim);font-size:12px;margin-left:12px}
+
+/* Workspace */
+.workspace-pane{width:min(42vw,540px);min-width:320px;display:flex;flex-direction:column;border-left:1px solid var(--border);background:var(--surface)}
+.workspace-head{padding:18px 18px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(99,102,241,.08),transparent)}
+.workspace-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);margin-bottom:6px}
+.workspace-head h2{font-size:18px;line-height:1.2}
+.workspace-subtitle{font-size:13px;color:var(--dim);margin-top:6px;line-height:1.45}
+.workspace-body{flex:1;overflow-y:auto;padding:16px}
+.workspace-body::-webkit-scrollbar{width:5px}.workspace-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.workspace-root{display:flex;flex-direction:column;gap:14px}
+.workspace-empty{border:1px dashed var(--border);border-radius:var(--r);padding:24px 18px;color:var(--dim);font-size:13px;line-height:1.6;background:rgba(255,255,255,.01)}
+.workspace-block{background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.workspace-block-head{padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,.04)}
+.workspace-block-title{font-size:14px;font-weight:700}
+.workspace-block-sub{font-size:12px;color:var(--dim);margin-top:4px}
+.workspace-block-body{padding:14px 16px}
+.workspace-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}
+.workspace-metric{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px}
+.workspace-metric-label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.workspace-metric-value{font-size:20px;font-weight:700;line-height:1.1}
+.workspace-cards{display:grid;gap:12px}
+.workspace-cards.cards_2_col{grid-template-columns:repeat(2,minmax(0,1fr))}
+.workspace-cards.cards_3_col{grid-template-columns:repeat(3,minmax(0,1fr))}
+.workspace-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:100%}
+.workspace-card-media{aspect-ratio:16/9;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(6,182,212,.12));overflow:hidden}
+.workspace-card-media img{width:100%;height:100%;object-fit:cover;display:block}
+.workspace-card-body{padding:14px;display:flex;flex-direction:column;gap:8px}
+.workspace-card-index{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.5px}
+.workspace-card-title{font-size:15px;font-weight:700;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.workspace-card-meta{font-size:12px;color:var(--dim);line-height:1.4}
+.workspace-card-summary{font-size:13px;color:var(--text);line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.workspace-card-chips{display:flex;flex-wrap:wrap;gap:6px}
+.workspace-chip{font-size:11px;color:var(--dim);background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:4px 8px}
+.workspace-table-wrap{overflow:auto}
+.workspace-table{width:100%;border-collapse:collapse}
+.workspace-table th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--dim);letter-spacing:.5px;padding:0 0 10px}
+.workspace-table td{padding:10px 0;border-top:1px solid rgba(255,255,255,.06);font-size:13px;vertical-align:top}
+.workspace-table-image{display:flex;flex-direction:column;gap:8px}
+.workspace-table-image img{width:100%;max-width:180px;height:120px;object-fit:cover;display:block;border-radius:10px;border:1px solid var(--border);background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(6,182,212,.12))}
+.workspace-table-image-path{font-size:11px;color:var(--dim);word-break:break-all}
+.workspace-detail{display:flex;flex-direction:column;gap:10px}
+.workspace-detail-summary{font-size:13px;line-height:1.6;color:var(--dim)}
+.workspace-detail-section{display:flex;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06)}
+.workspace-detail-section-title{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.5px}
+.workspace-detail-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid rgba(255,255,255,.06)}
+.workspace-detail-label{font-size:12px;color:var(--dim)}
+.workspace-detail-value{font-size:13px;text-align:right}
+.workspace-detail-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.workspace-detail-list li{font-size:13px;line-height:1.5}
+.workspace-detail-media{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.workspace-detail-media-item{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.workspace-detail-media-item img{width:100%;height:180px;object-fit:cover;display:block;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(6,182,212,.12))}
+.workspace-detail-media-caption{padding:8px 10px;font-size:12px;color:var(--dim);line-height:1.4}
+.workspace-chart-placeholder{border:1px dashed var(--border);border-radius:12px;padding:20px;color:var(--dim);font-size:13px;text-align:center;background:rgba(255,255,255,.01)}
+@media (max-width: 1100px){
+  .chat-shell{flex-direction:column}
+  .workspace-pane{width:100%;min-width:0;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
+  .workspace-cards.cards_3_col{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width: 720px){
+  .workspace-cards.cards_2_col,.workspace-cards.cards_3_col{grid-template-columns:1fr}
+}
 
 /* Agent cards */
 .agg{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
@@ -261,13 +324,29 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <!-- ═══ CHAT ═══ -->
 <div :class="{show:pg==='chat'}" class="pg">
   <div class="tp"><h1>Chat</h1><button class="btn btn-r btn-sm" x-show="turnActive" @click="iT()">Stop</button></div>
-  <div class="ms" id="messages"></div>
-  <div id="plan-panel" class="pnl hid" :class="{min:planMin}"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pm" id="plan-min" @click="planMin=!planMin" x-text="planMin?'+':'—'"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
-  <div class="ia"><div class="ir" style="position:relative">
-    <div class="cm" id="cmd-menu"></div>
-    <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
-    <button @click="sendChat()">Send</button>
-  </div></div>
+  <div class="chat-shell">
+    <div class="cw">
+      <div class="ms" id="messages"></div>
+      <div id="plan-panel" class="pnl hid" :class="{min:planMin}"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pm" id="plan-min" @click="planMin=!planMin" x-text="planMin?'+':'—'"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
+      <div class="ia"><div class="ir" style="position:relative">
+        <div class="cm" id="cmd-menu"></div>
+        <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
+        <button @click="sendChat()">Send</button>
+      </div></div>
+    </div>
+    <aside class="workspace-pane" id="workspace-pane">
+      <div class="workspace-head">
+        <div class="workspace-kicker">Workspace</div>
+        <h2 id="workspace-title">Structured Results</h2>
+        <div class="workspace-subtitle" id="workspace-subtitle">Ask Arc to present rich results visually when chat alone is not the best surface.</div>
+      </div>
+      <div class="workspace-body">
+        <div class="workspace-root" id="workspace-root">
+          <div class="workspace-empty">No structured results yet. When Arc decides a list, table, or set of cards is clearer than prose, it will appear here.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
 </div>
 
 <!-- ═══ TASKS ═══ -->
@@ -569,7 +648,7 @@ function app(){return{
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
-  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,pendingSyncUsers:new Set(),
+  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,pendingSyncUsers:new Set(),wsState:null,wsRevision:-1,
 
   init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
@@ -618,7 +697,7 @@ function app(){return{
       case'done':this.turnActive=false;this._ht();this._xsl();if(m&&d.full_content){if(!this.cMsg)this._am(m,'agent',d.full_content);else if(!this.cMsg.textContent)this.cMsg.textContent=d.full_content}if(d.interrupted){if(m)this._am(m,'interrupt','⏸ Processing interrupted. Arc stopped the current run. You can give a new instruction now.');this.toast('Interrupted')}this.cMsg=null;break;
       case'error':this.turnActive=false;this._ht();this._xsl();this.cMsg=null;if(m)this._am(m,'system','⚠ '+(d.message||'Error'));break;
       case'command_result':if(m)this._am(m,'agent',d.content||'');break;
-      case'event':if(m)this._he(m,d.event,d.data);
+      case'event':if(d.event==='workspace:update')this._wu(d.data);if(m)this._he(m,d.event,d.data);
         if(this.logLive&&this.pg==='logs'){this.lg.push({timestamp:Date.now()/1000,type:d.event,source:d.data?.source||'system',data:d.data||{}});
           if(this.lg.length>500)this.lg=this.lg.slice(-500);this.$nextTick(()=>{const el=document.getElementById('log-scroll');if(el)el.scrollTop=el.scrollHeight})}break;
       case'notification':this._ht();if(m)this._am(m,'system','🔔 '+(d.job_name||'Task')+': '+d.content);this.toast('🔔 '+(d.job_name||'Task completed'));break;
@@ -659,6 +738,105 @@ function app(){return{
       const tx=document.createElement('span');tx.className='st';tx.textContent=s.step;
       el.appendChild(ic);el.appendChild(tx);ps.appendChild(el)});pp.classList.remove('hid');
     if(done===plan.length&&ls!=='interrupted')setTimeout(()=>pp.classList.add('hid'),5000)},
+  _wu(ed){const p=ed&&ed.payload?ed.payload:null;if(!p)return;
+    const rv=typeof p.revision==='number'?p.revision:0;if(rv<this.wsRevision)return;
+    this.wsRevision=rv;this.wsState=p;this.$nextTick(()=>this._renderWorkspace())},
+  _renderWorkspace(){const root=document.getElementById('workspace-root');const title=document.getElementById('workspace-title');const sub=document.getElementById('workspace-subtitle');
+    if(!root||!title||!sub)return;
+    const p=this.wsState;
+    if(!p||p.mode==='clear'||!Array.isArray(p.blocks)||p.blocks.length===0){
+      title.textContent=(p&&p.title)||'Structured Results';
+      sub.textContent=(p&&p.subtitle)||'No structured results yet. When Arc decides a richer surface is useful, it will appear here.';
+      root.innerHTML='<div class="workspace-empty">No structured results to show right now.</div>';
+      return}
+    title.textContent=p.title||'Structured Results';
+    sub.textContent=p.subtitle||'Structured workspace updated from the current session.';
+    root.innerHTML='';
+    p.blocks.forEach(b=>{const el=this._renderWorkspaceBlock(b);if(el)root.appendChild(el)})},
+  _renderWorkspaceBlock(b){if(!b||!b.type)return null;
+    const wrap=document.createElement('section');wrap.className='workspace-block';
+    if(b.title){const hd=document.createElement('div');hd.className='workspace-block-head';
+      const tt=document.createElement('div');tt.className='workspace-block-title';tt.textContent=b.title;hd.appendChild(tt);
+      wrap.appendChild(hd)}
+    const body=document.createElement('div');body.className='workspace-block-body';wrap.appendChild(body);
+    if(b.type==='metric_strip')this._renderWorkspaceMetrics(body,b.data||{});
+    else if(b.type==='card_collection')this._renderWorkspaceCards(body,b);
+    else if(b.type==='record_table'||b.type==='comparison_table')this._renderWorkspaceTable(body,b.data||{});
+    else if(b.type==='summary_header')this._renderWorkspaceSummary(body,b.data||{});
+    else if(b.type==='detail_panel')this._renderWorkspaceDetail(body,b.data||{});
+    else if(b.type==='chart_block')this._renderWorkspaceChart(body,b.data||{});
+    else body.innerHTML='<div class="workspace-empty">Unsupported block type.</div>';
+    return wrap},
+  _renderWorkspaceSummary(body,data){if(data.summary){const p=document.createElement('div');p.className='workspace-block-sub';p.textContent=data.summary;body.appendChild(p)}
+    if(Array.isArray(data.items)&&data.items.length)this._renderWorkspaceMetrics(body,data)},
+  _renderWorkspaceMetrics(body,data){const items=Array.isArray(data.items)?data.items:[];if(!items.length){body.innerHTML='<div class="workspace-empty">No metrics to display.</div>';return}
+    const grid=document.createElement('div');grid.className='workspace-metrics';
+    items.forEach(it=>{const card=document.createElement('div');card.className='workspace-metric';
+      const l=document.createElement('div');l.className='workspace-metric-label';l.textContent=it.label||'Metric';
+      const v=document.createElement('div');v.className='workspace-metric-value';v.textContent=(it.value||'—')+(it.unit?(' '+it.unit):'');
+      card.appendChild(l);card.appendChild(v);grid.appendChild(card)});body.appendChild(grid)},
+  _workspaceImageSrc(url){if(!url)return '';
+    if(url.startsWith('file://')||url.startsWith('/Users/')||url.startsWith('/private/'))return '/api/local-image?path='+encodeURIComponent(url);
+    return url},
+  _renderWorkspaceCards(body,b){const data=b.data||{};const items=Array.isArray(data.items)?data.items:[];if(!items.length){body.innerHTML='<div class="workspace-empty">No items to display.</div>';return}
+    const cls=(b.layout_hint||'cards_1_col').replace(/[^a-z0-9_]/gi,'');const grid=document.createElement('div');grid.className='workspace-cards '+cls;
+    items.forEach(it=>{const card=document.createElement('article');card.className='workspace-card';
+      if(it.image_url){const media=document.createElement('div');media.className='workspace-card-media';const img=document.createElement('img');img.src=this._workspaceImageSrc(it.image_url);img.alt=it.title||'Card image';img.loading='lazy';img.onerror=function(){media.remove()};media.appendChild(img);card.appendChild(media)}
+      const cbody=document.createElement('div');cbody.className='workspace-card-body';
+      if(it.canonical_index){const idx=document.createElement('div');idx.className='workspace-card-index';idx.textContent='Article '+it.canonical_index;cbody.appendChild(idx)}
+      const title=document.createElement('div');title.className='workspace-card-title';title.textContent=it.title||'Untitled item';cbody.appendChild(title);
+      const metaParts=[it.source,it.merchant,it.published_at].filter(Boolean);if(metaParts.length){const meta=document.createElement('div');meta.className='workspace-card-meta';meta.textContent=metaParts.join(' · ');cbody.appendChild(meta)}
+      if(it.price||it.original_price||it.rating){const price=document.createElement('div');price.className='workspace-card-meta';price.textContent=[it.price,it.original_price&&('was '+it.original_price),it.rating&&('rating '+it.rating)].filter(Boolean).join(' · ');cbody.appendChild(price)}
+      if(it.summary){const sm=document.createElement('div');sm.className='workspace-card-summary';sm.textContent=it.summary;cbody.appendChild(sm)}
+      if(Array.isArray(it.chips)&&it.chips.length){const chips=document.createElement('div');chips.className='workspace-card-chips';it.chips.forEach(ch=>{const el=document.createElement('span');el.className='workspace-chip';el.textContent=ch;chips.appendChild(el)});cbody.appendChild(chips)}
+      card.appendChild(cbody);grid.appendChild(card)});
+    body.appendChild(grid)},
+  _renderWorkspaceDetailRows(parent,rows){rows.forEach(r=>{const row=document.createElement('div');row.className='workspace-detail-row';
+      const l=document.createElement('div');l.className='workspace-detail-label';l.textContent=r.label||r.title||'Field';
+      const v=document.createElement('div');v.className='workspace-detail-value';v.textContent=r.value||r.summary||'—';
+      row.appendChild(l);row.appendChild(v);parent.appendChild(row)})},
+  _renderWorkspaceDetailMedia(parent,mediaItems,title){const items=(Array.isArray(mediaItems)?mediaItems:[]).filter(m=>m&&m.url);
+    if(!items.length)return;
+    const grid=document.createElement('div');grid.className='workspace-detail-media';
+    items.forEach((m,idx)=>{const kind=(m.kind||m.type||'image').toLowerCase();if(kind!=='image')return;
+      const card=document.createElement('div');card.className='workspace-detail-media-item';
+      const img=document.createElement('img');img.src=this._workspaceImageSrc(m.url);img.alt=m.alt||m.title||title||('Detail image '+(idx+1));img.loading='lazy';img.onerror=function(){card.remove()};
+      card.appendChild(img);
+      const captionText=m.caption||m.title||m.label||'';
+      if(captionText){const caption=document.createElement('div');caption.className='workspace-detail-media-caption';caption.textContent=captionText;card.appendChild(caption)}
+      grid.appendChild(card)});
+    if(grid.childElementCount)parent.appendChild(grid)},
+  _isWorkspaceImageValue(val){if(typeof val!=='string')return false;const s=val.trim().toLowerCase();if(!s)return false;
+    if(s.startsWith('file://')||s.startsWith('/users/')||s.startsWith('/private/'))return /\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?|#|$)/.test(s);
+    return /^https?:\/\/.+\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?|#|$)/.test(s)},
+  _renderWorkspaceTable(body,data){const cols=Array.isArray(data.columns)?data.columns:[];const rows=Array.isArray(data.rows)?data.rows:[];if(!rows.length){body.innerHTML='<div class="workspace-empty">No rows returned.</div>';return}
+    const wrap=document.createElement('div');wrap.className='workspace-table-wrap';const table=document.createElement('table');table.className='workspace-table';
+    if(cols.length){const thead=document.createElement('thead');const tr=document.createElement('tr');cols.forEach(c=>{const th=document.createElement('th');th.textContent=c.label||c.key||'';tr.appendChild(th)});thead.appendChild(tr);table.appendChild(thead)}
+    const tbody=document.createElement('tbody');rows.forEach(r=>{const tr=document.createElement('tr');(cols.length?cols:Object.keys(r).map(k=>({key:k,label:k}))).forEach(c=>{const td=document.createElement('td');const val=r[c.key];
+        if(this._isWorkspaceImageValue(val)){const media=document.createElement('div');media.className='workspace-table-image';
+          const img=document.createElement('img');img.src=this._workspaceImageSrc(val);img.alt=c.label||c.key||'Image';img.loading='lazy';img.onerror=function(){media.remove()};
+          media.appendChild(img);
+          const path=document.createElement('div');path.className='workspace-table-image-path';path.textContent=String(val);media.appendChild(path);
+          td.appendChild(media)}
+        else td.textContent=(val===undefined||val===null||val==='')?'—':String(val);
+        tr.appendChild(td)});tbody.appendChild(tr)});table.appendChild(tbody);wrap.appendChild(table);body.appendChild(wrap)},
+  _renderWorkspaceDetail(body,data){const fields=Array.isArray(data.fields)?data.fields:[];const sections=Array.isArray(data.sections)?data.sections:[];const topMedia=Array.isArray(data.media)?data.media:[];
+    if(!fields.length&&!sections.length&&!topMedia.length&&!data.title&&!data.summary){body.innerHTML='<div class="workspace-empty">No detail fields to display.</div>';return}
+    const wrap=document.createElement('div');wrap.className='workspace-detail';if(data.title){const t=document.createElement('div');t.className='workspace-block-title';t.textContent=data.title;wrap.appendChild(t)}
+    if(data.summary){const sm=document.createElement('div');sm.className='workspace-detail-summary';sm.textContent=data.summary;wrap.appendChild(sm)}
+    this._renderWorkspaceDetailMedia(wrap,data.media,data.title);
+    this._renderWorkspaceDetailRows(wrap,fields);
+    sections.forEach(s=>{const sec=document.createElement('section');sec.className='workspace-detail-section';
+      const st=s.heading||s.title||s.label||'';if(st){const hd=document.createElement('div');hd.className='workspace-detail-section-title';hd.textContent=st;sec.appendChild(hd)}
+      if(s.summary||s.value){const sv=document.createElement('div');sv.className='workspace-detail-summary';sv.textContent=s.summary||s.value;sec.appendChild(sv)}
+      this._renderWorkspaceDetailMedia(sec,Array.isArray(s.media)?s.media:[],st);
+      if(Array.isArray(s.fields)&&s.fields.length)this._renderWorkspaceDetailRows(sec,s.fields);
+      if(Array.isArray(s.items)&&s.items.length){const list=document.createElement('ul');list.className='workspace-detail-list';s.items.forEach(item=>{const li=document.createElement('li');li.textContent=String(item);list.appendChild(li)});sec.appendChild(list)}
+      if(sec.childElementCount)wrap.appendChild(sec)});
+    body.appendChild(wrap)},
+  _renderWorkspaceChart(body,data){const ph=document.createElement('div');ph.className='workspace-chart-placeholder';
+    ph.textContent='Chart preview: '+(data.chart_type||'chart')+'. Native chart rendering can be expanded here without changing the workspace protocol.';
+    body.appendChild(ph)},
 
   sendChat(){const e=document.getElementById('msg-input');if(!e)return;const t=e.value.trim();if(!t||!this.ws||this.ws.readyState!==1)return;if(this.turnActive){this.toast('Stop the current turn first');return;}
     const m=document.getElementById('messages');this._am(m,'user',t);this.ws.send(JSON.stringify({type:'message',content:t}));e.value='';m.scrollTop=m.scrollHeight},

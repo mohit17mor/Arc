@@ -120,6 +120,32 @@ def test_dashboard_template_supports_interrupted_plan_state():
     assert "Interrupted plan" in template
 
 
+def test_dashboard_template_includes_workspace_surface():
+    """Chat page should expose a dedicated workspace pane and renderer hooks."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "workspace-pane" in template
+    assert "workspace-root" in template
+    assert "workspace:update" in template
+    assert "_wu(" in template or "_renderWorkspace" in template
+
+
+def test_dashboard_template_renders_detail_panel_media():
+    """Detail panels should render top-level and section-level media, including local images."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "_renderWorkspaceDetailMedia" in template
+    assert "Array.isArray(data.media)" in template
+    assert "Array.isArray(s.media)" in template
+    assert "this._workspaceImageSrc" in template
+
+
+def test_dashboard_template_renders_image_thumbnails_in_tables():
+    """Tables should render image URLs as thumbnails instead of raw text only."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "_isWorkspaceImageValue" in template
+    assert "workspace-table-image" in template
+    assert "this._workspaceImageSrc(val)" in template
+
+
 def test_dashboard_template_includes_mcp_json_editor():
     """Skills & MCP page should expose an MCP JSON editor with validation/save controls."""
     template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
@@ -181,6 +207,7 @@ async def gateway_app(tmp_path):
     app.router.add_get("/api/mcp/config", gw._api_get_mcp_config)
     app.router.add_put("/api/mcp/config", gw._api_put_mcp_config)
     app.router.add_get("/api/logs", gw._api_get_logs)
+    app.router.add_get("/api/local-image", gw._api_local_image)
     gw._running = True
     gw._start_time = time.time()
 
@@ -227,6 +254,28 @@ async def test_webchat_page(client):
     assert "<html" in text
 
 
+async def test_local_image_endpoint_serves_image_file(client, tmp_path):
+    """GET /api/local-image serves local image bytes for workspace cards."""
+    c, gw, store = client
+    image_path = tmp_path / "sample.jpg"
+    image_path.write_bytes(b"fake-jpeg-bytes")
+
+    resp = await c.get("/api/local-image", params={"path": str(image_path)})
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "image/jpeg"
+    assert await resp.read() == b"fake-jpeg-bytes"
+
+
+async def test_local_image_endpoint_rejects_non_image_files(client, tmp_path):
+    """GET /api/local-image only serves image-like file types."""
+    c, gw, store = client
+    text_path = tmp_path / "note.txt"
+    text_path.write_text("hello", encoding="utf-8")
+
+    resp = await c.get("/api/local-image", params={"path": str(text_path)})
+    assert resp.status == 400
+
+
 async def test_websocket_connect(client):
     """WebSocket connects and receives welcome message."""
     c, gw, store = client
@@ -238,6 +287,31 @@ async def test_websocket_connect(client):
     # After disconnect
     await asyncio.sleep(0.05)
     assert gw.client_count == 0
+
+
+async def test_workspace_event_replayed_to_new_websocket_clients(client):
+    """Latest workspace state should be replayed when a fresh client connects."""
+    c, gw, store = client
+    payload = {
+        "workspace_id": "main",
+        "revision": 9,
+        "mode": "replace",
+        "intent": "news_results",
+        "title": "Latest AI News",
+        "layout": "stack",
+        "blocks": [],
+    }
+
+    await gw.broadcast_event("workspace:update", {"payload": payload, "source": "main"})
+
+    async with c.ws_connect("/ws") as ws:
+        connected = await ws.receive_json()
+        assert connected["type"] == "connected"
+
+        replay = await ws.receive_json()
+        assert replay["type"] == "event"
+        assert replay["event"] == "workspace:update"
+        assert replay["data"]["payload"]["title"] == "Latest AI News"
 
 
 async def test_websocket_chat(client):

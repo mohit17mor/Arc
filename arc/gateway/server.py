@@ -21,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Where the WebChat template lives
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
+_LOCAL_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}
 
 
 class GatewayServer(Platform):
@@ -101,6 +104,9 @@ class GatewayServer(Platform):
         # Event ring buffer — recent system events for the Logs tab
         self._event_log: list[dict[str, Any]] = []
         self._max_events: int = 500
+
+        # Latest workspace event for replay on fresh chat connections
+        self._latest_workspace_event: dict[str, Any] | None = None
 
     @property
     def name(self) -> str:
@@ -236,6 +242,7 @@ class GatewayServer(Platform):
         app.router.add_get("/api/mcp/config", self._api_get_mcp_config)
         app.router.add_put("/api/mcp/config", self._api_put_mcp_config)
         app.router.add_get("/api/logs", self._api_get_logs)
+        app.router.add_get("/api/local-image", self._api_local_image)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -380,6 +387,9 @@ class GatewayServer(Platform):
                 "type": "history",
                 "messages": self._history,
             })
+
+        if self._latest_workspace_event:
+            await ws.send_json(self._latest_workspace_event)
 
         try:
             async for msg in ws:
@@ -589,6 +599,8 @@ class GatewayServer(Platform):
         thinking status, worker updates, etc.
         """
         message = {"type": "event", "event": event_type, "data": data}
+        if event_type == "workspace:update":
+            self._latest_workspace_event = message
         for ws in list(self._clients):
             if not ws.closed:
                 try:
@@ -1309,3 +1321,30 @@ class GatewayServer(Platform):
         if source:
             events = [e for e in events if source in e.get("source", "")]
         return web.json_response(events[-limit:])
+
+    async def _api_local_image(self, request: web.Request) -> web.StreamResponse:
+        """Serve a local image file for workspace cards via same-origin HTTP."""
+        raw_path = (request.query.get("path") or "").strip()
+        if not raw_path:
+            return web.json_response({"error": "Missing path"}, status=400)
+
+        if raw_path.startswith("file://"):
+            parsed = urllib.parse.urlparse(raw_path)
+            path_text = urllib.parse.unquote(parsed.path or "")
+        else:
+            path_text = raw_path
+
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            return web.json_response({"error": "Path must be absolute"}, status=400)
+        if path.suffix.lower() not in _LOCAL_IMAGE_SUFFIXES:
+            return web.json_response({"error": "Unsupported image type"}, status=400)
+        if not path.exists() or not path.is_file():
+            return web.json_response({"error": "Image not found"}, status=404)
+
+        content_type, _ = mimetypes.guess_type(str(path))
+        if not content_type or not content_type.startswith("image/"):
+            return web.json_response({"error": "Unsupported image type"}, status=400)
+
+        headers = {"Cache-Control": "no-store"}
+        return web.FileResponse(path, headers=headers)
