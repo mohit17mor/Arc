@@ -134,6 +134,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 /* Chat */
 .chat-shell{display:flex;flex:1;min-height:0}
 .cw{display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden}
+body.ws-resizing{cursor:col-resize;user-select:none}
 .ms{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
 .ms::-webkit-scrollbar{width:5px}.ms::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 .mg{max-width:78%;padding:10px 14px;border-radius:var(--r);line-height:1.55;font-size:14px;
@@ -182,6 +183,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 
 /* Workspace */
 .workspace-pane{width:min(42vw,540px);min-width:320px;display:flex;flex-direction:column;border-left:1px solid var(--border);background:var(--surface)}
+.workspace-resizer{width:10px;cursor:col-resize;display:flex;align-items:center;justify-content:center;background:transparent;flex-shrink:0;position:relative}
+.workspace-resizer:hover .workspace-resizer-handle,.workspace-resizer:focus-visible .workspace-resizer-handle{background:rgba(99,102,241,.45)}
+.workspace-resizer-handle{width:4px;height:56px;border-radius:999px;background:rgba(255,255,255,.08);transition:background .15s}
 .workspace-head{padding:18px 18px 14px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(99,102,241,.08),transparent)}
 .workspace-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);margin-bottom:6px}
 .workspace-head h2{font-size:18px;line-height:1.2}
@@ -219,6 +223,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .workspace-table-image{display:flex;flex-direction:column;gap:8px}
 .workspace-table-image img{width:100%;max-width:180px;height:120px;object-fit:cover;display:block;border-radius:10px;border:1px solid var(--border);background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(6,182,212,.12))}
 .workspace-table-image-path{font-size:11px;color:var(--dim);word-break:break-all}
+.workspace-chart{display:flex;flex-direction:column;gap:14px}
+.workspace-chart-empty{border:1px dashed var(--border);border-radius:12px;padding:18px;color:var(--dim);font-size:13px;line-height:1.6;background:rgba(255,255,255,.01)}
+.workspace-chart-svg{width:100%;height:auto;display:block}
+.workspace-chart-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+.workspace-chart-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(180px,.7fr);gap:16px;align-items:center}
+.workspace-chart-legend{display:flex;flex-direction:column;gap:8px}
+.workspace-chart-legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text)}
+.workspace-chart-swatch{width:10px;height:10px;border-radius:999px;flex-shrink:0}
+.workspace-chart-legend-label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.workspace-chart-legend-value{font-variant-numeric:tabular-nums;color:var(--dim)}
 .workspace-detail{display:flex;flex-direction:column;gap:10px}
 .workspace-detail-summary{font-size:13px;line-height:1.6;color:var(--dim)}
 .workspace-detail-section{display:flex;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06)}
@@ -235,8 +249,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .workspace-chart-placeholder{border:1px dashed var(--border);border-radius:12px;padding:20px;color:var(--dim);font-size:13px;text-align:center;background:rgba(255,255,255,.01)}
 @media (max-width: 1100px){
   .chat-shell{flex-direction:column}
+  .workspace-resizer{display:none}
   .workspace-pane{width:100%;min-width:0;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
   .workspace-cards.cards_3_col{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .workspace-chart-layout{grid-template-columns:1fr}
 }
 @media (max-width: 720px){
   .workspace-cards.cards_2_col,.workspace-cards.cards_3_col{grid-template-columns:1fr}
@@ -324,21 +340,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <!-- ═══ CHAT ═══ -->
 <div :class="{show:pg==='chat'}" class="pg">
   <div class="tp"><h1>Chat</h1><button class="btn btn-r btn-sm" x-show="turnActive" @click="iT()">Stop</button></div>
-  <div class="chat-shell">
-    <div class="cw">
-      <div class="ms" id="messages"></div>
-      <div id="plan-panel" class="pnl hid" :class="{min:planMin}"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pm" id="plan-min" @click="planMin=!planMin" x-text="planMin?'+':'—'"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
-      <div class="ia"><div class="ir" style="position:relative">
+	  <div class="chat-shell">
+	    <div class="cw">
+	      <div class="ms" id="messages"></div>
+	      <div id="plan-panel" class="pnl hid" :class="{min:planMin}"><div class="pnl-h"><h3>📋 Plan</h3><span class="pp" id="plan-progress"></span><span class="pm" id="plan-min" @click="planMin=!planMin" x-text="planMin?'+':'—'"></span><span class="pc" id="plan-close">×</span></div><div class="pnl-s" id="plan-steps"></div></div>
+	      <div class="ia"><div class="ir" style="position:relative">
         <div class="cm" id="cmd-menu"></div>
-        <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
-        <button @click="sendChat()">Send</button>
-      </div></div>
-    </div>
-    <aside class="workspace-pane" id="workspace-pane">
-      <div class="workspace-head">
-        <div class="workspace-kicker">Workspace</div>
-        <h2 id="workspace-title">Structured Results</h2>
-        <div class="workspace-subtitle" id="workspace-subtitle">Ask Arc to present rich results visually when chat alone is not the best surface.</div>
+	        <textarea id="msg-input" placeholder="Message Arc…" rows="1"></textarea>
+	        <button @click="sendChat()">Send</button>
+	      </div></div>
+	    </div>
+	    <div class="workspace-resizer" @mousedown="wsRD($event)" @dblclick="wsRR()" title="Drag to resize workspace"><div class="workspace-resizer-handle"></div></div>
+	    <aside class="workspace-pane" id="workspace-pane" :style="wspStyle()">
+	      <div class="workspace-head">
+	        <div class="workspace-kicker">Workspace</div>
+	        <h2 id="workspace-title">Structured Results</h2>
+	        <div class="workspace-subtitle" id="workspace-subtitle">Ask Arc to present rich results visually when chat alone is not the best surface.</div>
       </div>
       <div class="workspace-body">
         <div class="workspace-root" id="workspace-root">
@@ -648,9 +665,10 @@ function app(){return{
   na:{name:'',role:'',personality:'',llm_provider:'',llm_model:'',llm_base_url:'',llm_api_key:'',max_concurrent:'1',system_prompt:''},
   aSt:['queued','in_progress','in_review','awaiting_human','blocked','done','failed'],
   tC:[{key:'queued',label:'Queued'},{key:'in_progress',label:'In Progress'},{key:'in_review',label:'In Review'},{key:'needs_action',label:'Needs Action'},{key:'done',label:'Done'}],
-  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,pendingSyncUsers:new Set(),wsState:null,wsRevision:-1,
+  cMsg:null,thEl:null,hHist:false,turnActive:false,planMin:false,pendingSyncUsers:new Set(),wsState:null,wsRevision:-1,wsPaneW:null,
 
-  init(){this.cWs();this.lA();this.lH();this.lP();setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
+  init(){const saved=parseInt(localStorage.getItem('arc.workspace.width')||'',10);if(Number.isFinite(saved)&&saved>0)this.wsPaneW=saved;
+    this.cWs();this.lA();this.lH();this.lP();this.$nextTick(()=>this._rwsw());window.addEventListener('resize',()=>this._rwsw());setInterval(()=>{if(this.pg==='tasks')this.lT();if(this.pg==='home')this.lH();if(this.pg==='logs'&&this.logLive)this.lLg()},5000);
     const pc=document.getElementById('plan-close');if(pc)pc.addEventListener('click',()=>{const pp=document.getElementById('plan-panel');if(pp)pp.classList.add('hid')});
     // Slash command autocomplete
     const CMDS=[{n:'/help',d:'Show available commands'},{n:'/skills',d:'List skills and tools'},{n:'/cost',d:'Current context size'},{n:'/memory',d:'Core facts (long-term memory)'},{n:'/memory episodic',d:'Recent episodic memories'},{n:'/jobs',d:'List scheduled jobs'},{n:'/workflow',d:'List or run workflows'},{n:'/mcp',d:'MCP server status'},{n:'/clear',d:'Clear conversation'},{n:'/status',d:'Gateway status'}];
@@ -738,6 +756,16 @@ function app(){return{
       const tx=document.createElement('span');tx.className='st';tx.textContent=s.step;
       el.appendChild(ic);el.appendChild(tx);ps.appendChild(el)});pp.classList.remove('hid');
     if(done===plan.length&&ls!=='interrupted')setTimeout(()=>pp.classList.add('hid'),5000)},
+  _wsmx(shell){return Math.max(360,Math.min(960,(shell?.clientWidth||960)-320))},
+  _rwsw(){if(window.innerWidth<=1100)return;const shell=document.querySelector('.chat-shell');if(!shell)return;
+    const max=this._wsmx(shell);if(!this.wsPaneW)this.wsPaneW=Math.min(540,max);else if(this.wsPaneW>max)this.wsPaneW=max},
+  wspStyle(){return (window.innerWidth<=1100||!this.wsPaneW)?'':'width:'+this.wsPaneW+'px;min-width:320px'},
+  wsRR(){localStorage.removeItem('arc.workspace.width');this.wsPaneW=null;this.$nextTick(()=>this._rwsw())},
+  wsRD(ev){if(window.innerWidth<=1100)return;ev.preventDefault();const shell=document.querySelector('.chat-shell');const pane=document.getElementById('workspace-pane');if(!shell||!pane)return;
+    const startX=ev.clientX;const startW=pane.getBoundingClientRect().width;document.body.classList.add('ws-resizing');
+    const move=e=>{const max=this._wsmx(shell);this.wsPaneW=Math.max(320,Math.min(max,startW+(startX-e.clientX)))};
+    const up=()=>{document.body.classList.remove('ws-resizing');window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up);if(this.wsPaneW)localStorage.setItem('arc.workspace.width',String(Math.round(this.wsPaneW)))};
+    window.addEventListener('mousemove',move);window.addEventListener('mouseup',up)},
   _wu(ed){const p=ed&&ed.payload?ed.payload:null;if(!p)return;
     const rv=typeof p.revision==='number'?p.revision:0;if(rv<this.wsRevision)return;
     this.wsRevision=rv;this.wsState=p;this.$nextTick(()=>this._renderWorkspace())},
@@ -806,6 +834,100 @@ function app(){return{
       if(captionText){const caption=document.createElement('div');caption.className='workspace-detail-media-caption';caption.textContent=captionText;card.appendChild(caption)}
       grid.appendChild(card)});
     if(grid.childElementCount)parent.appendChild(grid)},
+  _workspaceSvg(tag){return document.createElementNS('http://www.w3.org/2000/svg',tag)},
+  _workspaceChartRenderer(chartType){const kind=(chartType||'histogram').toLowerCase();
+    const renderers={histogram:this._renderWorkspaceHistogram.bind(this),bar:this._renderWorkspaceHistogram.bind(this),column:this._renderWorkspaceHistogram.bind(this),line:this._renderWorkspaceLine.bind(this),pie:this._renderWorkspacePie.bind(this),donut:this._renderWorkspacePie.bind(this)};
+    return renderers[kind]||null},
+  _workspaceChartMetrics(data){const metrics=Array.isArray(data.metrics)?data.metrics.filter(m=>m&&typeof m==='object'&&m.key):[];
+    if(metrics.length)return metrics;
+    const key=data.y_key||data.value_key;if(key)return [{key:key,label:key.replace(/_/g,' ')}];
+    return []},
+  _workspaceChartNumber(val){if(typeof val==='number'&&Number.isFinite(val))return val;
+    if(typeof val!=='string')return null;const cleaned=val.replace(/[,₹$%\s]/g,'');if(!cleaned)return null;const num=Number(cleaned);return Number.isFinite(num)?num:null},
+  _workspaceChartPoints(data){const series=Array.isArray(data.series)?data.series:[];const labelKeys=[data.label_key,data.x_key,'label','name','title','x','bucket','category','segment','month','day'].filter(Boolean);
+    const metricKeys=this._workspaceChartMetrics(data).map(m=>m.key).filter(Boolean);
+    const valueKeys=[data.value_key,data.y_key,...metricKeys,'value','count','amount','total','share','y','size'].filter(Boolean);const points=[];
+    series.forEach((row,idx)=>{if(!row||typeof row!=='object'||Array.isArray(row))return;let label='';
+      for(const key of labelKeys){if(row[key]!==undefined&&row[key]!==null&&String(row[key]).trim()){label=String(row[key]).trim();break}}
+      if(!label)label='Item '+(idx+1);let value=null;
+      for(const key of valueKeys){const num=this._workspaceChartNumber(row[key]);if(num!==null){value=num;break}}
+      if(value===null)return;points.push({label:label,value:value,raw:row})});
+    return points},
+  _workspaceChartColor(idx,colors){const palette=Array.isArray(colors)&&colors.length?colors:['#6366f1','#06b6d4','#f97316','#22c55e','#eab308','#ec4899','#8b5cf6','#14b8a6'];
+    return palette[idx%palette.length]},
+  _renderWorkspaceHistogram(body,data){const rows=Array.isArray(data.series)?data.series.filter(r=>r&&typeof r==='object'&&!Array.isArray(r)):[];const metrics=this._workspaceChartMetrics(data);
+    if(metrics.length>1&&rows.length){const groups=rows.map((row,idx)=>{let label='';for(const key of [data.x_key,data.label_key,'label','name','title','x','bucket','category','segment','month','day'].filter(Boolean)){if(row[key]!==undefined&&row[key]!==null&&String(row[key]).trim()){label=String(row[key]).trim();break}}if(!label)label='Item '+(idx+1);
+        const values=metrics.map(metric=>({key:metric.key,label:metric.label||metric.key,value:this._workspaceChartNumber(row[metric.key])||0})).filter(v=>v.value!==null);
+        return {label:label,values:values}}).filter(g=>g.values.length);
+      if(!groups.length){const empty=document.createElement('div');empty.className='workspace-chart-empty';empty.textContent='No histogram data available.';body.appendChild(empty);return}
+      const wrap=document.createElement('div');wrap.className='workspace-chart';const meta=document.createElement('div');meta.className='workspace-chart-meta';
+      const count=document.createElement('div');count.textContent=groups.length+' bucket'+(groups.length===1?'':'s');meta.appendChild(count);
+      const peak=document.createElement('div');peak.textContent='Peak '+Math.max(...groups.flatMap(g=>g.values.map(v=>v.value)),1);meta.appendChild(peak);wrap.appendChild(meta);
+      const legend=document.createElement('div');legend.className='workspace-chart-legend';metrics.forEach((metric,idx)=>{const row=document.createElement('div');row.className='workspace-chart-legend-item';
+        const sw=document.createElement('span');sw.className='workspace-chart-swatch';sw.style.background=this._workspaceChartColor(idx,data.colors);row.appendChild(sw);
+        const label=document.createElement('span');label.className='workspace-chart-legend-label';label.textContent=metric.label||metric.key;row.appendChild(label);legend.appendChild(row)});wrap.appendChild(legend);
+      const svg=this._workspaceSvg('svg');svg.setAttribute('viewBox','0 0 640 320');svg.setAttribute('preserveAspectRatio','xMidYMid meet');svg.classList.add('workspace-chart-svg');
+      const left=44,right=18,top=18,bottom=64,width=640,height=320,plotW=width-left-right,plotH=height-top-bottom,max=Math.max(...groups.flatMap(g=>g.values.map(v=>v.value)),1),ticks=4;
+      for(let i=0;i<=ticks;i++){const y=top+(plotH-(plotH/ticks)*i);const line=this._workspaceSvg('line');line.setAttribute('x1',String(left));line.setAttribute('x2',String(width-right));line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('stroke','rgba(255,255,255,.08)');svg.appendChild(line);
+        const label=this._workspaceSvg('text');label.setAttribute('x',String(left-8));label.setAttribute('y',String(y+4));label.setAttribute('text-anchor','end');label.setAttribute('fill','rgba(255,255,255,.55)');label.setAttribute('font-size','11');label.textContent=String(Math.round((max/ticks)*i));svg.appendChild(label)}
+      const slot=plotW/groups.length,groupW=Math.max(20,slot*0.74),gap=Math.max(4,groupW*0.08),barW=Math.max(8,(groupW-(gap*(metrics.length-1)))/metrics.length);
+      groups.forEach((group,groupIdx)=>{const groupX=left+(slot*groupIdx)+((slot-groupW)/2);
+        group.values.forEach((metric,metricIdx)=>{const x=groupX+(metricIdx*(barW+gap)),barH=(metric.value/max)*plotH,y=top+(plotH-barH);const rect=this._workspaceSvg('rect');
+          rect.setAttribute('x',String(x));rect.setAttribute('y',String(y));rect.setAttribute('width',String(barW));rect.setAttribute('height',String(Math.max(barH,2)));rect.setAttribute('rx','6');rect.setAttribute('fill',this._workspaceChartColor(metricIdx,data.colors));svg.appendChild(rect)});
+        const label=this._workspaceSvg('text');label.setAttribute('x',String(groupX+(groupW/2)));label.setAttribute('y',String(height-24));label.setAttribute('text-anchor','middle');label.setAttribute('fill','rgba(255,255,255,.72)');label.setAttribute('font-size','11');label.textContent=group.label.length>14?(group.label.slice(0,13)+'…'):group.label;svg.appendChild(label)});
+      wrap.appendChild(svg);body.appendChild(wrap);return}
+    const points=this._workspaceChartPoints(data);if(!points.length){const empty=document.createElement('div');empty.className='workspace-chart-empty';empty.textContent='No histogram data available.';body.appendChild(empty);return}
+    const wrap=document.createElement('div');wrap.className='workspace-chart';const meta=document.createElement('div');meta.className='workspace-chart-meta';
+    const count=document.createElement('div');count.textContent=points.length+' bucket'+(points.length===1?'':'s');meta.appendChild(count);
+    const peak=document.createElement('div');peak.textContent='Peak '+Math.max(...points.map(p=>p.value));meta.appendChild(peak);wrap.appendChild(meta);
+    const svg=this._workspaceSvg('svg');svg.setAttribute('viewBox','0 0 640 320');svg.setAttribute('preserveAspectRatio','xMidYMid meet');svg.classList.add('workspace-chart-svg');
+    const left=44,right=18,top=18,bottom=64,width=640,height=320,plotW=width-left-right,plotH=height-top-bottom,max=Math.max(...points.map(p=>p.value),1),ticks=4;
+    for(let i=0;i<=ticks;i++){const y=top+(plotH-(plotH/ticks)*i);const line=this._workspaceSvg('line');line.setAttribute('x1',String(left));line.setAttribute('x2',String(width-right));line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('stroke','rgba(255,255,255,.08)');svg.appendChild(line);
+      const label=this._workspaceSvg('text');label.setAttribute('x',String(left-8));label.setAttribute('y',String(y+4));label.setAttribute('text-anchor','end');label.setAttribute('fill','rgba(255,255,255,.55)');label.setAttribute('font-size','11');label.textContent=String(Math.round((max/ticks)*i));svg.appendChild(label)}
+    const slot=plotW/points.length,barW=Math.max(12,slot*0.62);
+    points.forEach((point,idx)=>{const x=left+(slot*idx)+((slot-barW)/2),barH=(point.value/max)*plotH,y=top+(plotH-barH);const rect=this._workspaceSvg('rect');
+      rect.setAttribute('x',String(x));rect.setAttribute('y',String(y));rect.setAttribute('width',String(barW));rect.setAttribute('height',String(Math.max(barH,2)));rect.setAttribute('rx','8');rect.setAttribute('fill',this._workspaceChartColor(idx,data.colors));svg.appendChild(rect);
+      const value=this._workspaceSvg('text');value.setAttribute('x',String(x+(barW/2)));value.setAttribute('y',String(Math.max(y-6,top+10)));value.setAttribute('text-anchor','middle');value.setAttribute('fill','rgba(255,255,255,.78)');value.setAttribute('font-size','11');value.textContent=String(point.value);svg.appendChild(value);
+      const label=this._workspaceSvg('text');label.setAttribute('x',String(x+(barW/2)));label.setAttribute('y',String(height-24));label.setAttribute('text-anchor','middle');label.setAttribute('fill','rgba(255,255,255,.72)');label.setAttribute('font-size','11');label.textContent=point.label.length>14?(point.label.slice(0,13)+'…'):point.label;svg.appendChild(label)});
+    wrap.appendChild(svg);body.appendChild(wrap)},
+  _renderWorkspaceLine(body,data){const rows=Array.isArray(data.series)?data.series.filter(r=>r&&typeof r==='object'&&!Array.isArray(r)):[];const metrics=this._workspaceChartMetrics(data);
+    if(!rows.length||!metrics.length){const empty=document.createElement('div');empty.className='workspace-chart-empty';empty.textContent='No line chart data available.';body.appendChild(empty);return}
+    const groups=rows.map((row,idx)=>{let label='';for(const key of [data.x_key,data.label_key,'label','name','title','x','bucket','category','segment','month','day'].filter(Boolean)){if(row[key]!==undefined&&row[key]!==null&&String(row[key]).trim()){label=String(row[key]).trim();break}}if(!label)label='Item '+(idx+1);
+      const values=metrics.map(metric=>({key:metric.key,label:metric.label||metric.key,value:this._workspaceChartNumber(row[metric.key])})).filter(v=>v.value!==null);
+      return {label:label,values:values}}).filter(g=>g.values.length);
+    if(!groups.length){const empty=document.createElement('div');empty.className='workspace-chart-empty';empty.textContent='No line chart data available.';body.appendChild(empty);return}
+    const wrap=document.createElement('div');wrap.className='workspace-chart';const meta=document.createElement('div');meta.className='workspace-chart-meta';
+    const count=document.createElement('div');count.textContent=groups.length+' point'+(groups.length===1?'':'s');meta.appendChild(count);
+    const peak=document.createElement('div');peak.textContent='Peak '+Math.max(...groups.flatMap(g=>g.values.map(v=>v.value)),1);meta.appendChild(peak);wrap.appendChild(meta);
+    const legend=document.createElement('div');legend.className='workspace-chart-legend';metrics.forEach((metric,idx)=>{const row=document.createElement('div');row.className='workspace-chart-legend-item';
+      const sw=document.createElement('span');sw.className='workspace-chart-swatch';sw.style.background=this._workspaceChartColor(idx,data.colors);row.appendChild(sw);
+      const label=document.createElement('span');label.className='workspace-chart-legend-label';label.textContent=metric.label||metric.key;row.appendChild(label);legend.appendChild(row)});wrap.appendChild(legend);
+    const svg=this._workspaceSvg('svg');svg.setAttribute('viewBox','0 0 640 320');svg.setAttribute('preserveAspectRatio','xMidYMid meet');svg.classList.add('workspace-chart-svg');
+    const left=44,right=18,top=18,bottom=64,width=640,height=320,plotW=width-left-right,plotH=height-top-bottom,max=Math.max(...groups.flatMap(g=>g.values.map(v=>v.value)),1),ticks=4;
+    for(let i=0;i<=ticks;i++){const y=top+(plotH-(plotH/ticks)*i);const line=this._workspaceSvg('line');line.setAttribute('x1',String(left));line.setAttribute('x2',String(width-right));line.setAttribute('y1',String(y));line.setAttribute('y2',String(y));line.setAttribute('stroke','rgba(255,255,255,.08)');svg.appendChild(line);
+      const label=this._workspaceSvg('text');label.setAttribute('x',String(left-8));label.setAttribute('y',String(y+4));label.setAttribute('text-anchor','end');label.setAttribute('fill','rgba(255,255,255,.55)');label.setAttribute('font-size','11');label.textContent=String(Math.round((max/ticks)*i));svg.appendChild(label)}
+    const step=groups.length>1?plotW/(groups.length-1):0;
+    metrics.forEach((metric,metricIdx)=>{const pts=[];groups.forEach((group,idx)=>{const found=group.values.find(v=>v.key===metric.key);if(!found)return;const x=left+(step*idx),y=top+(plotH-((found.value/max)*plotH));pts.push({x:x,y:y,value:found.value})});
+      if(!pts.length)return;const poly=this._workspaceSvg('polyline');poly.setAttribute('fill','none');poly.setAttribute('stroke',this._workspaceChartColor(metricIdx,data.colors));poly.setAttribute('stroke-width','3');poly.setAttribute('stroke-linecap','round');poly.setAttribute('stroke-linejoin','round');poly.setAttribute('points',pts.map(p=>p.x+','+p.y).join(' '));svg.appendChild(poly);
+      pts.forEach(p=>{const dot=this._workspaceSvg('circle');dot.setAttribute('cx',String(p.x));dot.setAttribute('cy',String(p.y));dot.setAttribute('r','4');dot.setAttribute('fill',this._workspaceChartColor(metricIdx,data.colors));svg.appendChild(dot)})});
+    groups.forEach((group,idx)=>{const x=left+(step*idx);
+      const label=this._workspaceSvg('text');label.setAttribute('x',String(x));label.setAttribute('y',String(height-24));label.setAttribute('text-anchor','middle');label.setAttribute('fill','rgba(255,255,255,.72)');label.setAttribute('font-size','11');label.textContent=group.label.length>14?(group.label.slice(0,13)+'…'):group.label;svg.appendChild(label)});
+    wrap.appendChild(svg);body.appendChild(wrap)},
+  _renderWorkspacePie(body,data){const points=this._workspaceChartPoints(data).filter(p=>p.value>0);if(!points.length){const empty=document.createElement('div');empty.className='workspace-chart-empty';empty.textContent='No pie chart data available.';body.appendChild(empty);return}
+    const total=points.reduce((sum,p)=>sum+p.value,0);const wrap=document.createElement('div');wrap.className='workspace-chart';const layout=document.createElement('div');layout.className='workspace-chart-layout';
+    const svg=this._workspaceSvg('svg');svg.setAttribute('viewBox','0 0 260 240');svg.setAttribute('preserveAspectRatio','xMidYMid meet');svg.classList.add('workspace-chart-svg');
+    const cx=110,cy=120,r=74,stroke=38,circ=2*Math.PI*r,track=this._workspaceSvg('circle');track.setAttribute('cx',String(cx));track.setAttribute('cy',String(cy));track.setAttribute('r',String(r));track.setAttribute('fill','none');track.setAttribute('stroke','rgba(255,255,255,.08)');track.setAttribute('stroke-width',String(stroke));svg.appendChild(track);
+    let offset=0;points.forEach((point,idx)=>{const arc=this._workspaceSvg('circle');const len=(point.value/total)*circ;arc.setAttribute('cx',String(cx));arc.setAttribute('cy',String(cy));arc.setAttribute('r',String(r));arc.setAttribute('fill','none');arc.setAttribute('stroke',this._workspaceChartColor(idx,data.colors));arc.setAttribute('stroke-width',String(stroke));arc.setAttribute('stroke-dasharray',String(len)+' '+String(Math.max(circ-len,0)));arc.setAttribute('stroke-dashoffset',String(-offset));arc.setAttribute('transform','rotate(-90 '+cx+' '+cy+')');svg.appendChild(arc);offset+=len});
+    const totalValue=this._workspaceSvg('text');totalValue.setAttribute('x',String(cx));totalValue.setAttribute('y',String(cy-4));totalValue.setAttribute('text-anchor','middle');totalValue.setAttribute('fill','#f5f7fb');totalValue.setAttribute('font-size','22');totalValue.setAttribute('font-weight','700');totalValue.textContent=String(Math.round(total*100)/100);svg.appendChild(totalValue);
+    const totalLabel=this._workspaceSvg('text');totalLabel.setAttribute('x',String(cx));totalLabel.setAttribute('y',String(cy+18));totalLabel.setAttribute('text-anchor','middle');totalLabel.setAttribute('fill','rgba(255,255,255,.55)');totalLabel.setAttribute('font-size','11');totalLabel.textContent='total';svg.appendChild(totalLabel);
+    layout.appendChild(svg);
+    const legend=document.createElement('div');legend.className='workspace-chart-legend';points.forEach((point,idx)=>{const row=document.createElement('div');row.className='workspace-chart-legend-item';
+      const sw=document.createElement('span');sw.className='workspace-chart-swatch';sw.style.background=this._workspaceChartColor(idx,data.colors);row.appendChild(sw);
+      const label=document.createElement('span');label.className='workspace-chart-legend-label';label.textContent=point.label;row.appendChild(label);
+      const value=document.createElement('span');value.className='workspace-chart-legend-value';value.textContent=String(point.value)+' • '+Math.round((point.value/total)*100)+'%';row.appendChild(value);
+      legend.appendChild(row)});layout.appendChild(legend);wrap.appendChild(layout);
+    const meta=document.createElement('div');meta.className='workspace-chart-meta';const items=document.createElement('div');items.textContent=points.length+' segment'+(points.length===1?'':'s');meta.appendChild(items);
+    const totalMeta=document.createElement('div');totalMeta.textContent='Total '+(Math.round(total*100)/100);meta.appendChild(totalMeta);wrap.appendChild(meta);body.appendChild(wrap)},
   _isWorkspaceImageValue(val){if(typeof val!=='string')return false;const s=val.trim().toLowerCase();if(!s)return false;
     if(s.startsWith('file://')||s.startsWith('/users/')||s.startsWith('/private/'))return /\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?|#|$)/.test(s);
     return /^https?:\/\/.+\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?|#|$)/.test(s)},
@@ -834,8 +956,9 @@ function app(){return{
       if(Array.isArray(s.items)&&s.items.length){const list=document.createElement('ul');list.className='workspace-detail-list';s.items.forEach(item=>{const li=document.createElement('li');li.textContent=String(item);list.appendChild(li)});sec.appendChild(list)}
       if(sec.childElementCount)wrap.appendChild(sec)});
     body.appendChild(wrap)},
-  _renderWorkspaceChart(body,data){const ph=document.createElement('div');ph.className='workspace-chart-placeholder';
-    ph.textContent='Chart preview: '+(data.chart_type||'chart')+'. Native chart rendering can be expanded here without changing the workspace protocol.';
+  _renderWorkspaceChart(body,data){const render=this._workspaceChartRenderer(data.chart_type);if(render){render(body,data);return}
+    const ph=document.createElement('div');ph.className='workspace-chart-placeholder';
+    ph.textContent='Unsupported chart type: '+(data.chart_type||'chart')+'. The chart registry can be extended without changing the workspace protocol.';
     body.appendChild(ph)},
 
   sendChat(){const e=document.getElementById('msg-input');if(!e)return;const t=e.value.trim();if(!t||!this.ws||this.ws.readyState!==1)return;if(this.turnActive){this.toast('Stop the current turn first');return;}

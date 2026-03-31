@@ -78,6 +78,52 @@ def _slug_key(value: Any, fallback: str) -> str:
     return normalized or fallback
 
 
+def _normalize_layout(value: Any) -> str:
+    layout = (_text(value) or "stack").lower()
+    aliases = {
+        "single": "stack",
+        "list": "stack",
+        "default": "stack",
+        "vertical": "stack",
+        "metrics": "stack_with_metrics",
+        "dashboard": "stack_with_metrics",
+        "grid": "grid_focus",
+        "gallery": "grid_focus",
+    }
+    return aliases.get(layout, layout)
+
+
+def _normalize_chart_type(value: Any) -> str:
+    chart_type = (_text(value) or "histogram").lower()
+    aliases = {
+        "bar_line": "line",
+        "combo": "line",
+        "mixed": "line",
+        "combo_chart": "line",
+        "bars": "bar",
+        "columns": "column",
+    }
+    return aliases.get(chart_type, chart_type)
+
+
+def _extract_axis_labels(raw: dict[str, Any]) -> list[Any]:
+    axis_labels = raw.get("x_axis")
+    if not isinstance(axis_labels, list):
+        axis_labels = raw.get("labels")
+    if not isinstance(axis_labels, list):
+        axis_labels = raw.get("x")
+    if not isinstance(axis_labels, list):
+        return []
+    out: list[Any] = []
+    for item in axis_labels:
+        if isinstance(item, dict):
+            value = item.get("value")
+            out.append(value if value is not None else item.get("label"))
+        else:
+            out.append(item)
+    return out
+
+
 def _extract_image_url(item: dict[str, Any]) -> str | None:
     image_url = _text(item.get("image_url"))
     if image_url:
@@ -164,6 +210,12 @@ class ChartBlockData(BaseModel):
 
     chart_type: str
     series: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
+    x_key: str | None = None
+    y_key: str | None = None
+    label_key: str | None = None
+    value_key: str | None = None
+    colors: list[str] = Field(default_factory=list)
 
 
 class DetailPanelData(BaseModel):
@@ -374,9 +426,101 @@ def _normalize_summary_header_data(data: Any) -> dict[str, Any]:
 
 def _normalize_chart_block_data(data: Any) -> dict[str, Any]:
     raw = data or {}
+    chart_type = _normalize_chart_type(raw.get("chart_type"))
+    descriptor_series = raw.get("series")
+    if not isinstance(descriptor_series, list):
+        descriptor_series = []
+    axis_labels = _extract_axis_labels(raw)
+
+    raw_series = raw.get("points")
+    if not isinstance(raw_series, list):
+        raw_series = raw.get("rows")
+    if not isinstance(raw_series, list):
+        raw_series = raw.get("data")
+    if not isinstance(raw_series, list):
+        raw_series = descriptor_series
+
+    metrics: list[dict[str, Any]] = []
+    for item in descriptor_series:
+        if not isinstance(item, dict):
+            continue
+        label = _text(item.get("label")) or _text(item.get("name"))
+        key = _text(item.get("key")) or _text(item.get("field")) or _text(item.get("value_key"))
+        if not key and label:
+            key = _slug_key(label, "metric")
+        if key:
+            metrics.append({"key": key, "label": label or key})
+
+    series: list[dict[str, Any]] = []
+    pie_labels = raw.get("labels")
+    pie_values = raw.get("values")
+    if (
+        isinstance(pie_labels, list)
+        and isinstance(pie_values, list)
+        and pie_labels
+        and pie_values
+        and len(pie_labels) == len(pie_values)
+    ):
+        for idx, label in enumerate(pie_labels):
+            series.append({"label": label, "value": pie_values[idx]})
+    elif descriptor_series and all(
+        isinstance(item, dict)
+        and isinstance(item.get("data"), list)
+        and all(not isinstance(entry, dict) for entry in item.get("data", []))
+        for item in descriptor_series
+    ):
+        point_count = max([len(axis_labels)] + [len(item.get("data", [])) for item in descriptor_series])
+        for idx in range(point_count):
+            row: dict[str, Any] = {}
+            if idx < len(axis_labels):
+                row["label"] = axis_labels[idx]
+            else:
+                row["label"] = f"Item {idx+1}"
+            for metric_idx, item in enumerate(descriptor_series):
+                if not isinstance(item, dict):
+                    continue
+                metric_key = None
+                if metric_idx < len(metrics):
+                    metric_key = metrics[metric_idx]["key"]
+                if not metric_key:
+                    metric_label = _text(item.get("name")) or _text(item.get("label")) or f"metric_{metric_idx+1}"
+                    metric_key = _slug_key(metric_label, f"metric_{metric_idx+1}")
+                data_points = item.get("data", [])
+                if idx < len(data_points):
+                    row[metric_key] = data_points[idx]
+            series.append(row)
+    else:
+        for row in raw_series or []:
+            if not isinstance(row, dict):
+                continue
+            nested = row.get("data")
+            if isinstance(nested, list) and nested and all(isinstance(item, dict) for item in nested):
+                series.extend(item for item in nested if isinstance(item, dict))
+                continue
+            series.append(row)
+
+    y_key = _text(raw.get("y_key"))
+    value_key = _text(raw.get("value_key")) or _text(raw.get("metric_key"))
+    x_key = _text(raw.get("x_key"))
+    label_key = _text(raw.get("label_key")) or _text(raw.get("category_key")) or _text(raw.get("name_key"))
+    if not y_key and not value_key and len(metrics) == 1:
+        y_key = metrics[0]["key"]
+    if series and any("label" in row for row in series):
+        if chart_type == "pie":
+            label_key = label_key or "label"
+            value_key = value_key or "value"
+        else:
+            x_key = x_key or "label"
+
     return {
-        "chart_type": _text(raw.get("chart_type")) or "histogram",
-        "series": [row for row in raw.get("series", []) if isinstance(row, dict)],
+        "chart_type": chart_type,
+        "series": series,
+        "metrics": metrics,
+        "x_key": x_key,
+        "y_key": y_key,
+        "label_key": label_key,
+        "value_key": value_key,
+        "colors": [color for color in (_text(v) for v in raw.get("colors", [])) if color],
     }
 
 
@@ -407,6 +551,11 @@ def normalize_workspace_payload(payload: dict[str, Any]) -> WorkspaceUpdate:
                 key: value
                 for key, value in raw_block.items()
                 if key not in _BLOCK_STRUCTURE_KEYS
+            }
+        if block_type == "chart_block" and isinstance(raw_block.get("data"), list):
+            raw_data = {
+                **raw_data,
+                "rows": raw_block.get("data"),
             }
         if not isinstance(raw_data, dict):
             raw_data = {}
@@ -443,7 +592,7 @@ def normalize_workspace_payload(payload: dict[str, Any]) -> WorkspaceUpdate:
     normalized["intent"] = _text(normalized.get("intent")) or "generic_results"
     normalized["title"] = _text(normalized.get("title")) or "Workspace"
     normalized["subtitle"] = _text(normalized.get("subtitle"))
-    normalized["layout"] = _text(normalized.get("layout")) or "stack"
+    normalized["layout"] = _normalize_layout(normalized.get("layout"))
     normalized["blocks"] = blocks
 
     try:

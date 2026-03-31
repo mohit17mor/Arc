@@ -22,22 +22,28 @@ from arc.workspace.models import (
 )
 
 
+def _block_has_renderable_content(block) -> bool:
+    data = block.data
+    if isinstance(data, MetricStripData):
+        return bool(data.items)
+    if isinstance(data, CardCollectionData):
+        return bool(data.items)
+    if isinstance(data, RecordTableData):
+        return bool(data.rows or data.columns)
+    if isinstance(data, ComparisonTableData):
+        return bool(data.rows or data.columns)
+    if isinstance(data, SummaryHeaderData):
+        return bool(data.summary or data.items)
+    if isinstance(data, ChartBlockData):
+        return bool(data.series)
+    if isinstance(data, DetailPanelData):
+        return bool(data.title or data.sections or data.fields or data.media)
+    return False
+
+
 def _has_renderable_block_content(payload: WorkspaceUpdate) -> bool:
     for block in payload.blocks:
-        data = block.data
-        if isinstance(data, MetricStripData) and data.items:
-            return True
-        if isinstance(data, CardCollectionData) and data.items:
-            return True
-        if isinstance(data, RecordTableData) and (data.rows or data.columns):
-            return True
-        if isinstance(data, ComparisonTableData) and (data.rows or data.columns):
-            return True
-        if isinstance(data, SummaryHeaderData) and (data.summary or data.items):
-            return True
-        if isinstance(data, ChartBlockData) and data.series:
-            return True
-        if isinstance(data, DetailPanelData) and (data.title or data.sections or data.fields or data.media):
+        if _block_has_renderable_content(block):
             return True
     return False
 
@@ -138,6 +144,19 @@ class WorkspaceSkill(Skill):
                     "Send populated block data, not just titles and block shells."
                 ),
             )
+
+        if payload.mode == "replace":
+            empty_blocks = [block.block_id for block in payload.blocks if not _block_has_renderable_content(block)]
+            if empty_blocks:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=(
+                        "Workspace update rejected: empty render blocks detected for "
+                        + ", ".join(empty_blocks)
+                        + ". Send populated block data, not titles or summaries alone."
+                    ),
+                )
 
         dumped = payload.model_dump(mode="json", exclude_none=True)
         if getattr(self, "_kernel", None) is not None:

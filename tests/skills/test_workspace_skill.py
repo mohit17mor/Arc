@@ -131,6 +131,51 @@ async def test_workspace_skill_accepts_content_alias_from_model_output():
 
 
 @pytest.mark.asyncio
+async def test_workspace_skill_accepts_chart_layout_alias_and_nested_series():
+    """Chart updates should tolerate model-friendly layout aliases and nested series arrays."""
+    skill = WorkspaceSkill()
+    kernel = _KernelStub()
+    await skill.initialize(kernel, {"agent_id": "main"})
+
+    result = await skill.execute_tool(
+        "update_workspace",
+        {
+            "workspace_id": "main",
+            "revision": 9,
+            "mode": "replace",
+            "intent": "chart_demo",
+            "title": "Random Pie Chart Demo",
+            "layout": "single",
+            "blocks": [
+                {
+                    "block_id": "pie-chart",
+                    "type": "chart_block",
+                    "title": "Category Distribution",
+                    "chart_type": "pie",
+                    "series": [
+                        {
+                            "name": "Share",
+                            "data": [
+                                {"label": "Research", "value": 28},
+                                {"label": "Product", "value": 22},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result.success is True
+    event = kernel.events[-1]
+    assert event.data["payload"]["layout"] == "stack"
+    chart = event.data["payload"]["blocks"][0]["data"]
+    assert chart["chart_type"] == "pie"
+    assert chart["series"][0]["label"] == "Research"
+    assert chart["series"][1]["value"] == 22
+
+
+@pytest.mark.asyncio
 async def test_workspace_skill_rejects_invalid_payload():
     """Workspace validation failures should return a tool error, not crash."""
     skill = WorkspaceSkill()
@@ -194,6 +239,43 @@ async def test_workspace_skill_rejects_empty_shell_blocks():
 
     assert result.success is False
     assert "empty" in (result.error or "").lower()
+    assert kernel.events == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_skill_rejects_partial_updates_with_empty_chart_shells():
+    """Replace updates should fail if they include chart blocks with no renderable data."""
+    skill = WorkspaceSkill()
+    kernel = _KernelStub()
+    await skill.initialize(kernel, {"agent_id": "main"})
+
+    result = await skill.execute_tool(
+        "update_workspace",
+        {
+            "workspace_id": "main",
+            "revision": 4,
+            "mode": "replace",
+            "intent": "business_analysis",
+            "title": "Q1 Analysis",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "summary",
+                    "type": "summary_header",
+                    "summary": "Topline metrics are available.",
+                },
+                {
+                    "block_id": "monthly_trend",
+                    "type": "chart_block",
+                    "title": "Monthly Revenue and Profit Trend",
+                    "summary": "Chart should exist here but has no points.",
+                },
+            ],
+        },
+    )
+
+    assert result.success is False
+    assert "monthly_trend" in (result.error or "")
     assert kernel.events == []
 
 

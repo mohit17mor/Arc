@@ -146,6 +146,24 @@ def test_dashboard_template_renders_image_thumbnails_in_tables():
     assert "this._workspaceImageSrc(val)" in template
 
 
+def test_dashboard_template_includes_chart_renderer_registry():
+    """Workspace charts should route through a renderer registry with line, pie, and histogram support."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "_workspaceChartRenderer" in template
+    assert "_renderWorkspaceLine" in template
+    assert "_renderWorkspaceHistogram" in template
+    assert "_renderWorkspacePie" in template
+    assert "svg" in template
+
+
+def test_dashboard_template_supports_workspace_resizer():
+    """Chat workspace split should expose a draggable resizer with persisted width."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "workspace-resizer" in template
+    assert "wsRD($event)" in template
+    assert "arc.workspace.width" in template
+
+
 def test_dashboard_template_includes_mcp_json_editor():
     """Skills & MCP page should expose an MCP JSON editor with validation/save controls."""
     template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")

@@ -274,6 +274,234 @@ def test_normalize_workspace_payload_accepts_content_alias_and_summary_badges():
     assert detail.sections[0]["heading"] == "Warnings"
 
 
+def test_normalize_workspace_payload_preserves_chart_configuration():
+    """Chart blocks should keep renderer-relevant configuration for multiple chart types."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 12,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Charts",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "traffic",
+                    "type": "chart_block",
+                    "content": {
+                        "chart_type": "pie",
+                        "label_key": "segment",
+                        "value_key": "share",
+                        "colors": ["#ff6600", "#0099ff"],
+                        "series": [
+                            {"segment": "Organic", "share": 62},
+                            {"segment": "Paid", "share": 38},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "pie"
+    assert chart.label_key == "segment"
+    assert chart.value_key == "share"
+    assert chart.colors == ["#ff6600", "#0099ff"]
+    assert chart.series[0]["segment"] == "Organic"
+
+
+def test_normalize_workspace_payload_accepts_chart_layout_alias_and_nested_series_data():
+    """Chart payloads should tolerate common model aliases for layout and nested series arrays."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 13,
+            "mode": "replace",
+            "intent": "chart_demo",
+            "title": "Pie Demo",
+            "layout": "single",
+            "blocks": [
+                {
+                    "block_id": "pie_chart",
+                    "type": "chart_block",
+                    "title": "Category Distribution",
+                    "chart_type": "pie",
+                    "series": [
+                        {
+                            "name": "Share",
+                            "data": [
+                                {"label": "Research", "value": 28},
+                                {"label": "Product", "value": 22},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert payload.layout == "stack"
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "pie"
+    assert chart.series == [
+        {"label": "Research", "value": 28},
+        {"label": "Product", "value": 22},
+    ]
+
+
+def test_normalize_workspace_payload_preserves_block_level_chart_data_arrays():
+    """Chart blocks should keep row arrays when models place point data in block.data."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 14,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Revenue Charts",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "category_chart",
+                    "type": "chart_block",
+                    "title": "Revenue by Category",
+                    "chart_type": "bar",
+                    "x_key": "category",
+                    "series": [
+                        {"key": "net_revenue", "label": "Net Revenue"},
+                    ],
+                    "data": [
+                        {"category": "Electronics", "net_revenue": 27236.97},
+                        {"category": "Home", "net_revenue": 15078.72},
+                    ],
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "bar"
+    assert chart.x_key == "category"
+    assert chart.y_key == "net_revenue"
+    assert chart.series == [
+        {"category": "Electronics", "net_revenue": 27236.97},
+        {"category": "Home", "net_revenue": 15078.72},
+    ]
+    assert chart.metrics == [{"key": "net_revenue", "label": "Net Revenue"}]
+
+
+def test_normalize_workspace_payload_accepts_axis_and_numeric_series_arrays():
+    """Chart blocks should tolerate x_axis plus series[{name,data:[...]}] payloads."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 15,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Trend Charts",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "monthly_trend",
+                    "type": "chart_block",
+                    "title": "Monthly trend",
+                    "chart_type": "line",
+                    "x_axis": ["2026-01", "2026-02", "2026-03"],
+                    "series": [
+                        {"name": "Net revenue", "data": [18918.93, 13154.53, 27612.05]},
+                        {"name": "Profit", "data": [7839.37, 5617.69, 9935.95]},
+                    ],
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "line"
+    assert chart.x_key == "label"
+    assert chart.metrics == [
+        {"key": "net_revenue", "label": "Net revenue"},
+        {"key": "profit", "label": "Profit"},
+    ]
+    assert chart.series == [
+        {"label": "2026-01", "net_revenue": 18918.93, "profit": 7839.37},
+        {"label": "2026-02", "net_revenue": 13154.53, "profit": 5617.69},
+        {"label": "2026-03", "net_revenue": 27612.05, "profit": 9935.95},
+    ]
+
+
+def test_normalize_workspace_payload_accepts_pie_labels_and_values_arrays():
+    """Pie chart blocks should tolerate labels[] plus values[] payloads."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 16,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Channel Mix",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "channel_mix",
+                    "type": "chart_block",
+                    "title": "Channel mix",
+                    "chart_type": "pie",
+                    "labels": ["Mobile", "Marketplace", "Web", "Retail"],
+                    "values": [22381.72, 15264.49, 14919.79, 7119.51],
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "pie"
+    assert chart.label_key == "label"
+    assert chart.value_key == "value"
+    assert chart.series == [
+        {"label": "Mobile", "value": 22381.72},
+        {"label": "Marketplace", "value": 15264.49},
+        {"label": "Web", "value": 14919.79},
+        {"label": "Retail", "value": 7119.51},
+    ]
+
+
+def test_normalize_workspace_payload_accepts_object_x_axis_and_bar_line_alias():
+    """Chart blocks should tolerate x:[{value}] plus combo chart aliases like bar_line."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 17,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Combo Chart",
+            "layout": "vertical",
+            "blocks": [
+                {
+                    "block_id": "monthly_trend",
+                    "type": "chart_block",
+                    "title": "Monthly Revenue and Profit Trend",
+                    "chart_type": "bar_line",
+                    "x": [{"value": "2026-01"}, {"value": "2026-02"}, {"value": "2026-03"}],
+                    "series": [
+                        {"name": "Net Revenue", "type": "bar", "data": [18918.93, 13154.53, 27612.05]},
+                        {"name": "Profit", "type": "line", "data": [7839.37, 5617.69, 9935.95]},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert payload.layout == "stack"
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "line"
+    assert chart.x_key == "label"
+    assert chart.metrics == [
+        {"key": "net_revenue", "label": "Net Revenue"},
+        {"key": "profit", "label": "Profit"},
+    ]
+    assert chart.series[0] == {"label": "2026-01", "net_revenue": 18918.93, "profit": 7839.37}
+
+
 def test_normalize_workspace_payload_accepts_block_level_fields_as_data_alias():
     """If a model inlines block body fields at the block level, preserve them."""
     payload = normalize_workspace_payload(
