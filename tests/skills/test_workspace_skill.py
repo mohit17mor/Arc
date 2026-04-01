@@ -49,6 +49,30 @@ def test_workspace_tool_schema_allows_content_and_block_level_aliases():
     assert "data" not in block.get("required", [])
 
 
+def test_workspace_tool_description_spells_out_canonical_chart_shape():
+    """The tool prompt should steer models toward one chart payload shape instead of many aliases."""
+    skill = WorkspaceSkill()
+    tool = skill.manifest().tools[0]
+
+    assert "one canonical shape per block type" in tool.description
+    assert "For chart_block always send data.chart_type, data.metrics, and data.series." in tool.description
+    assert "Do not send" in tool.description
+    assert "x_axis" in tool.description
+    assert "bar_line" in tool.description
+    assert "nested series arrays" in tool.description
+    assert "If a block cannot be populated, omit it" in tool.description
+
+
+def test_workspace_tool_schema_describes_canonical_block_fields():
+    """The schema itself should reinforce where canonical block payloads belong."""
+    skill = WorkspaceSkill()
+    tool = skill.manifest().tools[0]
+    block = tool.parameters["properties"]["blocks"]["items"]["properties"]
+
+    assert "canonical block payload" in block["data"]["description"].lower()
+    assert "legacy alias" in block["content"]["description"].lower()
+
+
 @pytest.mark.asyncio
 async def test_workspace_skill_emits_validated_workspace_update():
     """update_workspace should normalize payloads and emit a workspace event."""

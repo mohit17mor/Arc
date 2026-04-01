@@ -73,10 +73,17 @@ class WorkspaceSkill(Skill):
                         "view first, then render the workspace. For image galleries or local files, "
                         "prefer card_collection with item.image_url or item.media entries; a detail_panel "
                         "with media also works. Avoid using record_table for images unless you truly only "
-                        "have tabular metadata. Do not send empty shell blocks: every block must include "
-                        "populated data. For summary_header include summary and/or items or badges; for "
+                        "have tabular metadata. Use one canonical shape per block type. Put the canonical "
+                        "payload under block.data. Use block.content only as a legacy alias when you are "
+                        "repairing older output. Do not send empty shell blocks: every block must include "
+                        "populated data. If a block cannot be populated, omit it instead of sending only a "
+                        "title or summary. For summary_header include summary and/or items or badges; for "
                         "record_table include columns and rows; for card_collection include items; for "
-                        "detail_panel include sections, fields, or media."
+                        "detail_panel include sections, fields, or media. For chart_block always send "
+                        "data.chart_type, data.metrics, and data.series. data.series must be a list of row "
+                        "objects such as [{\"label\":\"Jan\",\"net_revenue\":18918.93,\"profit\":7839.37}]. "
+                        "Use supported chart_type values only: line, bar, column, pie, donut, histogram. "
+                        "Do not send x_axis, x, labels, values, points, bar_line, or nested series arrays."
                     ),
                     parameters={
                         "type": "object",
@@ -98,8 +105,19 @@ class WorkspaceSkill(Skill):
                                         "type": {"type": "string"},
                                         "title": {"type": "string"},
                                         "layout_hint": {"type": "string"},
-                                        "data": {"type": "object"},
-                                        "content": {"type": "object"},
+                                        "data": {
+                                            "type": "object",
+                                            "description": (
+                                                "Canonical block payload. For chart_block this should contain "
+                                                "chart_type, metrics, and series row objects."
+                                            ),
+                                        },
+                                        "content": {
+                                            "type": "object",
+                                            "description": (
+                                                "Legacy alias for data. Prefer data for all new payloads."
+                                            ),
+                                        },
                                         "summary": {"type": "string"},
                                         "meta": {"type": "object"},
                                     },

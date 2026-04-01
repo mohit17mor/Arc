@@ -138,6 +138,20 @@ def test_dashboard_template_renders_detail_panel_media():
     assert "this._workspaceImageSrc" in template
 
 
+def test_dashboard_template_renders_structured_detail_items_without_object_stringification():
+    """Detail panel section items should render object label/value pairs instead of [object Object]."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "typeof item==='object'" in template
+    assert "item.label||item.title||'Item'" in template
+    assert "item.value||item.summary||item.body||'—'" in template
+
+
+def test_dashboard_template_renders_detail_panel_section_body_text():
+    """Detail panel sections should render body text from normalized workspace payloads."""
+    template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")
+    assert "s.body" in template
+
+
 def test_dashboard_template_renders_image_thumbnails_in_tables():
     """Tables should render image URLs as thumbnails instead of raw text only."""
     template = (Path(__file__).resolve().parents[2] / "arc/gateway/templates/dashboard.html").read_text(encoding="utf-8")

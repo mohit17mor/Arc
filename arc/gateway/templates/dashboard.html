@@ -950,10 +950,16 @@ function app(){return{
     this._renderWorkspaceDetailRows(wrap,fields);
     sections.forEach(s=>{const sec=document.createElement('section');sec.className='workspace-detail-section';
       const st=s.heading||s.title||s.label||'';if(st){const hd=document.createElement('div');hd.className='workspace-detail-section-title';hd.textContent=st;sec.appendChild(hd)}
-      if(s.summary||s.value){const sv=document.createElement('div');sv.className='workspace-detail-summary';sv.textContent=s.summary||s.value;sec.appendChild(sv)}
+      if(s.body||s.summary||s.value){const sv=document.createElement('div');sv.className='workspace-detail-summary';sv.textContent=s.body||s.summary||s.value;sec.appendChild(sv)}
       this._renderWorkspaceDetailMedia(sec,Array.isArray(s.media)?s.media:[],st);
       if(Array.isArray(s.fields)&&s.fields.length)this._renderWorkspaceDetailRows(sec,s.fields);
-      if(Array.isArray(s.items)&&s.items.length){const list=document.createElement('ul');list.className='workspace-detail-list';s.items.forEach(item=>{const li=document.createElement('li');li.textContent=String(item);list.appendChild(li)});sec.appendChild(list)}
+      if(Array.isArray(s.items)&&s.items.length){const list=document.createElement('div');list.className='workspace-detail-list';
+        s.items.forEach(item=>{if(item&&typeof item==='object'&&!Array.isArray(item)){const row=document.createElement('div');row.className='workspace-detail-row';
+            const l=document.createElement('div');l.className='workspace-detail-label';l.textContent=item.label||item.title||'Item';
+            const v=document.createElement('div');v.className='workspace-detail-value';v.textContent=item.value||item.summary||item.body||'—';
+            row.appendChild(l);row.appendChild(v);list.appendChild(row);return}
+          const li=document.createElement('div');li.textContent=String(item);list.appendChild(li)});
+        sec.appendChild(list)}
       if(sec.childElementCount)wrap.appendChild(sec)});
     body.appendChild(wrap)},
   _renderWorkspaceChart(body,data){const render=this._workspaceChartRenderer(data.chart_type);if(render){render(body,data);return}

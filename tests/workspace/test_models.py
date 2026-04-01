@@ -502,6 +502,79 @@ def test_normalize_workspace_payload_accepts_object_x_axis_and_bar_line_alias():
     assert chart.series[0] == {"label": "2026-01", "net_revenue": 18918.93, "profit": 7839.37}
 
 
+def test_normalize_workspace_payload_uses_explicit_metrics_for_row_based_charts():
+    """Row-based chart series should honor data.metrics instead of inventing metrics from row labels."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 18,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Charts",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "monthly_trend",
+                    "type": "chart_block",
+                    "title": "Monthly Revenue vs Profit",
+                    "data": {
+                        "chart_type": "column",
+                        "metrics": ["net_revenue", "profit"],
+                        "series": [
+                            {"label": "Jan", "net_revenue": 18918.93, "profit": 7839.37},
+                            {"label": "Feb", "net_revenue": 13154.53, "profit": 5617.69},
+                            {"label": "Mar", "net_revenue": 27612.05, "profit": 9935.95},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "column"
+    assert chart.x_key == "label"
+    assert [metric["key"] for metric in chart.metrics] == ["net_revenue", "profit"]
+    assert chart.metrics[0]["label"] == "Net Revenue"
+    assert chart.metrics[1]["label"] == "Profit"
+
+
+def test_normalize_workspace_payload_uses_explicit_metric_for_row_based_pie_chart():
+    """Pie charts with row objects should preserve the metric field as value_key."""
+    payload = normalize_workspace_payload(
+        {
+            "workspace_id": "main",
+            "revision": 19,
+            "mode": "replace",
+            "intent": "analytics",
+            "title": "Charts",
+            "layout": "stack",
+            "blocks": [
+                {
+                    "block_id": "channel_chart",
+                    "type": "chart_block",
+                    "title": "Channel Mix",
+                    "data": {
+                        "chart_type": "donut",
+                        "metrics": ["net_revenue"],
+                        "series": [
+                            {"label": "Mobile", "net_revenue": 22381.72},
+                            {"label": "Marketplace", "net_revenue": 15264.49},
+                            {"label": "Web", "net_revenue": 14919.79},
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    chart = payload.blocks[0].data
+    assert chart.chart_type == "donut"
+    assert chart.label_key == "label"
+    assert chart.value_key == "net_revenue"
+    assert [metric["key"] for metric in chart.metrics] == ["net_revenue"]
+
+
 def test_normalize_workspace_payload_accepts_block_level_fields_as_data_alias():
     """If a model inlines block body fields at the block level, preserve them."""
     payload = normalize_workspace_payload(

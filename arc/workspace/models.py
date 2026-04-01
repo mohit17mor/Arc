@@ -427,6 +427,9 @@ def _normalize_summary_header_data(data: Any) -> dict[str, Any]:
 def _normalize_chart_block_data(data: Any) -> dict[str, Any]:
     raw = data or {}
     chart_type = _normalize_chart_type(raw.get("chart_type"))
+    raw_metrics = raw.get("metrics")
+    if not isinstance(raw_metrics, list):
+        raw_metrics = []
     descriptor_series = raw.get("series")
     if not isinstance(descriptor_series, list):
         descriptor_series = []
@@ -441,7 +444,13 @@ def _normalize_chart_block_data(data: Any) -> dict[str, Any]:
         raw_series = descriptor_series
 
     metrics: list[dict[str, Any]] = []
-    for item in descriptor_series:
+    metric_source = raw_metrics or descriptor_series
+    for item in metric_source:
+        if isinstance(item, str):
+            key = _text(item)
+            if key:
+                metrics.append({"key": key, "label": key.replace("_", " ").title()})
+            continue
         if not isinstance(item, dict):
             continue
         label = _text(item.get("label")) or _text(item.get("name"))
@@ -506,8 +515,10 @@ def _normalize_chart_block_data(data: Any) -> dict[str, Any]:
     if not y_key and not value_key and len(metrics) == 1:
         y_key = metrics[0]["key"]
     if series and any("label" in row for row in series):
-        if chart_type == "pie":
+        if chart_type in {"pie", "donut"}:
             label_key = label_key or "label"
+            if not value_key and len(metrics) == 1:
+                value_key = metrics[0]["key"]
             value_key = value_key or "value"
         else:
             x_key = x_key or "label"
