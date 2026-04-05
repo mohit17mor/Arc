@@ -1,9 +1,12 @@
 """Tests for CLI commands."""
 
 import asyncio
-import pytest
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 from typer.testing import CliRunner
+
 from arc.cli.main import app
 
 
@@ -255,3 +258,142 @@ async def test_chat_wires_plan_updates_to_cli(monkeypatch, tmp_path):
     await cli_main._run_chat(None, False)
 
     assert EventType.AGENT_PLAN_UPDATE in subscribed
+
+
+@pytest.mark.asyncio
+async def test_gateway_passes_message_source_into_turn_controller(monkeypatch, tmp_path):
+    from arc.cli import main as cli_main
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "get_config_path", lambda: config_path)
+
+    class FakeKernel:
+        def on(self, event_type, handler):
+            return None
+
+    class FakeTurnController:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def stream_message(self, user_input: str, *, source: str = "interactive"):
+            self.calls.append((user_input, source))
+            yield "ok"
+
+    turn_controller = FakeTurnController()
+
+    class FakeGateway:
+        def __init__(self, host: str, port: int) -> None:
+            self.host = host
+            self.port = port
+
+        def set_skill_manager(self, mgr):
+            pass
+
+        def set_cost_tracker(self, tracker):
+            pass
+
+        def set_memory_manager(self, mgr):
+            pass
+
+        def set_scheduler_store(self, store):
+            pass
+
+        def set_mcp_manager(self, mgr):
+            pass
+
+        def set_mcp_config_service(self, service):
+            pass
+
+        def set_session_memory(self, memory):
+            pass
+
+        def set_run_control(self, run_control):
+            pass
+
+        def set_turn_controller(self, controller):
+            pass
+
+        def set_task_store(self, store):
+            pass
+
+        def set_task_processor(self, processor):
+            pass
+
+        def set_agent_defs(self, defs):
+            pass
+
+        def set_workflow_skill(self, skill):
+            pass
+
+        def set_kernel(self, kernel):
+            pass
+
+        def attach_channel(self, channel):
+            pass
+
+        async def broadcast_event(self, event_type, data):
+            return None
+
+        async def broadcast_notification(self, notification):
+            return None
+
+        def record_event(self, event_type, source, data):
+            return None
+
+        async def run(self, handler):
+            chunks = []
+            async for chunk in handler("hello from voice", source="voice"):
+                chunks.append(chunk)
+            assert chunks == ["ok"]
+
+        async def stop(self):
+            return None
+
+    class FakeRouter:
+        def register(self, channel):
+            pass
+
+    class FakeGatewayChannel:
+        def __init__(self, broadcast_fn, queue):
+            self.broadcast_fn = broadcast_fn
+            self.queue = queue
+
+        def set_active(self, active):
+            pass
+
+    class FakeMCPManager:
+        has_servers = False
+
+    async def fake_bootstrap(**kwargs):
+        return SimpleNamespace(
+            identity={"agent_name": "Arc", "user_name": "You"},
+            agent=SimpleNamespace(_memory=object()),
+            skill_manager=SimpleNamespace(get_skill=lambda name: None),
+            mcp_manager=FakeMCPManager(),
+            memory_manager=None,
+            config=SimpleNamespace(
+                scheduler=SimpleNamespace(enabled=False),
+                telegram=SimpleNamespace(platform_configured=False),
+            ),
+            sched_store=None,
+            mcp_config_service=None,
+            run_control=object(),
+            turn_controller=turn_controller,
+            task_store=None,
+            task_processor=None,
+            agent_defs={},
+            kernel=FakeKernel(),
+            notification_router=FakeRouter(),
+            cost_tracker=SimpleNamespace(start_turn=lambda: None, summary=lambda: {}),
+            start=lambda: asyncio.sleep(0),
+            shutdown=lambda: asyncio.sleep(0),
+        )
+
+    monkeypatch.setattr("arc.cli.bootstrap.bootstrap", fake_bootstrap)
+    monkeypatch.setattr("arc.gateway.server.GatewayServer", FakeGateway)
+    monkeypatch.setattr("arc.notifications.channels.gateway.GatewayChannel", FakeGatewayChannel)
+
+    await cli_main._run_gateway("127.0.0.1", 18789, False)
+
+    assert turn_controller.calls == [("hello from voice", "voice")]

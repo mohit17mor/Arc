@@ -31,6 +31,29 @@ class _SlowForegroundAgent:
             self.current_run_id = None
 
 
+class _PromptAwareForegroundAgent:
+    def __init__(self, run_control: RunControlManager) -> None:
+        self._run_control = run_control
+        self.current_run_id: str | None = None
+        self.last_run_id: str | None = None
+        self.received_overrides: list[str | None] = []
+
+    async def run(self, user_input: str, *, system_prompt_override: str | None = None):
+        self.received_overrides.append(system_prompt_override)
+        handle = self._run_control.start_run(
+            kind="agent",
+            source="main",
+            metadata={"agent_id": "main", "input_preview": user_input[:50]},
+        )
+        self.current_run_id = handle.run_id
+        self.last_run_id = handle.run_id
+        try:
+            yield "ok"
+            await handle.finish_completed()
+        finally:
+            self.current_run_id = None
+
+
 @pytest.mark.asyncio
 async def test_controller_interrupts_active_turn():
     from arc.core.foreground_turns import ForegroundTurnController
@@ -97,3 +120,39 @@ async def test_controller_serializes_foreground_turns():
     runs = run_control.list_runs()
     assert len(runs) == 2
     assert all(run.status == RunStatus.COMPLETED for run in runs)
+
+
+@pytest.mark.asyncio
+async def test_controller_passes_source_specific_prompt_override():
+    from arc.core.foreground_turns import ForegroundTurnController
+
+    run_control = RunControlManager()
+    agent = _PromptAwareForegroundAgent(run_control)
+    controller = ForegroundTurnController(
+        agent=agent,
+        run_control=run_control,
+        system_prompt_for_source=lambda source: "voice prompt" if source == "voice" else None,
+    )
+
+    async for _ in controller.stream_message("hello", source="voice"):
+        pass
+
+    assert agent.received_overrides == ["voice prompt"]
+
+
+@pytest.mark.asyncio
+async def test_controller_skips_prompt_override_for_default_sources():
+    from arc.core.foreground_turns import ForegroundTurnController
+
+    run_control = RunControlManager()
+    agent = _PromptAwareForegroundAgent(run_control)
+    controller = ForegroundTurnController(
+        agent=agent,
+        run_control=run_control,
+        system_prompt_for_source=lambda source: "voice prompt" if source == "voice" else None,
+    )
+
+    async for _ in controller.stream_message("hello", source="cli"):
+        pass
+
+    assert agent.received_overrides == [None]

@@ -205,7 +205,7 @@ async def _run_chat(model_override: str | None, verbose: bool = False) -> None:
     rt.kernel.on(EventType.WORKFLOW_WAITING_INPUT, forward_to_cli)
 
     # Message handler
-    async def handle_message(user_input: str):
+    async def handle_message(user_input: str, *, source: str = "gateway"):
         rt.cost_tracker.start_turn()
         cli.set_cost_tracker(rt.cost_tracker.summary())
         async for chunk in rt.turn_controller.stream_message(user_input, source="cli"):
@@ -425,7 +425,7 @@ async def _run_telegram(verbose: bool = False) -> None:
     tg_platform.set_cost_tracker(rt.cost_tracker)
 
     # Message handler
-    async def handle_message(user_input: str):
+    async def handle_message(user_input: str, *, source: str = "gateway"):
         rt.cost_tracker.start_turn()
         async for chunk in rt.agent.run(user_input):
             yield chunk
@@ -617,7 +617,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
     rt.notification_router.register(gw_channel)
 
     # Message handler
-    async def handle_message(user_input: str):
+    async def handle_message(user_input: str, *, source: str = "gateway"):
         rt.cost_tracker.start_turn()
 
         # ── Workflow input intercept ──
@@ -649,7 +649,7 @@ async def _run_gateway(host: str, port: int, verbose: bool = False) -> None:
                 f"(if any).\n\n{injected}\n\nUser message: {user_input}"
             )
 
-        async for chunk in rt.turn_controller.stream_message(actual_input, source="gateway"):
+        async for chunk in rt.turn_controller.stream_message(actual_input, source=source):
             yield chunk
         gw.set_cost_tracker(rt.cost_tracker.summary())
 

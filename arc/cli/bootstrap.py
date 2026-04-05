@@ -277,12 +277,12 @@ async def bootstrap(
     )
     mcp_names_state = {"names": mcp_manager.server_names}
 
-    def build_main_system_prompt() -> str:
+    def build_main_system_prompt(*, voice_mode: bool = False) -> str:
         return (
             identity["system_prompt"]
             + env_info
             + soft_skill_text
-            + get_reliability_block("main")
+            + get_reliability_block("main", voice_mode=voice_mode)
             + _build_mcp_prompt_suffix(mcp_names_state["names"])
         )
 
@@ -345,6 +345,9 @@ async def bootstrap(
         agent=agent,
         run_control=run_control,
         kernel=kernel,
+        system_prompt_for_source=lambda source: (
+            build_main_system_prompt(voice_mode=True) if source == "voice" else None
+        ),
     )
 
     # ── Sub-agent factory ──

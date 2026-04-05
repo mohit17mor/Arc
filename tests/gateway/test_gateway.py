@@ -401,6 +401,51 @@ async def test_websocket_plain_text(client):
                 break
 
 
+async def test_handle_chat_voice_source_keeps_raw_done_but_sanitizes_sync_and_history():
+    gw = GatewayServer()
+    voice_ws = _FakeWebSocket()
+    viewer_ws = _FakeWebSocket()
+    gw._clients = {voice_ws, viewer_ws}
+    gw._turn_controller = _FakeTurnController()
+    seen_sources: list[str] = []
+
+    async def handler(user_input: str, *, source: str = "gateway"):
+        seen_sources.append(source)
+        yield f"Detailed answer for {user_input}.\n[spoken]Quick summary.[/spoken]"
+
+    gw._handler = handler
+
+    await gw._handle_chat(voice_ws, "selected text", "voice")
+
+    assert seen_sources == ["voice"]
+    assert voice_ws.messages[0] == {"type": "thinking"}
+    assert voice_ws.messages[1] == {
+        "type": "chunk",
+        "content": "Detailed answer for selected text.\n[spoken]Quick summary.[/spoken]",
+    }
+    assert voice_ws.messages[2]["type"] == "done"
+    assert voice_ws.messages[2]["full_content"] == (
+        "Detailed answer for selected text.\n[spoken]Quick summary.[/spoken]"
+    )
+
+    assert len(viewer_ws.messages) == 2
+    assert viewer_ws.messages[0]["type"] == "sync_user"
+    assert viewer_ws.messages[0]["source"] == "voice"
+    assert viewer_ws.messages[0]["user_input"] == "selected text"
+    assert viewer_ws.messages[1] == {
+        "type": "sync",
+        "source": "voice",
+        "user_input": "selected text",
+        "response": "Detailed answer for selected text.",
+        "message_id": viewer_ws.messages[0]["message_id"],
+    }
+    assert gw._history[-1] == {
+        "source": "voice",
+        "user_input": "selected text",
+        "response": "Detailed answer for selected text.",
+    }
+
+
 async def test_slash_help(client):
     """/help returns command list."""
     c, gw, store = client

@@ -19,6 +19,7 @@ Every channel talks to the same agent.  Conversations are in sync.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import mimetypes
@@ -31,6 +32,7 @@ from typing import Any
 from aiohttp import web, WSMsgType
 
 from arc.platforms.base import Platform, MessageHandler
+from arc.voice.condenser import strip_spoken_tag
 
 logger = logging.getLogger(__name__)
 
@@ -312,9 +314,11 @@ class GatewayServer(Platform):
             """Wraps the real handler — yields chunks to the channel,
             then broadcasts the full exchange to WebChat clients."""
             full_response = ""
-            async for chunk in handler(user_input):
+            async for chunk in self._invoke_handler(handler, user_input, channel.name):
                 full_response += chunk
                 yield chunk
+
+            chat_response = self._sanitize_response(full_response)
 
             # Broadcast to all WebChat clients so they see cross-platform messages
             for ws in list(self._clients):
@@ -324,13 +328,13 @@ class GatewayServer(Platform):
                             "type": "sync",
                             "source": channel.name,
                             "user_input": user_input,
-                            "response": full_response,
+                            "response": chat_response,
                         })
                     except Exception:
                         self._clients.discard(ws)
 
             # Record in history so new connections see it
-            self._record_history(channel.name, user_input, full_response)
+            self._record_history(channel.name, user_input, chat_response)
 
         try:
             await channel.run(synced_handler)
@@ -496,7 +500,7 @@ class GatewayServer(Platform):
         # the turn is still active even while text is streaming.
         full_response = ""
         try:
-            async for chunk in self._handler(user_input):
+            async for chunk in self._invoke_handler(self._handler, user_input, source):
                 full_response += chunk
                 await ws.send_json({
                     "type": "chunk",
@@ -515,26 +519,28 @@ class GatewayServer(Platform):
                 pass
 
         outcome = self._turn_controller.last_outcome if self._turn_controller else None
+        chat_response = self._sanitize_response(full_response)
+        done_response = full_response if source == "voice" else chat_response
 
         # Always signal completion — even after errors.
         # This ensures WebChat exits "thinking" state and the exchange
         # is recorded in history so the conversation stays coherent.
         await ws.send_json({
             "type": "done",
-            "full_content": full_response,
+            "full_content": done_response,
             "interrupted": bool(outcome and outcome.interrupted),
             "reason": outcome.reason if outcome else None,
         })
 
         # Record in history so new connections see it, preserving the
         # original channel source (webchat, voice, telegram, etc.).
-        self._record_history(source, user_input, full_response)
+        self._record_history(source, user_input, chat_response)
 
         # Broadcast to other connected clients (sync)
         await self._broadcast_response(
             source=source,
             user_input=user_input,
-            response=full_response,
+            response=chat_response,
             message_id=message_id,
             exclude_ws=ws,
         )
@@ -845,6 +851,29 @@ class GatewayServer(Platform):
         })
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history:]
+
+    def _sanitize_response(self, response: str) -> str:
+        """Strip listen-mode spoken tags from chat-facing payloads."""
+        return strip_spoken_tag(response)
+
+    def _invoke_handler(
+        self,
+        handler: MessageHandler,
+        user_input: str,
+        source: str,
+    ):
+        """Call a handler with source when it supports source-aware turns."""
+        try:
+            params = inspect.signature(handler).parameters.values()
+        except (TypeError, ValueError):
+            return handler(user_input)
+        supports_source = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD or param.name == "source"
+            for param in params
+        )
+        if supports_source:
+            return handler(user_input, source=source)
+        return handler(user_input)
 
     async def _run_workflow_streaming(
         self,

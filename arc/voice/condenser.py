@@ -87,10 +87,10 @@ def condense(text: str) -> CondensedSpeech:
             )
 
     # ── Fallback: short response → speak verbatim ────────────
-    stripped = _clean_for_speech(text)
+    stripped = _clean_for_speech(text, ensure_terminal_punctuation=False)
     if len(stripped) <= SHORT_THRESHOLD:
         return CondensedSpeech(
-            spoken_text=stripped,
+            spoken_text=_ensure_terminal_punctuation(stripped),
             chat_text=text,
             source="verbatim",
             original_length=original_length,
@@ -117,11 +117,18 @@ def strip_spoken_tag(text: str) -> str:
 # ── Internal ─────────────────────────────────────────────────────
 
 
-def _clean_for_speech(text: str) -> str:
+def _clean_for_speech(text: str, *, ensure_terminal_punctuation: bool = True) -> str:
     """Light cleanup of text for the verbatim-short path."""
     out = _MD_STRIP.sub("", text)
     out = _MULTI_SPACE.sub(" ", out)
     out = out.strip()
-    if out and out[-1] not in ".!?":
-        out += "."
+    if ensure_terminal_punctuation:
+        out = _ensure_terminal_punctuation(out)
     return out
+
+
+def _ensure_terminal_punctuation(text: str) -> str:
+    """Add a trailing sentence marker for speech if one is missing."""
+    if text and text[-1] not in ".!?":
+        return text + "."
+    return text

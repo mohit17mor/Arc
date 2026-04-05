@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, Callable
 
 from arc.core.events import Event, EventType
 from arc.core.run_control import RunCancelledError, RunControlAction, RunControlManager, RunStatus
@@ -28,10 +29,12 @@ class ForegroundTurnController:
         agent: Any,
         run_control: RunControlManager,
         kernel: Any | None = None,
+        system_prompt_for_source: Callable[[str], str | None] | None = None,
     ) -> None:
         self._agent = agent
         self._run_control = run_control
         self._kernel = kernel
+        self._system_prompt_for_source = system_prompt_for_source
         self._lock = asyncio.Lock()
         self._active_turn: ActiveTurn | None = None
         self._last_outcome: TurnOutcome | None = None
@@ -59,10 +62,29 @@ class ForegroundTurnController:
             self._last_outcome = None
             self._interrupt_pending = False
             self._interrupt_reason = None
+            system_prompt_override = None
+            if self._system_prompt_for_source is not None:
+                system_prompt_override = self._system_prompt_for_source(source)
 
             try:
                 try:
-                    async for chunk in self._agent.run(user_input):
+                    try:
+                        run_params = inspect.signature(self._agent.run).parameters.values()
+                        supports_override = any(
+                            param.kind == inspect.Parameter.VAR_KEYWORD
+                            or param.name == "system_prompt_override"
+                            for param in run_params
+                        )
+                    except (TypeError, ValueError):
+                        supports_override = False
+                    if supports_override:
+                        run_iter = self._agent.run(
+                            user_input,
+                            system_prompt_override=system_prompt_override,
+                        )
+                    else:
+                        run_iter = self._agent.run(user_input)
+                    async for chunk in run_iter:
                         await self._apply_pending_interrupt_if_possible()
                         yield chunk
                 except RunCancelledError:

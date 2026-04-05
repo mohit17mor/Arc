@@ -59,12 +59,21 @@ _VOICE_INSTRUCTIONS = """\
 
 ## Spoken Summary
 
-End every response with a [spoken] tag containing a 1–2 sentence casual \
-summary — as if telling a friend the key takeaway. Keep it under 30 words. \
-Never include code, URLs, markdown, or formatting in the spoken tag.
+End every response with a [spoken] tag for TTS.
+
+Make it sound like a friendly assistant speaking out loud: warm, natural, \
+and conversational, not like a written summary or status report.
+
+Rules:
+- 1–2 short sentences, under 25 words
+- use simple spoken English and natural contractions
+- give the most useful takeaway first
+- no code, URLs, markdown, or file paths
+- avoid robotic words like "implemented", "completed", or "addressed"
+- only mention "check chat" if the full answer is too detailed to say aloud
 
 Example:
-[spoken]Fixed the import error in main.py. Check chat for the diff.[/spoken]"""
+[spoken]I found the issue and fixed it. Voice mode should work properly now.[/spoken]"""
 
 
 _BACKGROUND_ADDITIONS = """\

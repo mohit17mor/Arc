@@ -154,12 +154,21 @@ class AgentLoop:
         """Update the system prompt used for future LLM calls."""
         self._memory.set_system_prompt(prompt)
 
-    async def run(self, user_input: str) -> AsyncIterator[str]:
+    async def run(
+        self,
+        user_input: str,
+        *,
+        system_prompt_override: str | None = None,
+    ) -> AsyncIterator[str]:
         """
         Process user input and yield response chunks.
         
         This is a streaming generator — chunks are yielded as they arrive.
         """
+        original_system_prompt = self._memory._system_prompt
+        if system_prompt_override is not None:
+            self._memory.set_system_prompt(system_prompt_override)
+
         run_handle: RunHandle | None = None
         if self._run_control is not None:
             run_handle = self._run_control.start_run(
@@ -548,6 +557,8 @@ class AgentLoop:
         finally:
             self._active_run_handle = None
             self._current_run_id = None
+            if system_prompt_override is not None:
+                self._memory.set_system_prompt(original_system_prompt)
 
     def _fire_memory_tasks(self, user_input: str, assistant_text: str) -> None:
         """Schedule background memory storage tasks (fire-and-forget)."""

@@ -31,6 +31,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+try:
+    import sounddevice as sd
+except ImportError:  # pragma: no cover - exercised via runtime environments
+    sd = None
+
 
 @dataclass(slots=True)
 class SynthesisResult:
@@ -136,6 +141,10 @@ class KokoroProvider(SpeechSynthesizer):
     async def speak(self, text: str) -> SynthesisResult:
         if self._kokoro is None:
             raise RuntimeError("KokoroProvider not initialized. Call initialize() first.")
+        if sd is None:
+            raise ImportError(
+                "sounddevice is not installed. Install voice dependencies to enable playback."
+            )
 
         import time
         start = time.monotonic()
@@ -147,9 +156,6 @@ class KokoroProvider(SpeechSynthesizer):
                 text, voice=self._voice, speed=self._speed, lang=self._lang,
             ),
         )
-
-        # Play audio via sounddevice (already a voice dependency).
-        import sounddevice as sd
 
         play_done = asyncio.Event()
 
@@ -180,8 +186,8 @@ class KokoroProvider(SpeechSynthesizer):
 
     async def stop(self) -> None:
         try:
-            import sounddevice as sd
-            sd.stop()
+            if sd is not None:
+                sd.stop()
         except Exception:
             pass
 
