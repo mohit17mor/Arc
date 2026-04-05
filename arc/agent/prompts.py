@@ -55,6 +55,18 @@ user can provide, explain clearly:
 3. What specific input you need from the user"""
 
 
+_VOICE_INSTRUCTIONS = """\
+
+## Spoken Summary
+
+End every response with a [spoken] tag containing a 1–2 sentence casual \
+summary — as if telling a friend the key takeaway. Keep it under 30 words. \
+Never include code, URLs, markdown, or formatting in the spoken tag.
+
+Example:
+[spoken]Fixed the import error in main.py. Check chat for the diff.[/spoken]"""
+
+
 _BACKGROUND_ADDITIONS = """\
 
 ## Background Agent Rules
@@ -75,12 +87,14 @@ _WORKER_ADDITIONS = """\
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-def get_reliability_block(agent_type: str = "main") -> str:
+def get_reliability_block(agent_type: str = "main", *, voice_mode: bool = False) -> str:
     """
     Return the reliability prompt block for the given agent type.
 
     Args:
         agent_type: One of "main", "worker", "scheduler", "task".
+        voice_mode: If True, append spoken-summary instructions so the
+            agent produces a ``[spoken]...[/spoken]`` tag for TTS.
 
     Returns:
         A string to append to the agent's system prompt.
@@ -99,5 +113,8 @@ def get_reliability_block(agent_type: str = "main") -> str:
     else:
         # Unknown type — give the safe background rules
         parts.append(_BACKGROUND_ADDITIONS)
+
+    if voice_mode:
+        parts.append(_VOICE_INSTRUCTIONS)
 
     return "\n".join(parts)

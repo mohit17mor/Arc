@@ -4,15 +4,17 @@ Voice Daemon — connects the VoiceListener to the Arc Gateway.
 This is the process that runs when the user types ``arc listen``.
 It:
     1. Connects to the Gateway via WebSocket (same protocol as WebChat)
-    2. Initializes the speech provider and voice listener
+    2. Initializes the speech provider, voice listener, and TTS synthesizer
     3. Runs the listener's state machine
     4. Transcribes speech and forwards text to the gateway
-    5. Shows desktop notifications when the agent responds
-    6. Plays a confirmation chime on wake word detection
+    5. Speaks a condensed summary of the agent's response via TTS
+    6. Shows desktop notifications when the agent responds
+    7. Plays a confirmation chime on wake word detection
 
 The daemon is a thin orchestrator — all audio logic lives in
-VoiceListener, all STT logic lives in SpeechProvider.  This file
-only handles the WebSocket bridge and user feedback.
+VoiceListener, all STT logic lives in SpeechProvider, all TTS
+logic lives in SpeechSynthesizer, and text condensation lives
+in the condenser module.
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ from typing import Any, Callable
 
 import numpy as np
 
+from arc.voice.condenser import condense
 from arc.voice.listener import VoiceEvent, VoiceListener, VoiceState
+from arc.voice.synthesizer import SpeechSynthesizer, create_synthesizer
 from arc.voice.transcriber import SpeechProvider, WhisperLocalProvider
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,10 @@ class VoiceDaemon:
         silence_duration: float = 1.5,
         listen_timeout: float = 30.0,
         status_callback: Callable[[VoiceState, str], None] | None = None,
+        tts_provider: str = "auto",
+        tts_voice: str = "af_heart",
+        tts_speed: float = 1.0,
+        synthesizer: SpeechSynthesizer | None = None,
     ) -> None:
         self._gateway_url = gateway_url
         self._transcriber: SpeechProvider = WhisperLocalProvider(
@@ -75,6 +83,13 @@ class VoiceDaemon:
         self._current_state: VoiceState = VoiceState.SLEEPING
         self._sleep_watch_task: asyncio.Task[None] | None = None
 
+        # TTS — if no synthesizer injected, create from provider name
+        self._synthesizer: SpeechSynthesizer | None = synthesizer
+        self._tts_provider = tts_provider
+        self._tts_voice = tts_voice
+        self._tts_speed = tts_speed
+        self._tts_available = False
+
     # ━━━ Lifecycle ━━━
 
     async def run(self) -> None:
@@ -88,9 +103,10 @@ class VoiceDaemon:
 
         logger.info("Voice daemon starting")
 
-        # 1. Initialize transcriber and wake word detector
+        # 1. Initialize transcriber, wake word detector, and TTS
         await self._transcriber.initialize()
         await self._listener.initialize()
+        await self._init_tts()
         self._emit_status("sleep", VoiceState.SLEEPING)
 
         # 2. Connect to Gateway WebSocket
@@ -129,6 +145,8 @@ class VoiceDaemon:
                 pass
             await self._listener.stop()
             self._cancel_sleep_watch()
+            if self._synthesizer:
+                await self._synthesizer.shutdown()
             if self._ws and not self._ws.closed:
                 await self._ws.close()
             if self._session and not self._session.closed:
@@ -207,6 +225,7 @@ class VoiceDaemon:
                     if msg_type == "done":
                         full_content = data.get("full_content", "")
                         self._notify(full_content)
+                        await self._speak_response(full_content)
                         await self._listener.notify_response_done()
                         self._emit_status("listen", VoiceState.LISTENING)
                         self._start_sleep_watch()
@@ -230,6 +249,42 @@ class VoiceDaemon:
 
         except asyncio.CancelledError:
             pass
+
+    # ━━━ TTS ━━━
+
+    async def _init_tts(self) -> None:
+        """Initialize the TTS synthesizer.  Non-fatal if it fails."""
+        if self._synthesizer is None:
+            self._synthesizer = create_synthesizer(
+                self._tts_provider,
+                kokoro_voice=self._tts_voice,
+                kokoro_speed=self._tts_speed,
+            )
+        try:
+            await self._synthesizer.initialize()
+            self._tts_available = True
+            logger.info(f"TTS ready: {self._synthesizer.get_info()}")
+        except Exception as exc:
+            logger.warning(f"TTS unavailable — responses will not be spoken: {exc}")
+            self._tts_available = False
+
+    async def _speak_response(self, text: str) -> None:
+        """Condense *text* and speak it.  Non-fatal on error."""
+        if not self._tts_available or not self._synthesizer:
+            return
+
+        try:
+            condensed = condense(text)
+            if not condensed.spoken_text:
+                return
+            logger.debug(
+                f"TTS [{condensed.source}]: {condensed.spoken_text!r}"
+            )
+            await self._synthesizer.speak(condensed.spoken_text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"TTS speak failed: {exc}")
 
     # ━━━ User feedback ━━━
 

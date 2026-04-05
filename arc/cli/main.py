@@ -832,6 +832,9 @@ def _run_listen_with_overlay(host: str, port: int, verbose: bool) -> None:
             silence_duration=config.voice.silence_duration,
             listen_timeout=config.voice.listen_timeout,
             status_callback=status_callback,
+            tts_provider=config.voice.tts_provider,
+            tts_voice=config.voice.tts_voice,
+            tts_speed=config.voice.tts_speed,
         )
         daemon_ref.append(daemon)
 
@@ -1005,6 +1008,9 @@ async def _run_listen_terminal(
         silence_duration=config.voice.silence_duration,
         listen_timeout=config.voice.listen_timeout,
         status_callback=status_callback,
+        tts_provider=config.voice.tts_provider,
+        tts_voice=config.voice.tts_voice,
+        tts_speed=config.voice.tts_speed,
     )
 
     wake_display = config.voice.wake_model.replace("_", " ").title()

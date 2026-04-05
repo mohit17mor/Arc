@@ -46,10 +46,14 @@ voice = [
     "onnxruntime>=1.14",
     "plyer>=2.1",
 ]
+tts = [
+    "kokoro-onnx>=0.4",
+    "sounddevice>=0.4",
+]
 overlay = [
     "PyQt6>=6.5",
 ]
-all = ["arc-agent[anthropic,openai,telegram,voice,overlay]"]
+all = ["arc-agent[anthropic,openai,telegram,voice,tts,overlay]"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

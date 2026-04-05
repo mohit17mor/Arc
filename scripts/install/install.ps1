@@ -54,6 +54,17 @@ try {
     else {
         Write-Host "Arc installer finished. Run: arc init"
     }
+
+    # Optional: TTS setup hint
+    Write-Host ""
+    Write-Host "Optional — Voice output (TTS):"
+    Write-Host "  pip install arc-agent[tts]"
+    Write-Host "  Then download Kokoro model files (~300MB, one-time):"
+    Write-Host "    mkdir $HOME\.arc\models\kokoro"
+    Write-Host "    cd $HOME\.arc\models\kokoro"
+    Write-Host "    Invoke-WebRequest -Uri https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx -OutFile kokoro-v1.0.onnx"
+    Write-Host "    Invoke-WebRequest -Uri https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin -OutFile voices-v1.0.bin"
+    Write-Host "  Or skip this — Arc falls back to Windows built-in speech."
 }
 finally {
     Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue

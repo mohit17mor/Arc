@@ -1,1 +1,1 @@
-"""Arc Voice — hands-free voice input for Arc."""
+"""Arc Voice — hands-free voice input and spoken output for Arc."""

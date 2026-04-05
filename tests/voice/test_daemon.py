@@ -438,6 +438,173 @@ class TestChime:
         """Chime is non-critical — should never raise even if sounddevice is missing."""
         VoiceDaemon._play_chime()
 
+
+# ── TTS integration ─────────────────────────────────────────────
+
+
+class TestDaemonTTS:
+
+    def test_tts_params_stored(self):
+        daemon = VoiceDaemon(
+            tts_provider="kokoro",
+            tts_voice="bf_emma",
+            tts_speed=1.3,
+        )
+        assert daemon._tts_provider == "kokoro"
+        assert daemon._tts_voice == "bf_emma"
+        assert daemon._tts_speed == 1.3
+        assert daemon._tts_available is False
+
+    def test_tts_defaults(self):
+        daemon = VoiceDaemon()
+        assert daemon._tts_provider == "auto"
+        assert daemon._tts_voice == "af_heart"
+        assert daemon._tts_speed == 1.0
+
+    def test_injected_synthesizer(self):
+        mock_synth = AsyncMock()
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        assert daemon._synthesizer is mock_synth
+
+    @pytest.mark.asyncio
+    async def test_init_tts_success(self):
+        mock_synth = AsyncMock()
+        mock_synth.get_info.return_value = {"provider": "mock"}
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+
+        await daemon._init_tts()
+
+        mock_synth.initialize.assert_called_once()
+        assert daemon._tts_available is True
+
+    @pytest.mark.asyncio
+    async def test_init_tts_failure_non_fatal(self):
+        mock_synth = AsyncMock()
+        mock_synth.initialize.side_effect = RuntimeError("no engine")
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+
+        await daemon._init_tts()
+
+        assert daemon._tts_available is False
+
+    @pytest.mark.asyncio
+    async def test_speak_response_with_spoken_tag(self):
+        mock_synth = AsyncMock()
+        mock_synth.speak.return_value = None
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = True
+
+        text = "Full explanation here.\n[spoken]Short summary.[/spoken]"
+        await daemon._speak_response(text)
+
+        mock_synth.speak.assert_called_once_with("Short summary.")
+
+    @pytest.mark.asyncio
+    async def test_speak_response_short_text_verbatim(self):
+        mock_synth = AsyncMock()
+        mock_synth.speak.return_value = None
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = True
+
+        await daemon._speak_response("The answer is 42.")
+
+        # Should speak the text (cleaned for speech)
+        call_text = mock_synth.speak.call_args[0][0]
+        assert "42" in call_text
+
+    @pytest.mark.asyncio
+    async def test_speak_response_long_text_fallback(self):
+        mock_synth = AsyncMock()
+        mock_synth.speak.return_value = None
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = True
+
+        await daemon._speak_response("x " * 200)
+
+        call_text = mock_synth.speak.call_args[0][0]
+        assert "response is ready" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_speak_response_empty_skipped(self):
+        mock_synth = AsyncMock()
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = True
+
+        await daemon._speak_response("")
+
+        mock_synth.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_speak_response_tts_unavailable_skipped(self):
+        mock_synth = AsyncMock()
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = False
+
+        await daemon._speak_response("Hello")
+
+        mock_synth.speak.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_speak_response_error_nonfatal(self):
+        mock_synth = AsyncMock()
+        mock_synth.speak.side_effect = RuntimeError("audio device busy")
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._tts_available = True
+
+        # Should not raise
+        await daemon._speak_response("Hello world")
+
+    @pytest.mark.asyncio
+    async def test_response_loop_speaks_on_done(self, monkeypatch):
+        """The response loop should call _speak_response when agent is done."""
+        mock_synth = AsyncMock()
+        mock_synth.speak.return_value = None
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._running = True
+        daemon._tts_available = True
+        daemon._listener = SimpleNamespace(
+            notify_response_done=AsyncMock(),
+            state=VoiceState.LISTENING,
+        )
+        daemon._ws = _FakeWebSocket([
+            SimpleNamespace(
+                type="text",
+                data=json.dumps({
+                    "type": "done",
+                    "full_content": "Result here.\n[spoken]All done.[/spoken]",
+                }),
+            ),
+            SimpleNamespace(type="closed", data=""),
+        ])
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(_FakeSession()))
+
+        with patch.object(daemon, "_notify"):
+            with patch.object(daemon, "_start_sleep_watch"):
+                await daemon._response_loop()
+
+        mock_synth.speak.assert_called_once_with("All done.")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cleans_up_synthesizer(self, monkeypatch):
+        mock_synth = AsyncMock()
+        ws = _FakeWebSocket([])
+        session = _FakeSession(ws=ws)
+        daemon = VoiceDaemon(synthesizer=mock_synth)
+        daemon._transcriber = SimpleNamespace(initialize=AsyncMock())
+        daemon._listener = SimpleNamespace(
+            initialize=AsyncMock(),
+            run=lambda: _iter_events([]),
+            stop=AsyncMock(),
+            state=VoiceState.SLEEPING,
+            notify_response_done=AsyncMock(),
+        )
+        daemon._tts_available = True
+        monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(session))
+
+        await daemon.run()
+
+        mock_synth.shutdown.assert_called_once()
+
     def test_chime_suppresses_errors(self):
         """If sounddevice isn't available, chime is silently skipped."""
         with patch.dict("sys.modules", {"sounddevice": None}):

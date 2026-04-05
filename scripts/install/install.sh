@@ -57,3 +57,14 @@ if ! printf "%s" "${PATH}" | grep -q "${ARC_BIN_DIR}"; then
 else
   echo "Arc installer finished. Run: arc init"
 fi
+
+# Optional: TTS setup hint
+echo ""
+echo "Optional — Voice output (TTS):"
+echo "  pip install arc-agent[tts]"
+echo "  Then download Kokoro model files (~300MB, one-time):"
+echo "    mkdir -p ~/.arc/models/kokoro"
+echo "    cd ~/.arc/models/kokoro"
+echo "    curl -LO https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+echo "    curl -LO https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+echo "  Or skip this — Arc falls back to system speech (say/espeak-ng)."

@@ -149,13 +149,18 @@ class NgrokConfig(BaseModel):
 
 
 class VoiceConfig(BaseModel):
-    """Voice input (STT) configuration."""
+    """Voice input (STT) and output (TTS) configuration."""
 
     wake_model: str = "hey_jarvis"
     wake_threshold: float = 0.5
     whisper_model: str = "base.en"
     silence_duration: float = 1.5  # seconds of silence = end of speech
     listen_timeout: float = 30.0  # seconds before returning to sleep
+
+    # TTS settings
+    tts_provider: str = "auto"  # auto | kokoro | system
+    tts_voice: str = "af_heart"  # kokoro voice name
+    tts_speed: float = 1.0
 
 
 class GatewayConfig(BaseModel):
